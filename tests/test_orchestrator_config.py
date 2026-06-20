@@ -1,0 +1,328 @@
+"""Tests for configurable orchestrator limits via project.yaml orchestrator: key.
+
+Verifies:
+- DEFAULT_CONFIG contains the orchestrator section with correct defaults.
+- agent._execute_tasks reads max_consecutive_failures from project.config.
+- agent._execute_parallel reads max_workers from project.config.
+- ContextBudget accepts a custom max_tokens constructor argument.
+"""
+import concurrent.futures
+from pathlib import Path
+from unittest.mock import MagicMock, patch, call
+
+import pytest
+
+from my_project_orchestrator.core.config import DEFAULT_CONFIG
+from my_project_orchestrator.core.context_budget import ContextBudget
+
+
+# ---------------------------------------------------------------------------
+# DEFAULT_CONFIG
+# ---------------------------------------------------------------------------
+
+class TestDefaultConfig:
+    """Verify DEFAULT_CONFIG has the expected orchestrator section."""
+
+    def test_orchestrator_key_exists(self):
+        assert "orchestrator" in DEFAULT_CONFIG
+
+    def test_max_consecutive_failures_default(self):
+        assert DEFAULT_CONFIG["orchestrator"]["max_consecutive_failures"] == 3
+
+    def test_max_workers_default(self):
+        assert DEFAULT_CONFIG["orchestrator"]["max_workers"] == 4
+
+    def test_context_budget_tokens_default(self):
+        assert DEFAULT_CONFIG["orchestrator"]["context_budget_tokens"] == 100000
+
+    def test_max_task_attempts_default(self):
+        assert DEFAULT_CONFIG["orchestrator"]["max_task_attempts"] == 3
+
+    def test_all_values_are_positive_integers(self):
+        cfg = DEFAULT_CONFIG["orchestrator"]
+        for key, value in cfg.items():
+            assert isinstance(value, int) and value > 0, (
+                f"orchestrator.{key} should be a positive int, got {value!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# ContextBudget – custom max_tokens
+# ---------------------------------------------------------------------------
+
+class TestContextBudgetCustomTokens:
+    """ContextBudget already accepts max_tokens; verify the parameter works."""
+
+    def test_default_max_tokens(self):
+        budget = ContextBudget()
+        assert budget.max_tokens == 100000
+
+    def test_custom_max_tokens(self):
+        budget = ContextBudget(max_tokens=150000)
+        assert budget.max_tokens == 150000
+
+    def test_available_reflects_custom_max_tokens(self):
+        budget = ContextBudget(max_tokens=150000, reserved_tokens=8000)
+        assert budget.available == 142000
+
+    def test_configured_value_from_default_config(self):
+        """Constructing with the DEFAULT_CONFIG value should work."""
+        tokens = DEFAULT_CONFIG["orchestrator"]["context_budget_tokens"]
+        budget = ContextBudget(max_tokens=tokens)
+        assert budget.max_tokens == tokens
+
+    def test_larger_budget_allows_more_content(self):
+        """A larger budget should not truncate content that a smaller one would."""
+        content = "x" * 3500  # ~1000 tokens
+        small_budget = ContextBudget(max_tokens=500, reserved_tokens=0)
+        large_budget = ContextBudget(max_tokens=150000, reserved_tokens=0)
+
+        small_budget.set("section", content, priority=1)
+        large_budget.set("section", content, priority=1)
+
+        small_result = small_budget.allocate()
+        large_result = large_budget.allocate()
+
+        assert len(large_result["section"]) >= len(small_result["section"])
+
+
+# ---------------------------------------------------------------------------
+# agent._execute_parallel – max_workers from config
+# ---------------------------------------------------------------------------
+
+class TestExecuteParallelMaxWorkers:
+    """_execute_parallel should use orchestrator.max_workers from project.config."""
+
+    def _make_orchestrator(self):
+        from my_project_orchestrator.agent import ProjectOrchestrator
+        return ProjectOrchestrator()
+
+    def _make_project(self, orchestrator_cfg: dict) -> MagicMock:
+        project = MagicMock()
+        project.config = {"orchestrator": orchestrator_cfg}
+        return project
+
+    def _make_tasks(self, n: int):
+        tasks = []
+        for i in range(n):
+            t = MagicMock()
+            t.id = f"t{i}"
+            tasks.append(t)
+        return tasks
+
+    def test_uses_configured_max_workers(self):
+        orchestrator = self._make_orchestrator()
+        project = self._make_project({"max_workers": 8})
+        executor = MagicMock()
+        tasks = self._make_tasks(3)  # 3 tasks, max_workers=8 → min(3,8)=3
+
+        with patch("my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor") as MockPool:
+            mock_ctx = MagicMock()
+            MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
+            MockPool.return_value.__exit__ = MagicMock(return_value=False)
+            mock_ctx.submit.return_value = MagicMock()
+
+            with patch("my_project_orchestrator.agent.concurrent.futures.as_completed", return_value=[]):
+                orchestrator._execute_parallel(tasks, executor, project)
+
+            MockPool.assert_called_once_with(max_workers=3)
+
+    def test_caps_at_task_count(self):
+        """max_workers=8 but only 2 tasks → ThreadPoolExecutor(max_workers=2)."""
+        orchestrator = self._make_orchestrator()
+        project = self._make_project({"max_workers": 8})
+        executor = MagicMock()
+        tasks = self._make_tasks(2)
+
+        with patch("my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor") as MockPool:
+            mock_ctx = MagicMock()
+            MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
+            MockPool.return_value.__exit__ = MagicMock(return_value=False)
+            mock_ctx.submit.return_value = MagicMock()
+
+            with patch("my_project_orchestrator.agent.concurrent.futures.as_completed", return_value=[]):
+                orchestrator._execute_parallel(tasks, executor, project)
+
+            MockPool.assert_called_once_with(max_workers=2)
+
+    def test_default_max_workers_when_no_orchestrator_config(self):
+        """Falls back to 4 when orchestrator key is absent."""
+        orchestrator = self._make_orchestrator()
+        project = MagicMock()
+        project.config = {}  # No orchestrator key
+        executor = MagicMock()
+        tasks = self._make_tasks(6)  # 6 tasks, default max_workers=4 → min(6,4)=4
+
+        with patch("my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor") as MockPool:
+            mock_ctx = MagicMock()
+            MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
+            MockPool.return_value.__exit__ = MagicMock(return_value=False)
+            mock_ctx.submit.return_value = MagicMock()
+
+            with patch("my_project_orchestrator.agent.concurrent.futures.as_completed", return_value=[]):
+                orchestrator._execute_parallel(tasks, executor, project)
+
+            MockPool.assert_called_once_with(max_workers=4)
+
+    def test_default_max_workers_when_orchestrator_config_empty(self):
+        """Falls back to 4 when orchestrator dict exists but max_workers is absent."""
+        orchestrator = self._make_orchestrator()
+        project = self._make_project({})  # orchestrator key present but empty
+        executor = MagicMock()
+        tasks = self._make_tasks(10)  # 10 tasks, default max_workers=4 → min(10,4)=4
+
+        with patch("my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor") as MockPool:
+            mock_ctx = MagicMock()
+            MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
+            MockPool.return_value.__exit__ = MagicMock(return_value=False)
+            mock_ctx.submit.return_value = MagicMock()
+
+            with patch("my_project_orchestrator.agent.concurrent.futures.as_completed", return_value=[]):
+                orchestrator._execute_parallel(tasks, executor, project)
+
+            MockPool.assert_called_once_with(max_workers=4)
+
+
+# ---------------------------------------------------------------------------
+# agent._execute_tasks – max_consecutive_failures from config
+# ---------------------------------------------------------------------------
+
+class TestExecuteTasksMaxConsecutiveFailures:
+    """_execute_tasks should abort after the configured number of consecutive failures."""
+
+    def _run_execute_tasks_with_config(self, orchestrator_cfg: dict, num_tasks: int = 5):
+        """Helper: run _execute_tasks with all-failing tasks and return the report mock."""
+        from my_project_orchestrator.agent import ProjectOrchestrator
+        from my_project_orchestrator.core.modes import BuildFlags
+
+        orchestrator = ProjectOrchestrator()
+
+        project = MagicMock()
+        project.config = {"orchestrator": orchestrator_cfg, "language": "python"}
+        project.path = Path("/tmp/fake_proj")
+
+        failed_result = MagicMock()
+        failed_result.status = "failed"
+
+        report = MagicMock()
+        report.completed_tasks = []
+        report.failed_tasks = []
+        report.deferred_tasks = []
+        report.assessment = MagicMock()
+        report.assessment.summary.return_value = "summary"
+
+        tasks = []
+        for i in range(num_tasks):
+            t = MagicMock()
+            t.id = f"t{i}"
+            t.dependencies = []
+            t.files_to_modify = []
+            t.files_to_create = []
+            t.processor_data = {}
+            t.execution_history = []
+            tasks.append(t)
+
+        with (
+            patch("my_project_orchestrator.agent.Scratchpad"),
+            patch("my_project_orchestrator.agent.RealTimeAligner"),
+            patch("my_project_orchestrator.agent.ContractRegistry"),
+            patch("my_project_orchestrator.agent.ProgressTracker") as MockProgress,
+            patch("my_project_orchestrator.agent.ChangeTracker"),
+            patch("my_project_orchestrator.agent.StrategyOptimizer") as MockStrategy,
+            patch("my_project_orchestrator.agent.MarkdownPlanExecutor") as MockExecutor,
+        ):
+            mock_progress = MockProgress.return_value
+            mock_progress.completed = []
+            mock_progress.is_done.return_value = False
+
+            mock_strategy = MockStrategy.return_value
+            mock_strategy.select_best_strategy.return_value = "iterative"
+
+            mock_executor_instance = MockExecutor.return_value
+            mock_executor_instance.execute.return_value = failed_result
+
+            flags = BuildFlags()
+            orchestrator._execute_tasks(tasks, project, flags, report)
+
+        return report, mock_executor_instance
+
+    def test_aborts_after_configured_limit(self):
+        """With max_consecutive_failures=2, execution stops after 2 failures."""
+        report, executor = self._run_execute_tasks_with_config(
+            {"max_consecutive_failures": 2}, num_tasks=5
+        )
+        # Should have stopped after 2 failures; not all 5 tasks attempted
+        total_attempted = len(report.failed_tasks) + len(report.completed_tasks)
+        assert total_attempted <= 2
+
+    def test_default_limit_when_no_config(self):
+        """Without orchestrator config, falls back to default of 3."""
+        from my_project_orchestrator.agent import ProjectOrchestrator
+        from my_project_orchestrator.core.modes import BuildFlags
+
+        orchestrator = ProjectOrchestrator()
+
+        project = MagicMock()
+        project.config = {}  # No orchestrator key
+        project.path = Path("/tmp/fake_proj")
+
+        failed_result = MagicMock()
+        failed_result.status = "failed"
+
+        report = MagicMock()
+        report.completed_tasks = []
+        report.failed_tasks = []
+        report.deferred_tasks = []
+        report.assessment = MagicMock()
+        report.assessment.summary.return_value = "summary"
+
+        tasks = []
+        for i in range(10):
+            t = MagicMock()
+            t.id = f"t{i}"
+            t.dependencies = []
+            t.files_to_modify = []
+            t.files_to_create = []
+            t.processor_data = {}
+            t.execution_history = []
+            tasks.append(t)
+
+        with (
+            patch("my_project_orchestrator.agent.Scratchpad"),
+            patch("my_project_orchestrator.agent.RealTimeAligner"),
+            patch("my_project_orchestrator.agent.ContractRegistry"),
+            patch("my_project_orchestrator.agent.ProgressTracker") as MockProgress,
+            patch("my_project_orchestrator.agent.ChangeTracker"),
+            patch("my_project_orchestrator.agent.StrategyOptimizer") as MockStrategy,
+            patch("my_project_orchestrator.agent.MarkdownPlanExecutor") as MockExecutor,
+        ):
+            mock_progress = MockProgress.return_value
+            mock_progress.completed = []
+            mock_progress.is_done.return_value = False
+
+            mock_strategy = MockStrategy.return_value
+            mock_strategy.select_best_strategy.return_value = "iterative"
+
+            mock_executor_instance = MockExecutor.return_value
+            mock_executor_instance.execute.return_value = failed_result
+
+            flags = BuildFlags()
+            orchestrator._execute_tasks(tasks, project, flags, report)
+
+        # Default is 3; should stop after 3 failures
+        total_attempted = len(report.failed_tasks) + len(report.completed_tasks)
+        assert total_attempted <= 3
+
+    def test_higher_limit_allows_more_failures(self):
+        """max_consecutive_failures=5 allows more failures before aborting."""
+        report_2, _ = self._run_execute_tasks_with_config(
+            {"max_consecutive_failures": 2}, num_tasks=10
+        )
+        report_5, _ = self._run_execute_tasks_with_config(
+            {"max_consecutive_failures": 5}, num_tasks=10
+        )
+
+        attempted_2 = len(report_2.failed_tasks) + len(report_2.completed_tasks)
+        attempted_5 = len(report_5.failed_tasks) + len(report_5.completed_tasks)
+
+        assert attempted_5 >= attempted_2

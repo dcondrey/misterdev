@@ -1,0 +1,66 @@
+orchestrator_version: "1.0"
+name: "Sample Project"
+description: "A demonstration project for the Orchestrator."
+language: "python"
+repo_path: "."
+devplan_dir: "devplan"
+
+llm:
+  provider: "openrouter"
+  model: "anthropic/claude-3.5-sonnet"
+  api_key_env_var: "OPENROUTER_API_KEY"
+  temperature: 0.1
+
+task_processors:
+  - type: "markdown_planner"
+    settings:
+      status_key: "status"
+      target_files_key: "files_to_modify"
+      test_command_key: "test_command"
+      max_retries_per_task: 3
+
+tools:
+  - name: "Git"
+    type: "git"
+  - name: "Python Formatter"
+    type: "formatter"
+    command: "black {path}"
+  - name: "Python Test Runner"
+    type: "test_runner"
+    command: "pytest"
+
+environment:
+  type: "venv"
+  root_dir: ".venv"
+  setup_commands:
+    - "python -m venv {root_dir}"
+    - "pip install pytest black"
+
+# Build workflow settings (6-phase autonomous builder)
+build:
+  max_tasks: 30
+  max_attempts_per_task: 3
+  max_consecutive_failures: 3
+  build_timeout: 120
+  test_timeout: 180
+  lint_timeout: 120
+  parallel_analysis: true
+
+# Commands for health checks and validation
+build_command: "python -m py_compile *.py"
+test_command: "pytest"
+lint_command: "black --check ."
+
+prompt_templates:
+  system: |
+    You are an expert AI developer.
+    Always output code in markdown code blocks with file path comments.
+    {inherited_system_prompt}
+  task_completion_instruction: |
+    Implement: {task.description}
+    Files: {task.target_files}
+    Context:
+    {code_context}
+  error_correction_instruction: |
+    Fix this error:
+    {error_logs}

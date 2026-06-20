@@ -1,0 +1,96 @@
+orchestrator_version: "1.0"
+name: "Project Orchestrator"
+description: "6-phase autonomous build workflow with topological task ordering, contract extraction, and SOTA gate validation. Goal: expand test coverage for untested modules."
+language: "python"
+repo_path: "."
+devplan_dir: "devplan"
+
+llm:
+  provider: "openrouter"
+  model: "anthropic/claude-sonnet-4-6"
+  api_key_env_var: "OPENROUTER_API_KEY"
+  temperature: 0.1
+
+task_processors:
+  - type: "markdown_planner"
+    settings:
+      status_key: "status"
+      target_files_key: "files_to_modify"
+      test_command_key: "test_command"
+      max_retries_per_task: 3
+
+tools:
+  - name: "Git"
+    type: "git"
+  - name: "Python Formatter"
+    type: "formatter"
+    command: "uv run ruff format ."
+  - name: "Python Test Runner"
+    type: "test_runner"
+    command: "uv run pytest tests/ -x -q"
+  - name: "Python Linter"
+    type: "linter"
+    command: "uv run ruff check ."
+
+environment:
+  type: "none"
+
+build:
+  max_tasks: 15
+  max_attempts_per_task: 3
+  max_consecutive_failures: 3
+  build_timeout: 120
+  test_timeout: 180
+  lint_timeout: 60
+  parallel_analysis: true
+
+build_command: "uv run python -c 'import my_project_orchestrator'"
+test_command: "uv run pytest tests/ -x -q"
+lint_command: "uv run ruff check ."
+
+prompt_templates:
+  system: |
+    You are improving the Project Orchestrator, a Python tool that autonomously builds software projects.
+    This project uses: pydantic, PyYAML, rich, frontmatter, tree-sitter.
+    Test runner: pytest. Package manager: uv. No virtualenv activation needed; use uv run.
+    Follow existing test patterns: use tempfile.TemporaryDirectory for isolation, FakeProject/FakeLLMClient for mocking.
+    Do NOT modify public API signatures unless the task explicitly requires it.
+    {sota_invariants}
+    {consensus_context}
+  task_completion_instruction: |
+    ## Task
+    {task.description}
+
+    ## Acceptance Criteria
+    {acceptance_criteria}
+
+    ## Files to Edit
+    {task.target_files}
+
+    ## Interface Contracts
+    {interface_contracts}
+
+    ## Recent Changes to Related Files
+    {recent_changes}
+
+    ## Learnings from Previous Tasks
+    {scratchpad}
+
+    ## Code Context
+    {code_context}
+
+    Output your changes as markdown code blocks with file path on the opening fence line.
+  error_correction_instruction: |
+    ## Previous Attempt Failed
+    {error_logs}
+
+    ## Task
+    {task.description}
+
+    ## Interface Contracts
+    {interface_contracts}
+
+    ## Code Context
+    {code_context}
+
+    Fix the error. Output corrected code as markdown code blocks with file paths.
