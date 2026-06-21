@@ -1572,7 +1572,9 @@ def test_commit_task_discards_formatter_spillover():
         _git(repo, "commit", "-m", "init")
         base = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=repo, capture_output=True, text=True,
+            cwd=repo,
+            capture_output=True,
+            text=True,
         ).stdout.strip()
 
         ex = MarkdownPlanExecutor()
@@ -1587,9 +1589,175 @@ def test_commit_task_discards_formatter_spillover():
         ex._commit_task(proj, "task/T-9", base, _T(), ["task_file.py"])
 
         # Back on base, merged, and CLEAN -- spillover to other.py was dropped.
-        assert subprocess.run(
-            ["git", "status", "--porcelain"], cwd=repo,
-            capture_output=True, text=True,
-        ).stdout.strip() == ""
+        assert (
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            == ""
+        )
         assert (repo / "task_file.py").read_text() == "NEW = 1\n"  # task change kept
         assert (repo / "other.py").read_text() == "X=1\n"  # spillover reverted
+
+
+# --- FULL PIPELINE offline e2e: probes -> decompose -> execute -> gate -------
+class _ScriptedLLM:
+    """Routes generate_code by prompt content so the whole SMART _run_pipeline
+    runs offline. Bakes in hostile inputs (probe name with '/', task id with a
+    space and '/') to prove sanitization holds end-to-end."""
+
+    def __init__(self):
+        self.cumulative_usage = __import__(
+            "my_project_orchestrator.llm.client", fromlist=["LLMUsage"]
+        ).LLMUsage()
+        self._budget = 100.0
+        self.calls = []
+
+    def generate_code(self, prompt, system_prompt=""):
+        self.calls.append(prompt[:60])
+        p = prompt
+        if "REFLECTIVE" in p or "Probe" in p or "assumptions" in p:
+            return (
+                '[{"name": "Bad / Name Probe", "purpose": "x", "script": "print(1)"}]'
+            )
+        if "comprehensive project spec" in p:
+            return "Add one passing test."  # short -> AB-MCTS skipped
+        if "JSON array of task objects" in p:
+            return (
+                '[{"id": "T 1/x", "title": "add test", "description": "add a '
+                'passing test", "acceptance_criteria": "", "files_to_create": '
+                '["tests/test_added.py"], "files_to_modify": [], "context_files": '
+                '[], "dependencies": [], "complexity": "small", "category": "test"}]'
+            )
+        if "execution strategy" in p or "surgical, iterative" in p:
+            return "iterative"
+        if "Files to Edit" in p or "markdown code blocks" in p:
+            return (
+                "```python:tests/test_added.py\ndef test_added():\n    assert True\n```"
+            )
+        return "[]"
+
+    # context-manager / routing shims used by the executor
+    def track_task(self, task_id):
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+    def with_model(self, model):
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+    def generate_stream(self, prompt, system_prompt="", abort_check=None):
+        from my_project_orchestrator.llm.client import LLMResponse
+
+        return LLMResponse(content=self.generate_code(prompt, system_prompt))
+
+
+def test_full_pipeline_offline_smart_build(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    from my_project_orchestrator.config import DEFAULT_CONFIG
+    from my_project_orchestrator.core.project import Project
+    from my_project_orchestrator.core.assessment import (
+        ProjectAssessment,
+        HealthCheck,
+    )
+    from my_project_orchestrator.core.modes import BuildMode, BuildFlags
+    from my_project_orchestrator.core.report import BuildReport
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+    from my_project_orchestrator.agent import ProjectOrchestrator
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "t@t.t")
+        _git(repo, "config", "user.name", "t")
+        (repo / ".gitignore").write_text(".orchestrator/\n__pycache__/\n*.pyc\n")
+        (repo / "tests").mkdir()
+        (repo / "tests" / "test_seed.py").write_text(
+            "def test_seed():\n    assert True\n"
+        )
+        (repo / "seed.py").write_text("X = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "init")
+
+        cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+        cfg["name"] = "fixture"
+        cfg["build_command"] = "true"
+        project = Project(repo, cfg)
+        project.llm_client = _ScriptedLLM()
+
+        assessment = ProjectAssessment()
+        assessment.structure.build_command = "true"
+        assessment.structure.test_command = "python -m pytest -q"
+        assessment.health = HealthCheck(builds=True, tests_pass=True, test_count=1)
+
+        from datetime import datetime, timezone
+
+        report = BuildReport(
+            BuildMode.SMART, "fixture", assessment, datetime.now(timezone.utc)
+        )
+        flags = BuildFlags(budget=100.0)
+
+        orch = ProjectOrchestrator()
+        result = orch._run_pipeline(
+            project,
+            "add a passing test",
+            BuildMode.SMART,
+            flags,
+            assessment,
+            None,
+            report,
+        )
+
+        # Pipeline finished with a real report (not crash/cancel) despite the
+        # hostile probe name and task id.
+        assert "Error" not in result and "Cancelled" not in result
+        # The hostile id "T 1/x" was sanitized to a branch-safe slug and the
+        # task completed + committed its file.
+        assert report.completed_tasks, "no task completed"
+        done_id = report.completed_tasks[0].id
+        assert "/" not in done_id and " " not in done_id
+        assert (repo / "tests" / "test_added.py").exists()
+        assert MarkdownPlanExecutor().find_task_commit(project, done_id)
+        # Full suite still green (integration gate did not revert), tree clean.
+        assert (
+            subprocess.run(
+                ["python", "-m", "pytest", "-q"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            ).returncode
+            == 0
+        )
+        assert (
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            == ""
+        )
+
+
+# --- metacognition: LLM returning objects must not crash the audit -----------
+def test_save_lessons_handles_dict_rules_without_crashing():
+    from my_project_orchestrator.core.metacognition import SessionAuditor
+
+    class _LLM:
+        def generate_code(self, prompt, system_prompt=""):
+            return "[]"
+
+    with tempfile.TemporaryDirectory() as td:
+        auditor = SessionAuditor(Path(td), _LLM())
+        # The LLM returned objects, not strings -- previously crashed set() dedup.
+        auditor._save_lessons(["use ruff", {"rule": "close db"}, "use ruff"])
+        saved = json.loads(auditor.lessons_file.read_text())
+        assert "use ruff" in saved  # plain string kept
+        assert any("close db" in str(s) for s in saved)  # object coerced, not lost
+        assert saved.count("use ruff") == 1  # deduped

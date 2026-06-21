@@ -21,7 +21,12 @@ class SessionAuditor:
         self.llm = llm_client
         self.lessons_file = project_path / ".orchestrator" / "lessons.json"
 
-    def audit_session(self, completed_tasks: List[Any], failed_tasks: List[Any], scratchpad_content: str) -> str:
+    def audit_session(
+        self,
+        completed_tasks: List[Any],
+        failed_tasks: List[Any],
+        scratchpad_content: str,
+    ) -> str:
         """Runs the audit and returns a 'Project Logic Patch' string."""
         logger.info("Auditing build session for metacognitive learning...")
 
@@ -43,7 +48,9 @@ Example: 'Always run black before committing', 'The database connection must be 
 Return a JSON array of strings. Return ONLY the JSON array.
 """
         try:
-            response = self.llm.generate_code(prompt, "You are a senior project auditor.")
+            response = self.llm.generate_code(
+                prompt, "You are a senior project auditor."
+            )
             new_rules = _extract_json_array(response)
             if new_rules:
                 self._save_lessons(new_rules)
@@ -63,7 +70,15 @@ Return a JSON array of strings. Return ONLY the JSON array.
             except (json.JSONDecodeError, OSError):
                 existing = []
 
-        updated = list(set(existing + new_rules))
+        # Coerce to strings before dedup: the LLM sometimes returns JSON objects
+        # instead of plain rule strings, and set()-based dedup crashes on the
+        # unhashable dicts (silently killing every audit). dict.fromkeys keeps
+        # insertion order while removing duplicates.
+        def _as_text(r):
+            return r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)
+
+        merged = [_as_text(r) for r in existing] + [_as_text(r) for r in new_rules]
+        updated = list(dict.fromkeys(merged))
         self.lessons_file.write_text(json.dumps(updated, indent=2), encoding="utf-8")
         logger.info(f"Project logic patched with {len(new_rules)} new rules.")
 
@@ -75,7 +90,9 @@ Return a JSON array of strings. Return ONLY the JSON array.
             rules = json.loads(self.lessons_file.read_text(encoding="utf-8"))
             if not rules:
                 return ""
-            return "## Project-Specific Lessons (Historical)\n" + "\n".join(f"- {r}" for r in rules)
+            return "## Project-Specific Lessons (Historical)\n" + "\n".join(
+                f"- {r}" for r in rules
+            )
         except (json.JSONDecodeError, OSError):
             return ""
 
@@ -89,6 +106,6 @@ def _extract_json_array(response: str) -> List[str]:
     if start < 0 or end < 0 or end <= start:
         return []
     try:
-        return json.loads(text[start:end + 1])
+        return json.loads(text[start : end + 1])
     except json.JSONDecodeError:
         return []
