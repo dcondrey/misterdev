@@ -145,6 +145,12 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
 
         error_logs = None
         prior_errors: List[str] = []
+        # Build the symbol graph now (idempotent, lazy): it isn't constructed at
+        # project registration anymore, and task execution is the first consumer.
+        try:
+            project.topography.initialize()
+        except Exception as e:
+            logger.warning(f"Topography init failed (continuing without graph): {e}")
         resolver = ErrorResolver(project.path, project.topography.graph)
         # Every in-root path the LLM actually wrote, across all attempts. Commit
         # exactly these (plus declared targets) so an out-of-scope-but-valid

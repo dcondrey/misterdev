@@ -4,11 +4,11 @@ Breaks a spec into ordered, atomic tasks with dependency tracking.
 Uses topological sort to determine execution order.
 """
 
-import json
 from collections import deque
 from typing import Optional
 
 from my_project_orchestrator.core.models import Task
+from my_project_orchestrator.llm.responses import extract_json_array
 from my_project_orchestrator.utils.file_utils import safe_ref_slug
 from my_project_orchestrator.core.assessment import ProjectAssessment
 from my_project_orchestrator.core.modes import BuildMode
@@ -173,22 +173,10 @@ def _parse_tasks(response: str, project_ref: str) -> list[Task]:
         lines = [l for l in lines if not l.strip().startswith("```")]
         text = "\n".join(lines).strip()
 
-    # Try direct parse first
-    try:
-        raw_tasks = json.loads(text)
-    except json.JSONDecodeError:
-        # LLM may have wrapped JSON in prose; find the array
-        start = text.find("[")
-        end = text.rfind("]")
-        if start >= 0 and end > start:
-            try:
-                raw_tasks = json.loads(text[start : end + 1])
-            except json.JSONDecodeError:
-                logger.error("Failed to parse LLM response as JSON")
-                return []
-        else:
-            logger.error("No JSON array found in LLM response")
-            return []
+    raw_tasks = extract_json_array(text, default=None)
+    if not isinstance(raw_tasks, list):
+        logger.error("No JSON task array found in LLM response")
+        return []
 
     tasks = []
     seen_ids: set[str] = set()

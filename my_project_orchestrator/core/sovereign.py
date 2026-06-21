@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 from my_project_orchestrator.logging_setup import setup_logger
 from my_project_orchestrator.llm.client import BaseLLMClient
+from my_project_orchestrator.llm.responses import extract_json_array
 from my_project_orchestrator.utils.file_utils import safe_ref_slug
 
 logger = setup_logger(__name__)
@@ -161,11 +162,7 @@ Return ONLY the JSON array.
             response = self.llm.generate_code(
                 prompt, "You are a senior empirical researcher."
             )
-            text = response.strip()
-            start = text.find("[")
-            end = text.rfind("]")
-            if start >= 0 and end > start:
-                return json.loads(text[start : end + 1])
+            return extract_json_array(response)
         except Exception as e:
             logger.error(f"Failed to generate probes: {e}")
 

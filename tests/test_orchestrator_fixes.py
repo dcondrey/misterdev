@@ -1761,3 +1761,36 @@ def test_save_lessons_handles_dict_rules_without_crashing():
         assert "use ruff" in saved  # plain string kept
         assert any("close db" in str(s) for s in saved)  # object coerced, not lost
         assert saved.count("use ruff") == 1  # deduped
+
+
+# --- consolidated JSON-array extraction (was duplicated 4x) ------------------
+def test_extract_json_array_handles_prose_fences_and_garbage():
+    from my_project_orchestrator.llm.responses import extract_json_array
+
+    assert extract_json_array('Here: [1, 2, 3] done') == [1, 2, 3]
+    assert extract_json_array('```json\n["a","b"]\n```') == ["a", "b"]
+    assert extract_json_array("no array here") == []
+    assert extract_json_array("[broken", default=None) == []
+    assert extract_json_array("", default=["x"]) == ["x"]
+    # An object, not an array -> default (rejects non-arrays cleanly)
+    assert extract_json_array('{"k": 1}') == []
+
+
+def test_lazy_topography_not_built_at_registration(monkeypatch):
+    """Project construction must NOT eagerly build the symbol graph -- every
+    CLI command registers all known projects, so eager scanning is wasted."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    from my_project_orchestrator.config import DEFAULT_CONFIG
+    from my_project_orchestrator.core.project import Project
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        (repo / "mod.py").write_text("def f():\n    return 1\n")
+        cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+        cfg["name"] = "fixture"
+        project = Project(repo, cfg)
+        # Graph not built yet (lazy).
+        assert project.topography._initialized is False
+        # First explicit use builds it (idempotent).
+        project.topography.initialize()
+        assert project.topography._initialized is True

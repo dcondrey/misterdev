@@ -6,12 +6,12 @@ so the orchestrator composes the plan from the project's live state instead of
 a predefined devplan.
 """
 
-import json
 from dataclasses import dataclass
 from typing import List
 
 from my_project_orchestrator.core.assessment import ProjectAssessment
 from my_project_orchestrator.llm.client import BaseLLMClient
+from my_project_orchestrator.llm.responses import extract_json_array
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -59,14 +59,10 @@ def recommend_work(
         response = llm_client.generate_code(
             prompt, "You are a pragmatic engineering lead. Return only JSON."
         )
-        text = response.strip()
-        start, end = text.find("["), text.rfind("]")
-        if start < 0 or end <= start:
-            return []
-        raw = json.loads(text[start : end + 1])
     except Exception as e:
         logger.error(f"Failed to generate recommendations: {e}")
         return []
+    raw = extract_json_array(response)
 
     recs: List[Recommendation] = []
     for item in raw:

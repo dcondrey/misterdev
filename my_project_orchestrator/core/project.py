@@ -10,8 +10,10 @@ from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
 
+
 class ToolManager:
     """Manages initialization and execution of tools."""
+
     def __init__(self, tools_config: list):
         self.tools = {}
         for tc in tools_config:
@@ -20,7 +22,7 @@ class ToolManager:
             from my_project_orchestrator.tools.formatter import FormatterTool
             from my_project_orchestrator.tools.git_tool import GitTool
             from my_project_orchestrator.tools.file_io import FileIOTool
-            
+
             tool_type = tc.get("type")
             if tool_type == "formatter":
                 tool = FormatterTool(tc)
@@ -31,31 +33,32 @@ class ToolManager:
             elif tool_type in ["test_runner", "command"]:
                 tool = CommandTool(tc)
             else:
-                tool = CommandTool(tc) # Fallback
+                tool = CommandTool(tc)  # Fallback
             self.tools[tool.name] = tool
 
     def get_tool(self, name: str):
         return self.tools.get(name)
 
+
 class Project:
     """Represents an active project with all its dependencies initialized."""
+
     def __init__(self, path: str | Path, config: dict):
         self.path = Path(path)
         self.config = config
-        
+
         self.name = config.get("name", self.path.name)
         self.description = config.get("description", "")
-        
+
         self.llm_client = self._init_llm_client()
         self.env_manager = self._init_env_manager()
         self.tool_manager = ToolManager(config.get("tools", []))
         self.task_manager = TaskManager(self)
+        # Topography (symbol graph) is built lazily on first use, not here:
+        # every CLI command registers all known projects, and eagerly scanning
+        # each one's whole tree just to list/status is wasted work. The executor
+        # calls initialize() (idempotent) before it needs the graph.
         self.topography = TopographyEngine(self.path, self.llm_client)
-        
-        try:
-            self.topography.initialize()
-        except Exception as e:
-            logger.error(f"Failed to initialize topography engine: {e}")
 
     def _init_llm_client(self) -> BaseLLMClient:
         return create_llm_client(self.config)

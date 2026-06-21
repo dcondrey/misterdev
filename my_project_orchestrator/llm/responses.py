@@ -1,5 +1,27 @@
-from typing import Dict, List, Optional
+import json
+from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
+
+
+def extract_json_array(response: str, default: Optional[Any] = None) -> Any:
+    """Extract the outermost JSON array from an LLM response.
+
+    LLMs often wrap a JSON array in prose or code fences; this slices from the
+    first ``[`` to the last ``]`` and parses. Returns ``default`` (or ``[]``)
+    on any failure. Consolidates the find/slice/loads pattern that was copy-
+    pasted across the decomposer, advisor, sovereign, and metacognition.
+    """
+    if default is None:
+        default = []
+    text = (response or "").strip()
+    start = text.find("[")
+    end = text.rfind("]")
+    if start < 0 or end <= start:
+        return default
+    try:
+        return json.loads(text[start : end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return default
 
 
 @dataclass
@@ -30,13 +52,45 @@ class LLMResponseParser:
     5. Unified diff: --- a/file  +++ b/file
     """
 
-    _CODE_EXTENSIONS = frozenset({
-        ".py", ".js", ".ts", ".tsx", ".jsx", ".rs", ".go", ".java",
-        ".c", ".cpp", ".h", ".hpp", ".rb", ".php", ".swift", ".kt",
-        ".scala", ".zig", ".toml", ".yaml", ".yml", ".json", ".md",
-        ".html", ".css", ".scss", ".sql", ".sh", ".bash", ".zsh",
-        ".cfg", ".ini", ".env", ".txt", ".xml",
-    })
+    _CODE_EXTENSIONS = frozenset(
+        {
+            ".py",
+            ".js",
+            ".ts",
+            ".tsx",
+            ".jsx",
+            ".rs",
+            ".go",
+            ".java",
+            ".c",
+            ".cpp",
+            ".h",
+            ".hpp",
+            ".rb",
+            ".php",
+            ".swift",
+            ".kt",
+            ".scala",
+            ".zig",
+            ".toml",
+            ".yaml",
+            ".yml",
+            ".json",
+            ".md",
+            ".html",
+            ".css",
+            ".scss",
+            ".sql",
+            ".sh",
+            ".bash",
+            ".zsh",
+            ".cfg",
+            ".ini",
+            ".env",
+            ".txt",
+            ".xml",
+        }
+    )
 
     @staticmethod
     def parse_file_edits(llm_output: str) -> Dict[str, str]:
@@ -84,12 +138,14 @@ class LLMResponseParser:
                 content_lines.append(lines[i])
                 i += 1
 
-            blocks.append(_CodeBlock(
-                lang=lang,
-                path_hint=path_hint,
-                content_lines=content_lines,
-                preceding_text=preceding,
-            ))
+            blocks.append(
+                _CodeBlock(
+                    lang=lang,
+                    path_hint=path_hint,
+                    content_lines=content_lines,
+                    preceding_text=preceding,
+                )
+            )
 
             preceding_start = i + 1
             i += 1
@@ -186,6 +242,7 @@ class LLMResponseParser:
 # Pure-function helpers (no regex, no state)
 # ------------------------------------------------------------------
 
+
 def _parse_fence_open(line: str) -> tuple:
     """Check if a line is a code fence opener (``` or ~~~~).
 
@@ -216,7 +273,7 @@ def _is_fence_close(line: str, fence: str) -> bool:
     if not stripped.startswith(fence):
         return False
     # Everything after the fence chars must also be the fence char or empty
-    rest = stripped[len(fence):]
+    rest = stripped[len(fence) :]
     return all(c == fence[0] for c in rest)
 
 
@@ -256,11 +313,11 @@ def _extract_path_from_first_line(line: str) -> Optional[str]:
     comment_prefixes = ("#", "//", "--", "/*", "<!--")
     for prefix in comment_prefixes:
         if stripped.startswith(prefix):
-            remainder = stripped[len(prefix):].strip()
+            remainder = stripped[len(prefix) :].strip()
             # Strip trailing comment closers
             for closer in ("*/", "-->"):
                 if remainder.endswith(closer):
-                    remainder = remainder[:-len(closer)].strip()
+                    remainder = remainder[: -len(closer)].strip()
             if _looks_like_path(remainder):
                 return remainder
 
@@ -268,7 +325,7 @@ def _extract_path_from_first_line(line: str) -> Optional[str]:
     for label in ("file:", "filename:", "path:"):
         lower = stripped.lower()
         if lower.startswith(label):
-            candidate = stripped[len(label):].strip()
+            candidate = stripped[len(label) :].strip()
             if _looks_like_path(candidate):
                 return candidate
 
@@ -296,10 +353,18 @@ def _extract_path_from_preceding(text: str) -> Optional[str]:
         return path
 
     # Strategy 3: labeled path (File: path, Update: path, etc.)
-    for label in ("file:", "update:", "create:", "modify:", "in:", "filename:", "path:"):
+    for label in (
+        "file:",
+        "update:",
+        "create:",
+        "modify:",
+        "in:",
+        "filename:",
+        "path:",
+    ):
         idx = segment.lower().rfind(label)
         if idx >= 0:
-            after = segment[idx + len(label):].strip()
+            after = segment[idx + len(label) :].strip()
             # Take first whitespace-delimited token
             candidate = after.split()[0].strip("`'\",:") if after else ""
             if _looks_like_path(candidate):
@@ -318,7 +383,7 @@ def _find_last_quoted_path(text: str, quote: str) -> Optional[str]:
         open_pos = text.rfind(quote, 0, close)
         if open_pos < 0:
             return None
-        candidate = text[open_pos + len(quote):close]
+        candidate = text[open_pos + len(quote) : close]
         if _looks_like_path(candidate):
             return candidate
         end = open_pos
@@ -334,7 +399,7 @@ def _find_last_delimited_path(text: str, opener: str, closer: str) -> Optional[s
         open_pos = text.rfind(opener, 0, close)
         if open_pos < 0:
             return None
-        candidate = text[open_pos + len(opener):close]
+        candidate = text[open_pos + len(opener) : close]
         if _looks_like_path(candidate):
             return candidate
         end = open_pos

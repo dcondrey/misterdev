@@ -58,8 +58,7 @@ class ContractRegistry:
                 data = json.loads(self._file.read_text(encoding="utf-8"))
                 for task_id, entries in data.items():
                     self.contracts[task_id] = [
-                        Contract(task_id, e["file_path"], e["symbols"])
-                        for e in entries
+                        Contract(task_id, e["file_path"], e["symbols"]) for e in entries
                     ]
             except (json.JSONDecodeError, OSError, KeyError):
                 self.contracts = {}
@@ -68,14 +67,17 @@ class ContractRegistry:
         data = {}
         for task_id, contracts in self.contracts.items():
             data[task_id] = [
-                {"file_path": c.file_path, "symbols": c.symbols}
-                for c in contracts
+                {"file_path": c.file_path, "symbols": c.symbols} for c in contracts
             ]
         atomic_write(self._file, json.dumps(data, indent=2))
 
     def extract_contracts(
-        self, task_id: str, modified_files: List[str],
-        project_path: Path, llm_client, language: str = "rust",
+        self,
+        task_id: str,
+        modified_files: List[str],
+        project_path: Path,
+        llm_client,
+        language: str = "rust",
     ) -> List[Contract]:
         """Extract public API from files modified by a completed task."""
         contracts = []
@@ -98,7 +100,9 @@ class ContractRegistry:
         with self._lock:
             self.contracts[task_id] = contracts
             self._save()
-        logger.info(f"Extracted {sum(len(c.symbols) for c in contracts)} contracts from {task_id}")
+        logger.info(
+            f"Extracted {sum(len(c.symbols) for c in contracts)} contracts from {task_id}"
+        )
         return contracts
 
     def get_contracts_for_task(self, dependency_ids: List[str]) -> str:
@@ -115,8 +119,10 @@ class ContractRegistry:
         if not relevant:
             return ""
 
-        lines = ["## Interface Contracts (from completed dependency tasks)",
-                 "Your code MUST use these exact signatures. Do not guess or assume different names.\n"]
+        lines = [
+            "## Interface Contracts (from completed dependency tasks)",
+            "Your code MUST use these exact signatures. Do not guess or assume different names.\n",
+        ]
         for contract in relevant:
             lines.append(contract.format_for_prompt())
         return "\n".join(lines)
@@ -158,14 +164,17 @@ def _extract_rust_symbols_ts(content: str) -> List[Dict[str, str]]:
     """
     try:
         from my_project_orchestrator.core.topography import _get_ts_parsers
+
         parser = _get_ts_parsers().get("rust")
-    except Exception:
+    except Exception as e:
+        logger.debug(f"tree-sitter rust parser unavailable: {e}")
         return []
     if parser is None:
         return []
     try:
         tree = parser.parse(bytes(content, "utf8"))
-    except Exception:
+    except Exception as e:
+        logger.debug(f"tree-sitter parse failed; using line parser: {e}")
         return []
     symbols: List[Dict[str, str]] = []
     _walk_rust_ts(tree.root_node, content, symbols, parent=None)
@@ -178,23 +187,27 @@ def _ts_is_pub(node) -> bool:
 
 def _ts_field_text(node, field: str, content: str) -> str:
     n = node.child_by_field_name(field)
-    return content[n.start_byte:n.end_byte] if n else ""
+    return content[n.start_byte : n.end_byte] if n else ""
 
 
 def _ts_decl(node, content: str) -> str:
     """Declaration text up to the body (captures generics/where, drops body)."""
     body = node.child_by_field_name("body")
     end = body.start_byte if body else node.end_byte
-    return " ".join(content[node.start_byte:end].split()).strip()
+    return " ".join(content[node.start_byte : end].split()).strip()
 
 
-def _walk_rust_ts(node, content: str, symbols: List[Dict[str, str]], parent: Optional[str]):
+def _walk_rust_ts(
+    node, content: str, symbols: List[Dict[str, str]], parent: Optional[str]
+):
     t = node.type
     if t == "function_item":
         if _ts_is_pub(node):
             name = _ts_field_text(node, "name", content)
             full = f"{parent}::{name}" if parent else name
-            symbols.append({"kind": "pub fn", "name": full, "signature": _ts_decl(node, content)})
+            symbols.append(
+                {"kind": "pub fn", "name": full, "signature": _ts_decl(node, content)}
+            )
         return
     if t == "struct_item" and _ts_is_pub(node):
         name = _ts_field_text(node, "name", content)
@@ -222,14 +235,16 @@ def _walk_rust_ts(node, content: str, symbols: List[Dict[str, str]], parent: Opt
         return
     if t == "type_item" and _ts_is_pub(node):
         name = _ts_field_text(node, "name", content)
-        text = " ".join(content[node.start_byte:node.end_byte].split()).rstrip(";")
+        text = " ".join(content[node.start_byte : node.end_byte].split()).rstrip(";")
         symbols.append({"kind": "pub type", "name": name, "signature": text})
         return
     if t == "impl_item":
         type_node = node.child_by_field_name("type")
         body = node.child_by_field_name("body")
         if type_node is not None and body is not None:
-            impl_name = content[type_node.start_byte:type_node.end_byte].split("<")[0].strip()
+            impl_name = (
+                content[type_node.start_byte : type_node.end_byte].split("<")[0].strip()
+            )
             for c in body.children:
                 _walk_rust_ts(c, content, symbols, parent=impl_name)
         return
@@ -242,8 +257,12 @@ def _ts_pub_members(node, child_type: str, content: str) -> List[str]:
     members = []
     if body is not None:
         for c in body.children:
-            if c.type == child_type and any(g.type == "visibility_modifier" for g in c.children):
-                members.append(" ".join(content[c.start_byte:c.end_byte].split()).rstrip(","))
+            if c.type == child_type and any(
+                g.type == "visibility_modifier" for g in c.children
+            ):
+                members.append(
+                    " ".join(content[c.start_byte : c.end_byte].split()).rstrip(",")
+                )
     return members[:10]
 
 
@@ -255,7 +274,7 @@ def _ts_variant_names(node, content: str) -> List[str]:
             if c.type == "enum_variant":
                 n = c.child_by_field_name("name")
                 if n is not None:
-                    names.append(content[n.start_byte:n.end_byte])
+                    names.append(content[n.start_byte : n.end_byte])
     return names[:15]
 
 
@@ -267,7 +286,9 @@ def _ts_trait_methods(node, content: str) -> List[str]:
             if c.type in ("function_signature_item", "function_item"):
                 b = c.child_by_field_name("body")
                 end = b.start_byte if b is not None else c.end_byte
-                methods.append(" ".join(content[c.start_byte:end].split()).rstrip(";"))
+                methods.append(
+                    " ".join(content[c.start_byte : end].split()).rstrip(";")
+                )
     return methods[:10]
 
 
@@ -312,7 +333,13 @@ def _extract_rust_symbols(lines: List[str]) -> List[Dict[str, str]]:
 
         if after_vis.startswith("fn "):
             sig = _collect_signature(lines, i, "{")
-            symbols.append({"kind": "pub fn", "name": _extract_name(after_vis[3:]), "signature": sig})
+            symbols.append(
+                {
+                    "kind": "pub fn",
+                    "name": _extract_name(after_vis[3:]),
+                    "signature": sig,
+                }
+            )
         elif after_vis.startswith("struct "):
             name = _extract_name(after_vis[7:])
             sig = f"pub struct {name}"
@@ -339,9 +366,21 @@ def _extract_rust_symbols(lines: List[str]) -> List[Dict[str, str]]:
                 sig += " { " + "; ".join(trait_methods) + "; }"
             symbols.append({"kind": "pub trait", "name": name, "signature": sig})
         elif after_vis.startswith("type "):
-            symbols.append({"kind": "pub type", "name": _extract_name(after_vis[5:]), "signature": stripped})
+            symbols.append(
+                {
+                    "kind": "pub type",
+                    "name": _extract_name(after_vis[5:]),
+                    "signature": stripped,
+                }
+            )
         elif after_vis.startswith("const "):
-            symbols.append({"kind": "pub const", "name": _extract_name(after_vis[6:]), "signature": stripped})
+            symbols.append(
+                {
+                    "kind": "pub const",
+                    "name": _extract_name(after_vis[6:]),
+                    "signature": stripped,
+                }
+            )
 
         brace_depth += line_opens
         i += 1
@@ -354,7 +393,7 @@ def _strip_visibility(line: str) -> str:
     if line.startswith("pub("):
         close = line.find(")")
         if close >= 0:
-            return line[close + 1:].strip()
+            return line[close + 1 :].strip()
     if line.startswith("pub "):
         return line[4:].strip()
     return line
@@ -372,7 +411,7 @@ def _extract_generics(text: str) -> str:
         elif text[i] == ">":
             depth -= 1
             if depth == 0:
-                return text[start:i + 1]
+                return text[start : i + 1]
     return ""
 
 
@@ -383,7 +422,7 @@ def _extract_impl_name(line: str) -> str:
     if rest.startswith("<"):
         close = rest.find(">")
         if close >= 0:
-            rest = rest[close + 1:].strip()
+            rest = rest[close + 1 :].strip()
     return _extract_name(rest)
 
 
@@ -394,10 +433,16 @@ def _extract_impl_methods(lines: List[str], start: int) -> List[Dict[str, str]]:
     for i in range(start, min(start + 200, len(lines))):
         depth += lines[i].count("{") - lines[i].count("}")
         stripped = lines[i].strip()
-        if (stripped.startswith("pub fn ") or stripped.startswith("pub(crate) fn ")):
+        if stripped.startswith("pub fn ") or stripped.startswith("pub(crate) fn "):
             after_vis = _strip_visibility(stripped)
             sig = _collect_signature(lines, i, "{")
-            methods.append({"kind": "pub fn", "name": _extract_name(after_vis[3:]), "signature": sig})
+            methods.append(
+                {
+                    "kind": "pub fn",
+                    "name": _extract_name(after_vis[3:]),
+                    "signature": sig,
+                }
+            )
         if depth <= 0 and i > start:
             break
     return methods
@@ -445,7 +490,9 @@ def _extract_python_symbols(lines: List[str]) -> List[Dict[str, str]]:
             symbols.append({"kind": "def", "name": name, "signature": sig})
         elif stripped.startswith("class ") and not stripped.startswith("class _"):
             name = _extract_name(stripped[6:])
-            symbols.append({"kind": "class", "name": name, "signature": stripped.rstrip(":")})
+            symbols.append(
+                {"kind": "class", "name": name, "signature": stripped.rstrip(":")}
+            )
     return symbols
 
 
@@ -455,9 +502,17 @@ def _extract_generic_symbols(lines: List[str]) -> List[Dict[str, str]]:
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("export ") or stripped.startswith("public "):
-            symbols.append({"kind": "export", "name": stripped[:60], "signature": stripped[:80]})
+            symbols.append(
+                {"kind": "export", "name": stripped[:60], "signature": stripped[:80]}
+            )
         elif stripped.startswith("func "):
-            symbols.append({"kind": "func", "name": _extract_name(stripped[5:]), "signature": stripped[:80]})
+            symbols.append(
+                {
+                    "kind": "func",
+                    "name": _extract_name(stripped[5:]),
+                    "signature": stripped[:80],
+                }
+            )
     return symbols
 
 

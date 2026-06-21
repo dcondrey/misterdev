@@ -9,6 +9,7 @@ from typing import List, Any
 
 from my_project_orchestrator.logging_setup import setup_logger
 from my_project_orchestrator.llm.client import BaseLLMClient
+from my_project_orchestrator.llm.responses import extract_json_array
 
 logger = setup_logger(__name__)
 
@@ -98,14 +99,5 @@ Return a JSON array of strings. Return ONLY the JSON array.
 
 
 def _extract_json_array(response: str) -> List[str]:
-    """Extract a JSON array from an LLM response without regex."""
-    text = response.strip()
-    # Find the first [ and last ]
-    start = text.find("[")
-    end = text.rfind("]")
-    if start < 0 or end < 0 or end <= start:
-        return []
-    try:
-        return json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        return []
+    """Extract a JSON array from an LLM response (shared helper)."""
+    return extract_json_array(response)
