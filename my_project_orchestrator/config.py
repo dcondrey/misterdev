@@ -12,12 +12,10 @@ DEFAULT_CONFIG = {
     "llm": {
         "provider": "openrouter",
         "model": "anthropic/claude-sonnet-4.6",
-        "temperature": 0.1
+        "temperature": 0.1,
     },
     "tools": [],
-    "environment": {
-        "type": "none"
-    },
+    "environment": {"type": "none"},
     "prompt_templates": {
         "system": (
             "You are an expert developer. Follow the strategy, honor interface contracts exactly, "
@@ -56,15 +54,18 @@ DEFAULT_CONFIG = {
         "max_workers": 4,
         "context_budget_tokens": 100000,
         "max_task_attempts": 3,
+        "integration_gate": True,
     },
     "build_command": None,
     "test_command": None,
     "lint_command": None,
 }
 
+
 class ConfigManager:
     def __init__(self):
         import copy
+
         self.global_config = copy.deepcopy(DEFAULT_CONFIG)
 
     def _deep_update(self, d: Dict[Any, Any], u: Dict[Any, Any]) -> Dict[Any, Any]:
@@ -80,7 +81,7 @@ class ConfigManager:
         """Loads and merges project.yaml with global defaults."""
         project_dir = Path(project_path)
         yaml_path = project_dir / "project.yaml"
-        
+
         project_config = {}
         if yaml_path.exists():
             try:
@@ -96,6 +97,7 @@ class ConfigManager:
 
         # Merge defaults with project config (deep copy to avoid mutating defaults)
         import copy
+
         merged_config = copy.deepcopy(self.global_config)
         merged_config = self._deep_update(merged_config, project_config)
         return merged_config

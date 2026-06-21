@@ -161,12 +161,12 @@ def analyze_project(
                 except Exception as e:
                     logger.error(f"Analysis failed for {key}: {e}")
                     results[key] = {}
-            
+
             # Merge preliminary results to feed into debt/risk analyzer
             _merge_structure(assessment, results.get("structure", {}))
             _merge_completeness(assessment, results.get("completeness", {}))
             _merge_context(assessment, results.get("context", {}))
-            
+
             future_debt = pool.submit(analyze_debt_risk, assessment.summary())
             results["debt_risk"] = future_debt.result()
     else:
@@ -181,23 +181,98 @@ def analyze_project(
     # Phase 1d: merge remaining into assessment
     _merge_debt_risk(assessment, results.get("debt_risk", {}))
 
+    # The LLM structure analyzer often returns null for these commands, which
+    # silently disables the health check and every downstream safety gate that
+    # reads assessment.structure.test_command (integration gate, final SOTA
+    # gate, regression rollback). Populate the assessment with deterministic,
+    # filesystem-based fallbacks so an existing suite is actually run.
+    if not assessment.structure.test_command:
+        assessment.structure.test_command = test_command or detect_test_command(
+            project_path
+        )
+    if not assessment.structure.build_command:
+        assessment.structure.build_command = build_command or detect_build_command(
+            project_path
+        )
+
     # Run actual health check using detected or provided commands
     bc = build_command or assessment.structure.build_command
     tc = test_command or assessment.structure.test_command
     lc = lint_command or assessment.structure.lint_command
     assessment.health = run_health_check(
-        project_path, bc, tc, lc, env_activate=env_activate,
+        project_path,
+        bc,
+        tc,
+        lc,
+        env_activate=env_activate,
     )
 
     logger.info(f"Assessment complete: {assessment.summary()}")
     return assessment
 
 
+def detect_test_command(project_path: Path) -> Optional[str]:
+    """Detect a test command from project markers, independent of the LLM.
+
+    Returns a runnable command string, or None if no recognized test setup is
+    found. Used as a fallback when the structure analyzer leaves test_command
+    null, which would otherwise leave the suite un-run and the health check
+    blind (reporting tests=none on a project with a passing suite).
+    """
+    p = project_path
+    uv_lock = (p / "uv.lock").exists()
+    has_pytest = (
+        (p / "tests").is_dir()
+        or (p / "pytest.ini").exists()
+        or (p / "conftest.py").exists()
+        or _file_mentions(p / "pyproject.toml", "pytest")
+        or _file_mentions(p / "setup.cfg", "pytest")
+    )
+    if has_pytest:
+        return "uv run pytest -q" if uv_lock else "pytest -q"
+    if _json_has_test_script(p / "package.json"):
+        return "npm test"
+    if (p / "Cargo.toml").exists():
+        return "cargo test"
+    return None
+
+
+def detect_build_command(project_path: Path) -> Optional[str]:
+    """Detect a build/compile-check command from project markers."""
+    p = project_path
+    if (p / "Cargo.toml").exists():
+        return "cargo build"
+    if (p / "package.json").exists() and _json_has_test_script(
+        p / "package.json", key="build"
+    ):
+        return "npm run build"
+    if (p / "pyproject.toml").exists() or (p / "setup.py").exists():
+        return "python -m compileall -q ."
+    return None
+
+
+def _file_mentions(path: Path, needle: str) -> bool:
+    try:
+        return needle in path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
+def _json_has_test_script(path: Path, key: str = "test") -> bool:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(data.get("scripts", {}).get(key))
+
+
 def _call_llm_json(llm_client: BaseLLMClient, prompt: str, role: str) -> dict:
     """Call LLM and parse JSON response."""
     logger.info(f"Running {role}...")
     try:
-        response = llm_client.generate_code(prompt, f"You are a {role}. Return only valid JSON.")
+        response = llm_client.generate_code(
+            prompt, f"You are a {role}. Return only valid JSON."
+        )
         text = response.strip()
         if text.startswith("```"):
             lines = text.split("\n")
@@ -233,19 +308,29 @@ def _merge_completeness(assessment: ProjectAssessment, data: dict) -> None:
     f = assessment.features
     for item in data.get("existing", []):
         if isinstance(item, dict):
-            f.existing.append(FeatureInfo(name=item.get("name", ""), description=item.get("description", "")))
+            f.existing.append(
+                FeatureInfo(
+                    name=item.get("name", ""), description=item.get("description", "")
+                )
+            )
     for item in data.get("incomplete", []):
         if isinstance(item, dict):
-            f.incomplete.append(FeatureInfo(
-                name=item.get("name", ""), description=item.get("description", ""),
-                complexity=item.get("complexity", "medium"),
-            ))
+            f.incomplete.append(
+                FeatureInfo(
+                    name=item.get("name", ""),
+                    description=item.get("description", ""),
+                    complexity=item.get("complexity", "medium"),
+                )
+            )
     for item in data.get("missing", []):
         if isinstance(item, dict):
-            f.missing.append(FeatureInfo(
-                name=item.get("name", ""), description=item.get("description", ""),
-                complexity=item.get("complexity", "medium"),
-            ))
+            f.missing.append(
+                FeatureInfo(
+                    name=item.get("name", ""),
+                    description=item.get("description", ""),
+                    complexity=item.get("complexity", "medium"),
+                )
+            )
     f.dead_code = data.get("dead_code", f.dead_code)
     f.stubs = data.get("stubs", f.stubs)
     f.broken = data.get("broken", f.broken)
@@ -267,7 +352,7 @@ def _merge_context(assessment: ProjectAssessment, data: dict) -> None:
 def _merge_debt_risk(assessment: ProjectAssessment, data: dict) -> None:
     if not data:
         return
-    
+
     debt_data = data.get("tech_debt", {})
     if debt_data:
         assessment.tech_debt.score = debt_data.get("score", 0)
@@ -282,9 +367,20 @@ def _merge_debt_risk(assessment: ProjectAssessment, data: dict) -> None:
 
 
 _IGNORE_DIRS = {
-    "venv", ".venv", "node_modules", "__pycache__", ".git",
-    "target", "build", "dist", ".tox", ".mypy_cache", ".ruff_cache",
-    ".pytest_cache", ".eggs", "vendor",
+    "venv",
+    ".venv",
+    "node_modules",
+    "__pycache__",
+    ".git",
+    "target",
+    "build",
+    "dist",
+    ".tox",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".eggs",
+    "vendor",
 }
 
 
@@ -312,7 +408,9 @@ def _walk_limited(root: Path, max_depth: int = 6):
                 yield entry
 
 
-def _get_file_listing(project_path: Path, max_files: int = 200, max_depth: int = 6) -> str:
+def _get_file_listing(
+    project_path: Path, max_files: int = 200, max_depth: int = 6
+) -> str:
     """Get a truncated file listing for the project."""
     files = []
     for item in _walk_limited(project_path, max_depth):
@@ -327,9 +425,17 @@ def _get_file_listing(project_path: Path, max_files: int = 200, max_depth: int =
 def _read_config_files(project_path: Path) -> str:
     """Read common config files for structure analysis."""
     config_names = [
-        "pyproject.toml", "setup.py", "setup.cfg", "package.json",
-        "Cargo.toml", "go.mod", "Makefile", "CMakeLists.txt",
-        "project.yaml", "tsconfig.json", "webpack.config.js",
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "package.json",
+        "Cargo.toml",
+        "go.mod",
+        "Makefile",
+        "CMakeLists.txt",
+        "project.yaml",
+        "tsconfig.json",
+        "webpack.config.js",
     ]
     contents = []
     for name in config_names:
@@ -373,8 +479,11 @@ def _get_git_log(project_path: Path, count: int = 20) -> str:
     try:
         proc = subprocess.run(
             f"git log --oneline -n {count}",
-            shell=True, cwd=project_path,
-            capture_output=True, text=True, timeout=10,
+            shell=True,
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return proc.stdout.strip() if proc.returncode == 0 else "(not a git repo)"
     except Exception:

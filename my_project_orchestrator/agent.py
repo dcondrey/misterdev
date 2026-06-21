@@ -8,15 +8,27 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from my_project_orchestrator.core.registry import ProjectRegistry
-from my_project_orchestrator.core.modes import BuildMode, BuildFlags, parse_flags, resolve_mode
+from my_project_orchestrator.core.modes import (
+    BuildMode,
+    BuildFlags,
+    parse_flags,
+    resolve_mode,
+)
 from my_project_orchestrator.core.assessment import ProjectAssessment, HealthCheck
 from my_project_orchestrator.core.scratchpad import Scratchpad
-from my_project_orchestrator.core.decomposer import decompose_spec, topological_sort, format_plan
+from my_project_orchestrator.core.decomposer import (
+    decompose_spec,
+    topological_sort,
+    format_plan,
+)
 from my_project_orchestrator.core.validator import ValidationResult
 from my_project_orchestrator.core.gatekeeper import SOTAGateKeeper
 from my_project_orchestrator.core.sovereign import (
-    StrategyOptimizer, RealTimeAligner, ABMCTSPlanner,
-    EphemeralCodeManager, ProbeGenerator
+    StrategyOptimizer,
+    RealTimeAligner,
+    ABMCTSPlanner,
+    EphemeralCodeManager,
+    ProbeGenerator,
 )
 from my_project_orchestrator.core.metacognition import SessionAuditor
 from my_project_orchestrator.core.contracts import ContractRegistry
@@ -27,7 +39,9 @@ from my_project_orchestrator.core.report import BuildReport
 from my_project_orchestrator.core.project import Project
 from my_project_orchestrator.core.models import Task
 from my_project_orchestrator.analyzers.project_analyzer import analyze_project
-from my_project_orchestrator.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    MarkdownPlanExecutor,
+)
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -69,16 +83,22 @@ class ProgressReporter:
 
     def start_task(self, task_id: str, title: str):
         self._task_start = time.time()
-        logger.info(f"[{self.completed + self.failed}/{self.total}] Starting {task_id}: {title}")
+        logger.info(
+            f"[{self.completed + self.failed}/{self.total}] Starting {task_id}: {title}"
+        )
 
     def end_task(self, task_id: str, success: bool):
         elapsed = time.time() - self._task_start if self._task_start else 0
         if success:
             self.completed += 1
-            logger.info(f"[{self.completed + self.failed}/{self.total}] {task_id} DONE ({elapsed:.0f}s)")
+            logger.info(
+                f"[{self.completed + self.failed}/{self.total}] {task_id} DONE ({elapsed:.0f}s)"
+            )
         else:
             self.failed += 1
-            logger.warning(f"[{self.completed + self.failed}/{self.total}] {task_id} FAILED ({elapsed:.0f}s)")
+            logger.warning(
+                f"[{self.completed + self.failed}/{self.total}] {task_id} FAILED ({elapsed:.0f}s)"
+            )
 
     def summary(self):
         total_time = time.time() - self.start_time
@@ -110,12 +130,23 @@ class ProjectOrchestrator:
                 return {"error": f"Project load failed: {e}"}
         project.task_manager.discover_tasks()
         return {
-            "name": project.name, "path": str(project.path), "description": project.description,
-            "tasks": [{"id": t.id, "status": t.status, "description": t.description[:100]} for t in project.task_manager.tasks.values()]
+            "name": project.name,
+            "path": str(project.path),
+            "description": project.description,
+            "tasks": [
+                {"id": t.id, "status": t.status, "description": t.description[:100]}
+                for t in project.task_manager.tasks.values()
+            ],
         }
 
-    def run_project(self, project_path: str | Path, dry_run: bool = False,
-                    skip_preflight: bool = False, force: bool = False, status: bool = False):
+    def run_project(
+        self,
+        project_path: str | Path,
+        dry_run: bool = False,
+        skip_preflight: bool = False,
+        force: bool = False,
+        status: bool = False,
+    ):
         """Run pending devplan tasks with dependency-aware orchestration.
 
         Unlike build(), this executes a pre-written devplan: it skips the
@@ -141,7 +172,9 @@ class ProjectOrchestrator:
                 log = logger.error if issue.severity == "error" else logger.warning
                 log(f"Preflight {issue.severity}: {issue.task_id}: {issue.message}")
             if PreflightValidator.has_errors(issues):
-                logger.error("Preflight validation failed; aborting. Use --skip-preflight to override.")
+                logger.error(
+                    "Preflight validation failed; aborting. Use --skip-preflight to override."
+                )
                 return
 
         if dry_run:
@@ -149,7 +182,9 @@ class ProjectOrchestrator:
             return
 
         if status:
-            self._print_rerun_status(tasks, ProgressTracker(project.path), project.path, force)
+            self._print_rerun_status(
+                tasks, ProgressTracker(project.path), project.path, force
+            )
             return
 
         scratchpad = Scratchpad()
@@ -177,11 +212,15 @@ class ProjectOrchestrator:
         while remaining and not aborted:
             ready, still_waiting = [], []
             for task in remaining:
-                if not force and not progress.needs_rerun(task.id, compute_task_hash(task, project.path)):
+                if not force and not progress.needs_rerun(
+                    task.id, compute_task_hash(task, project.path)
+                ):
                     completed_ids.add(task.id)
                     continue
                 if progress.is_done(task.id):
-                    logger.info(f"Task {task.id} previously completed but inputs changed; re-running.")
+                    logger.info(
+                        f"Task {task.id} previously completed but inputs changed; re-running."
+                    )
                 if any(d in failed_ids for d in task.dependencies):
                     failed_ids.add(task.id)
                     logger.warning(f"Skipping {task.id}: a dependency failed.")
@@ -201,7 +240,9 @@ class ProjectOrchestrator:
             wave += 1
             reporter.start_wave(wave, [t.id for t in ready])
             for task in ready:
-                self._inject_task_context(task, contracts, changes, strategy_optimizer, project)
+                self._inject_task_context(
+                    task, contracts, changes, strategy_optimizer, project
+                )
                 reporter.start_task(task.id, task.title or task.description[:50])
                 try:
                     result = executor.execute(task, project)
@@ -214,12 +255,18 @@ class ProjectOrchestrator:
                 reporter.end_task(task.id, succeeded)
                 if succeeded:
                     completed_ids.add(task.id)
-                    progress.mark_completed(task.id, compute_task_hash(task, project.path))
+                    progress.mark_completed(
+                        task.id, compute_task_hash(task, project.path)
+                    )
                     consecutive_failures = 0
                     modified = task.files_to_modify + task.files_to_create
                     if modified:
                         contracts.extract_contracts(
-                            task.id, modified, project.path, project.llm_client, language=lang
+                            task.id,
+                            modified,
+                            project.path,
+                            project.llm_client,
+                            language=lang,
                         )
                         changes.record_task_changes(task.id, modified)
                 else:
@@ -235,9 +282,13 @@ class ProjectOrchestrator:
 
         reporter.summary()
 
-    def _inject_task_context(self, task, contracts, changes, strategy_optimizer, project) -> None:
+    def _inject_task_context(
+        self, task, contracts, changes, strategy_optimizer, project
+    ) -> None:
         """Populate a task's processor_data with contracts, recent changes, and strategy."""
-        task.processor_data["interface_contracts"] = contracts.get_contracts_for_task(task.dependencies)
+        task.processor_data["interface_contracts"] = contracts.get_contracts_for_task(
+            task.dependencies
+        )
         task.processor_data["recent_changes"] = changes.get_recent_changes_for_files(
             task.files_to_modify + task.files_to_create
         )
@@ -252,28 +303,42 @@ class ProjectOrchestrator:
         wave = 0
         console.print(f"\n[bold]Execution Plan (dry-run): {len(tasks)} tasks[/]")
         while remaining:
-            ready = [t for t in remaining if all(d in completed for d in t.dependencies)]
+            ready = [
+                t for t in remaining if all(d in completed for d in t.dependencies)
+            ]
             if not ready:
-                console.print(f"[red]Dependency deadlock among: {[t.id for t in remaining]}[/]")
+                console.print(
+                    f"[red]Dependency deadlock among: {[t.id for t in remaining]}[/]"
+                )
                 break
             wave += 1
             console.print(f"\n[bold cyan]Wave {wave}[/] ({len(ready)} parallel):")
             for t in ready:
                 deps = f" -> depends on {t.dependencies}" if t.dependencies else ""
-                console.print(f"  [{t.id}] {t.title or t.description[:50]} ({t.complexity}, {t.category}){deps}")
+                console.print(
+                    f"  [{t.id}] {t.title or t.description[:50]} ({t.complexity}, {t.category}){deps}"
+                )
                 completed.add(t.id)
             remaining = [t for t in remaining if t.id not in completed]
         console.print(f"\n[dim]Total: {len(tasks)} tasks, {wave} waves.[/]\n")
 
-    def _print_rerun_status(self, tasks: list[Task], progress, project_path, force: bool) -> None:
+    def _print_rerun_status(
+        self, tasks: list[Task], progress, project_path, force: bool
+    ) -> None:
         """Show which tasks would run vs skip, based on content hashes."""
         console.print(f"\n[bold]Task status: {len(tasks)} tasks[/]")
         run = 0
         for t in tasks:
-            rerun = force or progress.needs_rerun(t.id, compute_task_hash(t, project_path))
+            rerun = force or progress.needs_rerun(
+                t.id, compute_task_hash(t, project_path)
+            )
             if rerun:
                 run += 1
-                reason = "forced" if force else ("changed" if progress.is_done(t.id) else "pending")
+                reason = (
+                    "forced"
+                    if force
+                    else ("changed" if progress.is_done(t.id) else "pending")
+                )
                 console.print(f"  [yellow]RUN [/] {t.id}  ({reason})")
             else:
                 console.print(f"  [green]SKIP[/] {t.id}  (unchanged, completed)")
@@ -293,7 +358,9 @@ class ProjectOrchestrator:
             return
         # Inject contracts from this task's already-completed dependencies.
         contracts = ContractRegistry(project.path)
-        task.processor_data["interface_contracts"] = contracts.get_contracts_for_task(task.dependencies)
+        task.processor_data["interface_contracts"] = contracts.get_contracts_for_task(
+            task.dependencies
+        )
         executor = MarkdownPlanExecutor()
         try:
             result = executor.execute(task, project)
@@ -318,6 +385,14 @@ class ProjectOrchestrator:
         # Propagate budget to LLM client
         project.llm_client._budget = flags.budget
 
+        # Preflight: fail fast on a retired/misrouted model id before spending
+        # the analysis phase on calls that would 404 mid-run.
+        if not flags.dry_run:
+            ok, detail = project.llm_client.health_check()
+            if not ok:
+                logger.error(f"Model preflight failed: {detail}")
+                return f"Error: {detail}. Set a valid model in config before building."
+
         env_activate = None
         if project.env_manager:
             project.env_manager.setup()
@@ -325,7 +400,8 @@ class ProjectOrchestrator:
 
         # Phase 1: Analysis
         assessment = analyze_project(
-            project.path, project.llm_client,
+            project.path,
+            project.llm_client,
             build_command=project.config.get("build_command"),
             test_command=project.config.get("test_command"),
             lint_command=project.config.get("lint_command"),
@@ -344,12 +420,16 @@ class ProjectOrchestrator:
                 probes = probe_gen.generate_probes(prompt, assessment.summary())
                 probe_findings = []
                 for p in probes:
-                    success, output = ephemeral.run_ephemeral_script(p.get("script", ""), name=f"probe_{p.get('name', 'unknown')}")
+                    success, output = ephemeral.run_ephemeral_script(
+                        p.get("script", ""), name=f"probe_{p.get('name', 'unknown')}"
+                    )
                     probe_findings.append(f"Probe: {p.get('name', '?')} -> {output}")
                 verified_facts = "\n".join(probe_findings)
 
         # Phase 2: Generate Spec
-        spec = self._generate_spec(mode, prompt, assessment, project, facts=verified_facts)
+        spec = self._generate_spec(
+            mode, prompt, assessment, project, facts=verified_facts
+        )
 
         # Sovereign: Metacognitive Context Injection
         auditor = SessionAuditor(project.path, project.llm_client)
@@ -361,7 +441,9 @@ class ProjectOrchestrator:
         spec = planner.branch_and_evaluate(spec, assessment.summary())
 
         # Phase 3: Decompose
-        tasks = decompose_spec(spec, assessment, mode, project.llm_client, str(project.path))
+        tasks = decompose_spec(
+            spec, assessment, mode, project.llm_client, str(project.path)
+        )
         tasks = topological_sort(tasks)
 
         if flags.dry_run:
@@ -397,7 +479,9 @@ class ProjectOrchestrator:
 
         # Phase 6: Metacognitive Audit
         report.finalize()
-        auditor.audit_session(report.completed_tasks, report.failed_tasks, str(report.scratchpad))
+        auditor.audit_session(
+            report.completed_tasks, report.failed_tasks, str(report.scratchpad)
+        )
 
         usage = project.llm_client.cumulative_usage
         report.llm_calls = usage.call_count
@@ -409,8 +493,13 @@ class ProjectOrchestrator:
         report.save(project.path)
         return report.to_markdown()
 
-    def _maybe_rollback_regression(self, project: Project, report: BuildReport,
-                                   assessment: ProjectAssessment, flags: BuildFlags) -> None:
+    def _maybe_rollback_regression(
+        self,
+        project: Project,
+        report: BuildReport,
+        assessment: ProjectAssessment,
+        flags: BuildFlags,
+    ) -> None:
         """If the post-build gate failed, bisect task commits and revert the culprit."""
         if flags.no_rollback or not report.completed_tasks:
             return
@@ -434,10 +523,73 @@ class ProjectOrchestrator:
             return
         sha = dict(commits)[culprit]
         if ex.revert_task_commit(project, sha):
-            logger.warning(f"Regression bisected to {culprit}; commit {sha[:8]} reverted.")
-            report.key_decisions.append(f"Regression from {culprit} auto-reverted (bisect)")
+            logger.warning(
+                f"Regression bisected to {culprit}; commit {sha[:8]} reverted."
+            )
+            report.key_decisions.append(
+                f"Regression from {culprit} auto-reverted (bisect)"
+            )
 
-    def _execute_tasks(self, tasks: list[Task], project: Project, flags: BuildFlags, report: BuildReport) -> None:
+    def _integration_gate(
+        self,
+        project: Project,
+        executor: MarkdownPlanExecutor,
+        test_cmd: str,
+        wave_tasks: list[Task],
+        timeout: int,
+    ) -> list[str]:
+        """Run the full suite after a wave; revert task commits that regressed it.
+
+        Returns the task_ids whose commits were reverted (empty if the suite
+        still passes). Bisects to the single culprit when possible; if that
+        can't isolate it or the tree is still red afterward, reverts the
+        remaining wave commits (newest first) to restore a green baseline.
+        """
+        ok, _ = executor._run_command(project, test_cmd, timeout=timeout)
+        if ok:
+            return []
+
+        commits = []
+        for t in wave_tasks:
+            sha = executor.find_task_commit(project, t.id)
+            if sha:
+                commits.append((t.id, sha))
+        if not commits:
+            logger.warning(
+                "Integration gate: suite regressed but no task commits found to revert."
+            )
+            return []
+
+        logger.warning("Integration gate: suite regressed; isolating culprit...")
+        reverted: list[str] = []
+        culprit = executor.bisect_regression(
+            project, commits, test_cmd, timeout=timeout
+        )
+        if culprit:
+            sha = dict(commits)[culprit]
+            if executor.revert_task_commit(project, sha):
+                reverted.append(culprit)
+                ok, _ = executor._run_command(project, test_cmd, timeout=timeout)
+                if ok:
+                    return reverted
+
+        for tid, sha in reversed(commits):
+            if tid in reverted:
+                continue
+            if executor.revert_task_commit(project, sha):
+                reverted.append(tid)
+            ok, _ = executor._run_command(project, test_cmd, timeout=timeout)
+            if ok:
+                break
+        return reverted
+
+    def _execute_tasks(
+        self,
+        tasks: list[Task],
+        project: Project,
+        flags: BuildFlags,
+        report: BuildReport,
+    ) -> None:
         scratchpad = Scratchpad()
         aligner = RealTimeAligner(project.path)
         contracts = ContractRegistry(project.path)
@@ -448,7 +600,9 @@ class ProjectOrchestrator:
         report.scratchpad = scratchpad
 
         orch_cfg = project.config.get("orchestrator", {})
-        max_consecutive_failures = orch_cfg.get("max_consecutive_failures", MAX_CONSECUTIVE_FAILURES)
+        max_consecutive_failures = orch_cfg.get(
+            "max_consecutive_failures", MAX_CONSECUTIVE_FAILURES
+        )
 
         completed_ids = set(progress.completed)
         failed_ids: set[str] = set()
@@ -466,6 +620,29 @@ class ProjectOrchestrator:
 
         lang = (project.config.get("language") or "python").lower()
         remaining = list(tasks)
+
+        # Integration gate: after each wave, re-run the full suite and revert
+        # any task whose merge regressed it. Per-task validation passes a task
+        # in isolation but can't see cross-module breakage that only surfaces
+        # when the whole package is imported together; without this, broken
+        # tasks accumulate under later merges until the end-of-build gate.
+        test_cmd = report.assessment.structure.test_command
+        test_timeout = project.config.get("build", {}).get("test_timeout", 180)
+        gate_active = (
+            not flags.no_rollback
+            and orch_cfg.get("integration_gate", True)
+            and bool(test_cmd)
+            and (Path(project.path) / ".git").exists()
+        )
+        if gate_active:
+            baseline_ok, _ = executor._run_command(
+                project, test_cmd, timeout=test_timeout
+            )
+            if not baseline_ok:
+                logger.info(
+                    "Integration gate disabled: baseline suite already failing."
+                )
+                gate_active = False
 
         while remaining and not aborted:
             # Find all tasks whose dependencies are satisfied
@@ -493,20 +670,30 @@ class ProjectOrchestrator:
             # Prepare tasks with context
             for task in ready:
                 strategy = strategy_optimizer.select_best_strategy(
-                    task.description, task.category,
-                    report.assessment.summary(), project.llm_client,
+                    task.description,
+                    task.category,
+                    report.assessment.summary(),
+                    project.llm_client,
                 )
                 task.processor_data["sota_strategy"] = strategy
-                task.processor_data["consensus_context"] = aligner.get_consensus_context()
-                task.processor_data["interface_contracts"] = contracts.get_contracts_for_task(task.dependencies)
-                task.processor_data["recent_changes"] = changes.get_recent_changes_for_files(
-                    task.files_to_modify + task.files_to_create
+                task.processor_data["consensus_context"] = (
+                    aligner.get_consensus_context()
+                )
+                task.processor_data["interface_contracts"] = (
+                    contracts.get_contracts_for_task(task.dependencies)
+                )
+                task.processor_data["recent_changes"] = (
+                    changes.get_recent_changes_for_files(
+                        task.files_to_modify + task.files_to_create
+                    )
                 )
 
             if flags.interactive:
                 filtered_ready = []
                 for task in ready:
-                    action = self._interactive_prompt(task, task.processor_data.get("sota_strategy", "iterative"))
+                    action = self._interactive_prompt(
+                        task, task.processor_data.get("sota_strategy", "iterative")
+                    )
                     if action == "quit":
                         aborted = True
                         break
@@ -523,8 +710,11 @@ class ProjectOrchestrator:
                 continue
 
             # Execute: parallel or sequential
+            wave_completed: list[Task] = []
             if flags.parallel and len(ready) > 1:
-                logger.info(f"Executing {len(ready)} tasks in parallel: {[t.id for t in ready]}")
+                logger.info(
+                    f"Executing {len(ready)} tasks in parallel: {[t.id for t in ready]}"
+                )
                 results = self._execute_parallel(ready, executor, project)
             else:
                 results = []
@@ -548,10 +738,17 @@ class ProjectOrchestrator:
                     completed_ids.add(task.id)
                     progress.mark_completed(task.id)
                     report.completed_tasks.append(task)
+                    wave_completed.append(task)
                     consecutive_failures = 0
                     modified = task.files_to_modify + task.files_to_create
                     if modified:
-                        contracts.extract_contracts(task.id, modified, project.path, project.llm_client, language=lang)
+                        contracts.extract_contracts(
+                            task.id,
+                            modified,
+                            project.path,
+                            project.llm_client,
+                            language=lang,
+                        )
                         changes.record_task_changes(task.id, modified)
                     if task.complexity == "architectural":
                         aligner.certify_decision(task.title, task.description)
@@ -566,15 +763,40 @@ class ProjectOrchestrator:
                     aborted = True
                     break
 
+            # Integration gate: after this wave's merges, revert any task that
+            # regressed the full suite before the next wave builds on top of it.
+            if gate_active and wave_completed:
+                reverted = self._integration_gate(
+                    project, executor, test_cmd, wave_completed, test_timeout
+                )
+                for tid in reverted:
+                    completed_ids.discard(tid)
+                    failed_ids.add(tid)
+                    progress.mark_failed(tid)
+                    obj = next((t for t in wave_completed if t.id == tid), None)
+                    if obj is not None and obj in report.completed_tasks:
+                        report.completed_tasks.remove(obj)
+                        report.failed_tasks.append(obj)
+                    report.key_decisions.append(
+                        f"Integration gate: {tid} reverted (regressed full suite)"
+                    )
+                    consecutive_failures += 1
+                if reverted and consecutive_failures >= max_consecutive_failures:
+                    aborted = True
+
             remaining = still_waiting
 
         # Defer any unprocessed tasks
-        processed_ids = completed_ids | failed_ids | {t.id for t in report.deferred_tasks}
+        processed_ids = (
+            completed_ids | failed_ids | {t.id for t in report.deferred_tasks}
+        )
         for task in tasks:
             if task.id not in processed_ids:
                 report.deferred_tasks.append(task)
 
-    def _execute_parallel(self, ready: list[Task], executor: MarkdownPlanExecutor, project: Project) -> list:
+    def _execute_parallel(
+        self, ready: list[Task], executor: MarkdownPlanExecutor, project: Project
+    ) -> list:
         """Execute a batch of independent tasks concurrently.
 
         In "worktree" mode each task runs in its own git worktree so parallel
@@ -587,7 +809,9 @@ class ProjectOrchestrator:
 
         results = []
         max_workers = project.config.get("orchestrator", {}).get("max_workers", 4)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(ready), max_workers)) as pool:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(len(ready), max_workers)
+        ) as pool:
             future_to_task = {
                 pool.submit(executor.execute, task, project, use_git_branch=False): task
                 for task in ready
@@ -601,7 +825,9 @@ class ProjectOrchestrator:
                     results.append((task, None, e))
         return results
 
-    def _execute_parallel_worktrees(self, ready: list[Task], executor: MarkdownPlanExecutor, project: Project) -> list:
+    def _execute_parallel_worktrees(
+        self, ready: list[Task], executor: MarkdownPlanExecutor, project: Project
+    ) -> list:
         """Run each task in an isolated git worktree, then merge successes back.
 
         Worktrees are created and merged serially (git's index/worktree metadata
@@ -624,20 +850,30 @@ class ProjectOrchestrator:
                 prepared.append((task, wt_path, branch))
             else:
                 logger.error(f"Worktree add failed for {task.id}: {out}")
-                results.append((task, None, RuntimeError(f"worktree add failed: {out}")))
+                results.append(
+                    (task, None, RuntimeError(f"worktree add failed: {out}"))
+                )
 
         def run_one(item):
             task, wt_path, branch = item
             view = _WorktreeProjectView(project, wt_path)
             try:
-                return (task, executor.execute(task, view, use_git_branch=False), None, wt_path, branch)
+                return (
+                    task,
+                    executor.execute(task, view, use_git_branch=False),
+                    None,
+                    wt_path,
+                    branch,
+                )
             except Exception as e:
                 return (task, None, e, wt_path, branch)
 
         max_workers = project.config.get("orchestrator", {}).get("max_workers", 4)
         raw = []
         if prepared:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(prepared), max_workers)) as pool:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(len(prepared), max_workers)
+            ) as pool:
                 futures = [pool.submit(run_one, item) for item in prepared]
                 raw = [f.result() for f in concurrent.futures.as_completed(futures)]
 
@@ -652,13 +888,19 @@ class ProjectOrchestrator:
         return results
 
     def _interactive_prompt(self, task: Task, strategy: str = "iterative") -> str:
-        console.print(f"\n[bold cyan]Next Task:[/] [{task.id}] {task.title} ([bold magenta]{strategy.upper()}[/])")
+        console.print(
+            f"\n[bold cyan]Next Task:[/] [{task.id}] {task.title} ([bold magenta]{strategy.upper()}[/])"
+        )
         choice = Prompt.ask("Proceed?", choices=["y", "n", "s", "q"], default="y")
         return {"y": "proceed", "q": "quit", "s": "skip", "n": "quit"}[choice]
 
     def _generate_spec(
-        self, mode: BuildMode, prompt: str, assessment: ProjectAssessment,
-        project: Project, facts: str = "",
+        self,
+        mode: BuildMode,
+        prompt: str,
+        assessment: ProjectAssessment,
+        project: Project,
+        facts: str = "",
     ) -> str:
         """Phase 2: Generate a spec based on mode."""
         if mode == BuildMode.DEBUG:
@@ -670,9 +912,13 @@ class ProjectOrchestrator:
                 for item in assessment.features.stubs:
                     parts.append(f"- {item}")
             if not assessment.health.builds:
-                parts.append(f"\n## Build Failure\n{assessment.health.build_output[:500]}")
+                parts.append(
+                    f"\n## Build Failure\n{assessment.health.build_output[:500]}"
+                )
             if not assessment.health.tests_pass:
-                parts.append(f"\n## Test Failures\n{assessment.health.test_output[:500]}")
+                parts.append(
+                    f"\n## Test Failures\n{assessment.health.test_output[:500]}"
+                )
             return "\n".join(parts)
 
         if mode == BuildMode.COMPLETE:
@@ -694,7 +940,9 @@ class ProjectOrchestrator:
             if assessment.features.todos:
                 parts.append(f"\n### TODOs ({len(assessment.features.todos)} items)")
                 for todo in assessment.features.todos[:20]:
-                    parts.append(f"- {todo.get('file', '?')}:{todo.get('line', '?')} {todo.get('text', '')}")
+                    parts.append(
+                        f"- {todo.get('file', '?')}:{todo.get('line', '?')} {todo.get('text', '')}"
+                    )
             return "\n".join(parts)
 
         if mode == BuildMode.SPEC:
@@ -717,7 +965,8 @@ class ProjectOrchestrator:
                 f"Description: {prompt}\n\nReturn the spec as markdown."
             )
             return project.llm_client.generate_code(
-                expand_prompt, "You are a software architect writing a project specification."
+                expand_prompt,
+                "You are a software architect writing a project specification.",
             )
 
         if mode == BuildMode.REVIEW:

@@ -3,7 +3,7 @@ import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from my_project_orchestrator.logging_setup import setup_logger
 
@@ -13,6 +13,7 @@ logger = setup_logger(__name__)
 @dataclass
 class LLMUsage:
     """Token usage tracking for budget enforcement."""
+
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -25,6 +26,7 @@ class LLMUsage:
 @dataclass
 class LLMResponse:
     """Structured response from an LLM call."""
+
     content: str
     usage: LLMUsage = field(default_factory=LLMUsage)
     model: str = ""
@@ -47,7 +49,11 @@ def code_gen_abort_check(accumulated: str) -> bool:
     Trips when a lot of text arrives with no code fence or file marker, or when
     the model opens with conversational filler instead of code.
     """
-    if len(accumulated) > 2000 and "```" not in accumulated and "# File:" not in accumulated:
+    if (
+        len(accumulated) > 2000
+        and "```" not in accumulated
+        and "# File:" not in accumulated
+    ):
         return True
     head = accumulated[:200]
     return ("I'll help you" in head) or ("Sure, here" in head)
@@ -85,7 +91,7 @@ class BaseLLMClient(ABC):
                 last_error = e
                 if not e.retryable or attempt == max_retries - 1:
                     raise
-                delay = base_delay * (2 ** attempt)
+                delay = base_delay * (2**attempt)
                 logger.warning(
                     f"LLM call failed (attempt {attempt + 1}/{max_retries}), "
                     f"retrying in {delay:.1f}s: {e}"
@@ -101,6 +107,24 @@ class BaseLLMClient(ABC):
         """
         return self.generate(prompt, system_prompt).content
 
+    def health_check(self) -> Tuple[bool, str]:
+        """Verify the configured model actually resolves before a real run.
+
+        A retired/misrouted model id (e.g. an OpenRouter 404) otherwise only
+        surfaces on the first analysis call, after preflight has already
+        spent setup time. This makes one minimal request and reports failure
+        with the model id so the build can abort early with a clear message.
+        """
+        model = getattr(self, "model", "<unknown>")
+        prior = self.cumulative_usage.estimated_cost
+        try:
+            self.generate("ping", "Reply with the single word OK.")
+            return True, model
+        except Exception as e:
+            return False, f"model {model!r} unavailable: {e}"
+        finally:
+            self.cumulative_usage.estimated_cost = prior
+
     @contextmanager
     def with_model(self, model: str):
         """Temporarily override the active model (for per-task routing)."""
@@ -115,7 +139,9 @@ class BaseLLMClient(ABC):
     def _call(self, prompt: str, system_prompt: str) -> LLMResponse:
         """Execute a single LLM API call. Subclasses implement this."""
 
-    def generate_stream(self, prompt: str, system_prompt: str = "", abort_check=None) -> LLMResponse:
+    def generate_stream(
+        self, prompt: str, system_prompt: str = "", abort_check=None
+    ) -> LLMResponse:
         """Stream a response, aborting early if abort_check flags the output.
 
         Returns finish_reason="aborted" with the partial content when the check
@@ -127,10 +153,16 @@ class BaseLLMClient(ABC):
             chunks.append(chunk)
             if abort_check is not None and abort_check("".join(chunks)):
                 logger.warning("Aborting LLM stream: bad output pattern detected")
-                return LLMResponse(content="".join(chunks),
-                                   model=getattr(self, "model", ""), finish_reason="aborted")
-        return LLMResponse(content="".join(chunks),
-                           model=getattr(self, "model", ""), finish_reason="stop")
+                return LLMResponse(
+                    content="".join(chunks),
+                    model=getattr(self, "model", ""),
+                    finish_reason="aborted",
+                )
+        return LLMResponse(
+            content="".join(chunks),
+            model=getattr(self, "model", ""),
+            finish_reason="stop",
+        )
 
     def _call_stream(self, prompt: str, system_prompt: str):
         raise NotImplementedError("streaming not supported by this client")
@@ -156,7 +188,9 @@ class BaseLLMClient(ABC):
         if not hasattr(self, "cost_by_task"):
             self.cost_by_task: Dict[str, float] = {}
         bucket = getattr(self, "_current_task", None) or "overhead"
-        self.cost_by_task[bucket] = self.cost_by_task.get(bucket, 0.0) + usage.estimated_cost
+        self.cost_by_task[bucket] = (
+            self.cost_by_task.get(bucket, 0.0) + usage.estimated_cost
+        )
 
     @property
     def budget_remaining(self) -> float:
@@ -193,6 +227,7 @@ class OpenRouterLLMClient(BaseLLMClient):
         self.temperature = llm_config.get("temperature", 0.1)
 
         from openai import OpenAI
+
         self.client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=self.api_key,
@@ -219,7 +254,7 @@ class OpenRouterLLMClient(BaseLLMClient):
             if usage_data:
                 usage.prompt_tokens = usage_data.prompt_tokens or 0
                 usage.completion_tokens = usage_data.completion_tokens or 0
-                usage.total_tokens = (usage.prompt_tokens + usage.completion_tokens)
+                usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
                 usage.estimated_cost = self._estimate_cost(
                     usage.prompt_tokens, usage.completion_tokens
                 )
@@ -233,10 +268,18 @@ class OpenRouterLLMClient(BaseLLMClient):
 
         except Exception as e:
             error_str = str(e)
-            retryable = any(s in error_str.lower() for s in [
-                "rate limit", "timeout", "502", "503", "529",
-                "overloaded", "connection",
-            ])
+            retryable = any(
+                s in error_str.lower()
+                for s in [
+                    "rate limit",
+                    "timeout",
+                    "502",
+                    "503",
+                    "529",
+                    "overloaded",
+                    "connection",
+                ]
+            )
             raise LLMCallError(f"OpenRouter API error: {e}", retryable=retryable) from e
 
     def _call_stream(self, prompt: str, system_prompt: str):
@@ -245,8 +288,10 @@ class OpenRouterLLMClient(BaseLLMClient):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         stream = self.client.chat.completions.create(
-            model=self.model, messages=messages,
-            temperature=self.temperature, stream=True,
+            model=self.model,
+            messages=messages,
+            temperature=self.temperature,
+            stream=True,
         )
         for chunk in stream:
             delta = chunk.choices[0].delta.content
@@ -255,10 +300,9 @@ class OpenRouterLLMClient(BaseLLMClient):
 
     def _estimate_cost(self, prompt_tokens: int, completion_tokens: int) -> float:
         costs = self.COST_PER_1M.get(self.model, {"input": 3.0, "output": 15.0})
-        return (
-            (prompt_tokens / 1_000_000) * costs["input"]
-            + (completion_tokens / 1_000_000) * costs["output"]
-        )
+        return (prompt_tokens / 1_000_000) * costs["input"] + (
+            completion_tokens / 1_000_000
+        ) * costs["output"]
 
 
 class AnthropicLLMClient(BaseLLMClient):
@@ -288,6 +332,7 @@ class AnthropicLLMClient(BaseLLMClient):
 
         try:
             import anthropic
+
             self.client = anthropic.Anthropic(api_key=self.api_key)
         except ImportError:
             raise ImportError(
@@ -307,11 +352,13 @@ class AnthropicLLMClient(BaseLLMClient):
             if system_prompt:
                 # Mark the system prompt cacheable: tasks in a wave share it,
                 # so subsequent calls read it from cache at ~10% of input cost.
-                kwargs["system"] = [{
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"},
-                }]
+                kwargs["system"] = [
+                    {
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
 
             response = self.client.messages.create(**kwargs)
 
@@ -320,7 +367,9 @@ class AnthropicLLMClient(BaseLLMClient):
                 if block.type == "text":
                     content += block.text
 
-            cache_creation = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+            cache_creation = (
+                getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+            )
             cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
             usage = LLMUsage(
                 prompt_tokens=response.usage.input_tokens,
@@ -329,8 +378,10 @@ class AnthropicLLMClient(BaseLLMClient):
                 cache_creation_tokens=cache_creation,
                 cache_read_tokens=cache_read,
                 estimated_cost=self._estimate_cost(
-                    response.usage.input_tokens, response.usage.output_tokens,
-                    cache_creation, cache_read,
+                    response.usage.input_tokens,
+                    response.usage.output_tokens,
+                    cache_creation,
+                    cache_read,
                 ),
             )
 
@@ -343,9 +394,16 @@ class AnthropicLLMClient(BaseLLMClient):
 
         except Exception as e:
             error_str = str(e)
-            retryable = any(s in error_str.lower() for s in [
-                "rate limit", "overloaded", "529", "timeout", "connection",
-            ])
+            retryable = any(
+                s in error_str.lower()
+                for s in [
+                    "rate limit",
+                    "overloaded",
+                    "529",
+                    "timeout",
+                    "connection",
+                ]
+            )
             raise LLMCallError(f"Anthropic API error: {e}", retryable=retryable) from e
 
     def _call_stream(self, prompt: str, system_prompt: str):
@@ -362,8 +420,13 @@ class AnthropicLLMClient(BaseLLMClient):
                 if text:
                     yield text
 
-    def _estimate_cost(self, input_tokens: int, output_tokens: int,
-                       cache_creation: int = 0, cache_read: int = 0) -> float:
+    def _estimate_cost(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache_creation: int = 0,
+        cache_read: int = 0,
+    ) -> float:
         costs = self.COST_PER_1M.get(self.model, {"input": 3.0, "output": 15.0})
         inp = costs["input"]
         # Anthropic pricing: cache reads ~10% of input, cache writes ~25% more.

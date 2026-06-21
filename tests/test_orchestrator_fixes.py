@@ -5,6 +5,7 @@ reduction, new error-classifier categories, validation SKIP status, formatter
 path handling, per-task change attribution, opt-in file-overlap dependencies,
 ephemeral cleanup, and report persistence.
 """
+
 import json
 import subprocess
 import tempfile
@@ -14,7 +15,9 @@ import pytest
 
 from my_project_orchestrator.utils.file_utils import atomic_write
 from my_project_orchestrator.task_executors.markdown_plan_executor import (
-    MarkdownPlanExecutor, _detect_language, _LANG_MAP,
+    MarkdownPlanExecutor,
+    _detect_language,
+    _LANG_MAP,
 )
 from my_project_orchestrator.core.gatekeeper import SOTAGateKeeper
 from my_project_orchestrator.core.error_classifier import classify_error, ErrorCategory
@@ -37,6 +40,7 @@ class _FakeTask:
 
 # --- atomic_write -----------------------------------------------------------
 
+
 def test_atomic_write_creates_and_overwrites():
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "sub" / "state.json"
@@ -50,6 +54,7 @@ def test_atomic_write_creates_and_overwrites():
 
 # --- _detect_language / _LANG_MAP -------------------------------------------
 
+
 def test_detect_language_falls_back_to_text():
     assert _detect_language("notes.md") == "text"
     assert _detect_language("data.csv") == "text"
@@ -58,6 +63,7 @@ def test_detect_language_falls_back_to_text():
 
 
 # --- LLM edit path validation -----------------------------------------------
+
 
 def test_validate_edit_paths_rejects_escape_and_empty():
     with tempfile.TemporaryDirectory() as td:
@@ -78,6 +84,7 @@ def test_validate_edit_paths_rejects_escape_and_empty():
 
 
 # --- secret scan false-positive reduction -----------------------------------
+
 
 def test_secret_assignment_heuristic():
     # Real assigned literal -> flagged.
@@ -101,20 +108,28 @@ def test_secret_scan_ignores_code_keeps_high_signal():
 
 # --- error classifier new categories ----------------------------------------
 
+
 def test_classify_manifest_error():
-    assert classify_error("error: failed to parse manifest at Cargo.toml") == ErrorCategory.MANIFEST
+    assert (
+        classify_error("error: failed to parse manifest at Cargo.toml")
+        == ErrorCategory.MANIFEST
+    )
 
 
 def test_classify_file_not_found():
-    assert classify_error("OSError: No such file or directory: 'x'") == ErrorCategory.FILE_NOT_FOUND
+    assert (
+        classify_error("OSError: No such file or directory: 'x'")
+        == ErrorCategory.FILE_NOT_FOUND
+    )
 
 
 # --- validation SKIP status -------------------------------------------------
 
+
 def test_validation_summary_skip_for_unrun_gates():
     v = ValidationResult()
     v.build_ran, v.build_ok = True, True
-    v.tests_ran = False           # no test command configured
+    v.tests_ran = False  # no test command configured
     v.lint_ran, v.lint_ok = True, True
     s = v.summary()
     assert "tests=SKIP" in s
@@ -128,6 +143,7 @@ def test_shell_skips_delimiter_check():
 
 # --- formatter path handling ------------------------------------------------
 
+
 def test_formatter_runs_project_wide_without_placeholder():
     from unittest.mock import patch
     from my_project_orchestrator.tools.formatter import FormatterTool
@@ -136,7 +152,8 @@ def test_formatter_runs_project_wide_without_placeholder():
     tool.config = {"command": "ruff format ."}
     with patch(
         "my_project_orchestrator.tools.command.CommandTool.execute",
-        autospec=True, return_value=(True, ""),
+        autospec=True,
+        return_value=(True, ""),
     ) as m:
         tool.execute(_FakeProject("."), file_path="ignored.py")
     # No {path} placeholder -> command runs as-is, not per file.
@@ -151,13 +168,15 @@ def test_formatter_substitutes_path_when_placeholder_present():
     tool.config = {"command": "rustfmt {path}"}
     with patch(
         "my_project_orchestrator.tools.command.CommandTool.execute",
-        autospec=True, return_value=(True, ""),
+        autospec=True,
+        return_value=(True, ""),
     ) as m:
         tool.execute(_FakeProject("."), file_path="src/lib.rs")
     assert m.call_args.kwargs.get("command") == "rustfmt src/lib.rs"
 
 
 # --- per-task change attribution --------------------------------------------
+
 
 def _git(path, *args):
     subprocess.run(["git", *args], cwd=path, capture_output=True, text=True)
@@ -189,14 +208,14 @@ def test_change_tracker_attributes_per_task_commit():
 
 # --- opt-in file-overlap dependency detection -------------------------------
 
+
 def _write_task(devplan: Path, tid: str, modify):
     devplan.mkdir(parents=True, exist_ok=True)
     body = (
         "---\n"
         "status: pending\n"
         f"title: {tid}\n"
-        "files_to_modify:\n" + "".join(f"- {m}\n" for m in modify) +
-        "---\nbody\n"
+        "files_to_modify:\n" + "".join(f"- {m}\n" for m in modify) + "---\nbody\n"
     )
     (devplan / f"{tid}.md").write_text(body)
 
@@ -206,8 +225,11 @@ def _make_tm(root: Path, auto: bool):
 
     class _P:
         path = root
-        config = {"devplan_dir": "devplan",
-                  "orchestrator": {"auto_detect_dependencies": auto}}
+        config = {
+            "devplan_dir": "devplan",
+            "orchestrator": {"auto_detect_dependencies": auto},
+        }
+
     return TaskManager(_P())
 
 
@@ -229,6 +251,7 @@ def test_file_overlap_dependencies_opt_in():
 
 # --- ephemeral cleanup ------------------------------------------------------
 
+
 def test_ephemeral_context_manager_cleans_up():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -240,8 +263,11 @@ def test_ephemeral_context_manager_cleans_up():
 
 # --- commit only the task's files, never `git add -A` (data safety) ----------
 
+
 def test_commit_task_does_not_sweep_unrelated_untracked():
-    from my_project_orchestrator.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
 
     class _P:
         env_manager = None
@@ -253,25 +279,38 @@ def test_commit_task_does_not_sweep_unrelated_untracked():
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
-        _git(td, "init"); _git(td, "config", "user.email", "t@t.t"); _git(td, "config", "user.name", "t")
+        _git(td, "init")
+        _git(td, "config", "user.email", "t@t.t")
+        _git(td, "config", "user.name", "t")
         (td / "seed.txt").write_text("x")
-        _git(td, "add", "-A"); _git(td, "commit", "-m", "init")
+        _git(td, "add", "-A")
+        _git(td, "commit", "-m", "init")
         (td / "task_file.txt").write_text("the task's edit")
-        (td / "user_unrelated.txt").write_text("uncommitted user work")  # untracked, NOT the task's
+        (td / "user_unrelated.txt").write_text(
+            "uncommitted user work"
+        )  # untracked, NOT the task's
 
-        proj = _P(); proj.path = td
+        proj = _P()
+        proj.path = td
         MarkdownPlanExecutor()._commit_task(proj, None, None, _T(), ["task_file.txt"])
 
-        committed = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"],
-                                   cwd=td, capture_output=True, text=True).stdout
+        committed = subprocess.run(
+            ["git", "show", "--name-only", "--format=", "HEAD"],
+            cwd=td,
+            capture_output=True,
+            text=True,
+        ).stdout
         assert "task_file.txt" in committed
         assert "user_unrelated.txt" not in committed
         # The unrelated file is untouched, still untracked.
-        status = subprocess.run(["git", "status", "--porcelain"], cwd=td, capture_output=True, text=True).stdout
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=td, capture_output=True, text=True
+        ).stdout
         assert "?? user_unrelated.txt" in status
 
 
 # --- probe generation f-string bug (found via live build) --------------------
+
 
 def test_generate_probes_does_not_crash_on_json_braces():
     from my_project_orchestrator.core.sovereign import ProbeGenerator
@@ -288,19 +327,25 @@ def test_generate_probes_does_not_crash_on_json_braces():
 
 # --- git worktree parallel execution (019) ----------------------------------
 
+
 def test_execute_parallel_worktrees_merges_back():
     from unittest.mock import MagicMock
     import my_project_orchestrator.agent as agent_mod
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
-        _git(td, "init"); _git(td, "config", "user.email", "t@t.t"); _git(td, "config", "user.name", "t")
+        _git(td, "init")
+        _git(td, "config", "user.email", "t@t.t")
+        _git(td, "config", "user.name", "t")
         (td / "base.txt").write_text("base\n")
-        _git(td, "add", "-A"); _git(td, "commit", "-m", "init")
+        _git(td, "add", "-A")
+        _git(td, "commit", "-m", "init")
 
         project = MagicMock()
         project.path = td
-        project.config = {"orchestrator": {"parallel_mode": "worktree", "max_workers": 2}}
+        project.config = {
+            "orchestrator": {"parallel_mode": "worktree", "max_workers": 2}
+        }
 
         class FakeExec:
             def execute(self, task, proj, use_git_branch=True):
@@ -309,7 +354,9 @@ def test_execute_parallel_worktrees_merges_back():
                 f.write_text(task.id)
                 _git(proj.path, "add", "-A")
                 _git(proj.path, "commit", "-m", f"task({task.id}): work")
-                r = MagicMock(); r.status = "completed"; return r
+                r = MagicMock()
+                r.status = "completed"
+                return r
 
         tasks = [_mock_task("T-A"), _mock_task("T-B")]
         orch = agent_mod.ProjectOrchestrator()
@@ -326,10 +373,12 @@ def test_execute_parallel_worktrees_merges_back():
 
 # --- streaming with early abort (028) ---------------------------------------
 
+
 def test_code_gen_abort_check():
     from my_project_orchestrator.llm.client import code_gen_abort_check
+
     assert code_gen_abort_check("I'll help you write this function...")
-    assert code_gen_abort_check("x" * 2500)                       # long, no code fence
+    assert code_gen_abort_check("x" * 2500)  # long, no code fence
     assert not code_gen_abort_check("```python\ncode\n```")
     assert not code_gen_abort_check("short")
 
@@ -366,8 +415,12 @@ def test_generate_stream_aborts_early():
 
 # --- regression bisect (029) -------------------------------------------------
 
+
 def test_bisect_first_failing_pure():
-    from my_project_orchestrator.task_executors.markdown_plan_executor import _bisect_first_failing
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        _bisect_first_failing,
+    )
+
     # passes, passes, FAILS, fails  -> first failing index is 2
     states = [True, True, False, False]
     assert _bisect_first_failing(len(states), lambda i: states[i]) == 2
@@ -377,7 +430,9 @@ def test_bisect_first_failing_pure():
 
 
 def test_bisect_regression_end_to_end_git():
-    from my_project_orchestrator.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
 
     class _P:
         env_manager = None
@@ -388,20 +443,27 @@ def test_bisect_regression_end_to_end_git():
         _git(td, "config", "user.email", "t@t.t")
         _git(td, "config", "user.name", "t")
         (td / "f.txt").write_text("clean\n")
-        _git(td, "add", "-A"); _git(td, "commit", "-m", "init")
+        _git(td, "add", "-A")
+        _git(td, "commit", "-m", "init")
         # T-A: still clean
         (td / "f.txt").write_text("clean\nA\n")
-        _git(td, "add", "-A"); _git(td, "commit", "-m", "task(T-A): a")
+        _git(td, "add", "-A")
+        _git(td, "commit", "-m", "task(T-A): a")
         # T-B: introduces BUG (the regression)
         (td / "f.txt").write_text("clean\nA\nBUG\n")
-        _git(td, "add", "-A"); _git(td, "commit", "-m", "task(T-B): b")
+        _git(td, "add", "-A")
+        _git(td, "commit", "-m", "task(T-B): b")
         # T-C: more clean work
         (td / "f.txt").write_text("clean\nA\nBUG\nC\n")
-        _git(td, "add", "-A"); _git(td, "commit", "-m", "task(T-C): c")
+        _git(td, "add", "-A")
+        _git(td, "commit", "-m", "task(T-C): c")
 
-        proj = _P(); proj.path = td
+        proj = _P()
+        proj.path = td
         ex = MarkdownPlanExecutor()
-        commits = [(tid, ex.find_task_commit(proj, tid)) for tid in ("T-A", "T-B", "T-C")]
+        commits = [
+            (tid, ex.find_task_commit(proj, tid)) for tid in ("T-A", "T-B", "T-C")
+        ]
         assert all(sha for _, sha in commits)
         # "test" fails when BUG is present.
         culprit = ex.bisect_regression(proj, commits, "! grep -q BUG f.txt", timeout=30)
@@ -410,19 +472,22 @@ def test_bisect_regression_end_to_end_git():
 
 # --- prompt caching cost accounting (026) -----------------------------------
 
+
 def test_cache_read_is_cheaper_than_fresh_input():
     from my_project_orchestrator.llm.client import AnthropicLLMClient
+
     c = AnthropicLLMClient.__new__(AnthropicLLMClient)
     c.model = "claude-opus-4-8"  # 15/75 per 1M
     fresh = c._estimate_cost(1_000_000, 0, cache_creation=0, cache_read=0)
     cached = c._estimate_cost(0, 0, cache_creation=0, cache_read=1_000_000)
     assert fresh == 15.0
-    assert abs(cached - 1.5) < 1e-9          # cache read = 10% of input
+    assert abs(cached - 1.5) < 1e-9  # cache read = 10% of input
     creation = c._estimate_cost(0, 0, cache_creation=1_000_000, cache_read=0)
-    assert abs(creation - 18.75) < 1e-9      # cache write = 125% of input
+    assert abs(creation - 18.75) < 1e-9  # cache write = 125% of input
 
 
 # --- per-task cost attribution (020) ----------------------------------------
+
 
 def test_cost_attributed_per_task():
     from my_project_orchestrator.llm.client import BaseLLMClient, LLMResponse, LLMUsage
@@ -433,8 +498,11 @@ def test_cost_attributed_per_task():
             self.model = "m"
 
         def _call(self, p, s):
-            return LLMResponse(content="x", model="m",
-                               usage=LLMUsage(total_tokens=10, estimated_cost=0.5))
+            return LLMResponse(
+                content="x",
+                model="m",
+                usage=LLMUsage(total_tokens=10, estimated_cost=0.5),
+            )
 
     c = _C()
     with c.track_task("T-1"):
@@ -449,6 +517,7 @@ def test_cost_attributed_per_task():
 
 
 # --- model routing (021) -----------------------------------------------------
+
 
 def test_with_model_restores_original():
     from my_project_orchestrator.llm.client import BaseLLMClient
@@ -469,33 +538,42 @@ def test_with_model_restores_original():
 
 def test_resolve_model_by_complexity_and_strategy():
     ex = MarkdownPlanExecutor()
-    cfg = {"llm": {
-        "models": {"simple": "haiku", "complex": "opus", "default": "sonnet"},
-        "routing": {"small": "simple", "large": "complex", "surgical": "simple"},
-    }}
+    cfg = {
+        "llm": {
+            "models": {"simple": "haiku", "complex": "opus", "default": "sonnet"},
+            "routing": {"small": "simple", "large": "complex", "surgical": "simple"},
+        }
+    }
     proj = _FakeProject(".", cfg)
 
     class _T:
         complexity = "large"
+
     assert ex._resolve_model(proj, _T(), "iterative") == "opus"
 
     class _T2:
         complexity = "small"
+
     assert ex._resolve_model(proj, _T2(), "iterative") == "haiku"
 
     # Falls back to strategy when complexity has no route.
     class _T3:
         complexity = "medium"
+
     assert ex._resolve_model(proj, _T3(), "surgical") == "haiku"
 
     # No routing config -> None (keep client default).
-    assert MarkdownPlanExecutor()._resolve_model(_FakeProject(".", {}), _T(), "x") is None
+    assert (
+        MarkdownPlanExecutor()._resolve_model(_FakeProject(".", {}), _T(), "x") is None
+    )
 
 
 # --- provider failover (030) -------------------------------------------------
 
+
 def _make_failover(primary, fallbacks):
     from my_project_orchestrator.llm.client import FailoverLLMClient, BaseLLMClient
+
     fc = FailoverLLMClient.__new__(FailoverLLMClient)
     BaseLLMClient.__init__(fc, {"build": {}})
     fc.primary = primary
@@ -510,6 +588,7 @@ class _StubClient:
 
     def _call(self, prompt, system_prompt):
         from my_project_orchestrator.llm.client import LLMResponse, LLMUsage
+
         if self.behavior == "ok":
             return LLMResponse(content="ok", model=self.model, usage=LLMUsage())
         raise self.behavior
@@ -517,6 +596,7 @@ class _StubClient:
 
 def test_failover_advances_on_retryable_error():
     from my_project_orchestrator.llm.client import LLMCallError
+
     fc = _make_failover(
         _StubClient(LLMCallError("503 overloaded", retryable=True), model="primary"),
         [_StubClient("ok", model="backup")],
@@ -528,6 +608,7 @@ def test_failover_advances_on_retryable_error():
 
 def test_failover_stops_on_non_retryable():
     from my_project_orchestrator.llm.client import LLMCallError
+
     fc = _make_failover(
         _StubClient(LLMCallError("400 bad request", retryable=False), model="primary"),
         [_StubClient("ok", model="backup")],
@@ -538,9 +619,11 @@ def test_failover_stops_on_non_retryable():
 
 def test_failover_factory_wraps_when_configured(monkeypatch):
     from my_project_orchestrator.llm import client as cl
+
     monkeypatch.setattr(cl, "_create_single_client", lambda cfg: _StubClient("ok"))
-    wrapped = cl.create_llm_client({"llm": {"provider": "openrouter",
-                                            "failover": [{"provider": "anthropic"}]}})
+    wrapped = cl.create_llm_client(
+        {"llm": {"provider": "openrouter", "failover": [{"provider": "anthropic"}]}}
+    )
     assert isinstance(wrapped, cl.FailoverLLMClient)
     plain = cl.create_llm_client({"llm": {"provider": "openrouter"}})
     assert not isinstance(plain, cl.FailoverLLMClient)
@@ -548,14 +631,16 @@ def test_failover_factory_wraps_when_configured(monkeypatch):
 
 # --- incremental rerun (022) -------------------------------------------------
 
+
 def test_progress_needs_rerun_on_hash_change():
     from my_project_orchestrator.core.progress import ProgressTracker
+
     with tempfile.TemporaryDirectory() as td:
         pt = ProgressTracker(Path(td))
-        assert pt.needs_rerun("T-1", "h1")          # never completed
+        assert pt.needs_rerun("T-1", "h1")  # never completed
         pt.mark_completed("T-1", "h1")
-        assert not pt.needs_rerun("T-1", "h1")      # same hash -> skip
-        assert pt.needs_rerun("T-1", "h2")          # changed -> rerun
+        assert not pt.needs_rerun("T-1", "h1")  # same hash -> skip
+        assert pt.needs_rerun("T-1", "h2")  # changed -> rerun
         # Hash persists across reloads.
         pt2 = ProgressTracker(Path(td))
         assert not pt2.needs_rerun("T-1", "h1")
@@ -563,6 +648,7 @@ def test_progress_needs_rerun_on_hash_change():
 
 def test_compute_task_hash_changes_with_spec():
     from my_project_orchestrator.core.progress import compute_task_hash
+
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         spec = root / "task.md"
@@ -580,8 +666,10 @@ def test_compute_task_hash_changes_with_spec():
 
 # --- tree-sitter rust contract extraction (013) -----------------------------
 
+
 def test_rust_contracts_tree_sitter_multiline():
     from my_project_orchestrator.core.contracts import _extract_public_symbols
+
     src = (
         "pub struct Engine<T: Clone> {\n"
         "    pub name: String,\n"
@@ -614,8 +702,10 @@ def test_rust_contracts_tree_sitter_multiline():
 
 # --- typescript topography (010, TS only) -----------------------------------
 
+
 def test_topography_typescript_symbols():
     from my_project_orchestrator.core.topography import SymbolGraph, _get_ts_parsers
+
     if "typescript" not in _get_ts_parsers():
         pytest.skip("typescript grammar not installed")
     with tempfile.TemporaryDirectory() as td:
@@ -635,8 +725,10 @@ def test_topography_typescript_symbols():
 
 # --- depth-limited scan (012) ------------------------------------------------
 
+
 def test_walk_limited_prunes_and_bounds_depth():
     from my_project_orchestrator.analyzers.project_analyzer import _walk_limited
+
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         (root / "a.py").write_text("x")
@@ -647,18 +739,31 @@ def test_walk_limited_prunes_and_bounds_depth():
         (deep / "deep.py").write_text("x")
         found = {p.name for p in _walk_limited(root, max_depth=2)}
         assert "a.py" in found
-        assert "junk.js" not in found        # node_modules pruned
-        assert "deep.py" not in found        # beyond max_depth
+        assert "junk.js" not in found  # node_modules pruned
+        assert "deep.py" not in found  # beyond max_depth
 
 
 # --- preflight validation (023) ---------------------------------------------
+
 
 def test_preflight_flags_dangling_dependency():
     from my_project_orchestrator.core.preflight import PreflightValidator
     from my_project_orchestrator.core.models import Task
 
-    good = Task(id="001-a", description="d", type="markdown_planner", project_ref=".", dependencies=[])
-    bad = Task(id="002-b", description="d", type="markdown_planner", project_ref=".", dependencies=["999-missing"])
+    good = Task(
+        id="001-a",
+        description="d",
+        type="markdown_planner",
+        project_ref=".",
+        dependencies=[],
+    )
+    bad = Task(
+        id="002-b",
+        description="d",
+        type="markdown_planner",
+        project_ref=".",
+        dependencies=["999-missing"],
+    )
     with tempfile.TemporaryDirectory() as td:
         issues = PreflightValidator().validate([good, bad], Path(td))
     assert PreflightValidator.has_errors(issues)
@@ -669,8 +774,20 @@ def test_preflight_clean_plan_has_no_errors():
     from my_project_orchestrator.core.preflight import PreflightValidator
     from my_project_orchestrator.core.models import Task
 
-    a = Task(id="001-a", description="d", type="markdown_planner", project_ref=".", dependencies=[])
-    b = Task(id="002-b", description="d", type="markdown_planner", project_ref=".", dependencies=["001-a"])
+    a = Task(
+        id="001-a",
+        description="d",
+        type="markdown_planner",
+        project_ref=".",
+        dependencies=[],
+    )
+    b = Task(
+        id="002-b",
+        description="d",
+        type="markdown_planner",
+        project_ref=".",
+        dependencies=["001-a"],
+    )
     with tempfile.TemporaryDirectory() as td:
         issues = PreflightValidator().validate([a, b], Path(td))
     assert not PreflightValidator.has_errors(issues)
@@ -678,8 +795,10 @@ def test_preflight_clean_plan_has_no_errors():
 
 # --- run_project orchestration (001 / 016) ----------------------------------
 
+
 def _mock_task(tid, deps=None):
     from unittest.mock import MagicMock
+
     t = MagicMock()
     t.id = tid
     t.dependencies = deps or []
@@ -703,7 +822,10 @@ def _patched_run(tmp, tasks, dry_run=False):
     project.name = "p"
     project.path = Path(tmp)
     project.env_manager = None
-    project.config = {"language": "python", "orchestrator": {"max_consecutive_failures": 3}}
+    project.config = {
+        "language": "python",
+        "orchestrator": {"max_consecutive_failures": 3},
+    }
     project.task_manager.get_pending_tasks.return_value = tasks
 
     completed_result = MagicMock()
@@ -711,8 +833,12 @@ def _patched_run(tmp, tasks, dry_run=False):
 
     orch = agent_mod.ProjectOrchestrator()
     with (
-        patch.object(agent_mod.ProjectOrchestrator, "_get_or_register", return_value=project),
-        patch("my_project_orchestrator.agent.topological_sort", side_effect=lambda x: x),
+        patch.object(
+            agent_mod.ProjectOrchestrator, "_get_or_register", return_value=project
+        ),
+        patch(
+            "my_project_orchestrator.agent.topological_sort", side_effect=lambda x: x
+        ),
         patch("my_project_orchestrator.agent.Scratchpad"),
         patch("my_project_orchestrator.agent.ContractRegistry"),
         patch("my_project_orchestrator.agent.ChangeTracker"),
@@ -745,6 +871,7 @@ def test_run_project_executes_in_dependency_order():
 
 # --- report persistence -----------------------------------------------------
 
+
 def test_report_save_writes_markdown_and_json():
     from datetime import datetime, timezone
     from my_project_orchestrator.core.report import BuildReport
@@ -753,11 +880,198 @@ def test_report_save_writes_markdown_and_json():
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        report = BuildReport(BuildMode.COMPLETE, "proj", ProjectAssessment(),
-                             datetime.now(timezone.utc))
+        report = BuildReport(
+            BuildMode.COMPLETE, "proj", ProjectAssessment(), datetime.now(timezone.utc)
+        )
         report.finalize()
         path = report.save(root)
         assert path is not None and path.exists()
         json_path = path.with_suffix(".json")
         data = json.loads(json_path.read_text())
         assert data["project"] == "proj"
+
+
+# --- health-check command detection (tests=none blindness) ------------------
+def test_detect_test_command_pytest_uv():
+    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "tests").mkdir()
+        (root / "uv.lock").write_text("", encoding="utf-8")
+        assert detect_test_command(root) == "uv run pytest -q"
+
+
+def test_detect_test_command_pytest_no_uv():
+    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "pyproject.toml").write_text(
+            "[tool.pytest.ini_options]\n", encoding="utf-8"
+        )
+        assert detect_test_command(root) == "pytest -q"
+
+
+def test_detect_test_command_npm_and_cargo_and_none():
+    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "package.json").write_text(
+            '{"scripts": {"test": "jest"}}', encoding="utf-8"
+        )
+        assert detect_test_command(root) == "npm test"
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
+        assert detect_test_command(root) == "cargo test"
+    with tempfile.TemporaryDirectory() as td:
+        assert detect_test_command(Path(td)) is None
+
+
+def test_analyze_project_fills_test_command_when_llm_returns_null():
+    """The real regression: LLM left test_command null -> tests=none. The
+    deterministic fallback must populate the assessment so the suite runs."""
+    from unittest.mock import patch
+    from my_project_orchestrator.analyzers import project_analyzer
+    from my_project_orchestrator.core.assessment import HealthCheck
+
+    class _EmptyLLM:
+        def generate_code(self, prompt, system_prompt=""):
+            return "{}"
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "tests").mkdir()
+        (root / "uv.lock").write_text("", encoding="utf-8")
+        with patch.object(
+            project_analyzer, "run_health_check", return_value=HealthCheck()
+        ):
+            assessment = project_analyzer.analyze_project(
+                root, _EmptyLLM(), parallel=False
+            )
+        assert assessment.structure.test_command == "uv run pytest -q"
+
+
+# --- model preflight health check -------------------------------------------
+def test_health_check_ok_and_failure_preserve_budget():
+    from my_project_orchestrator.llm.client import BaseLLMClient, LLMResponse, LLMUsage
+
+    class _OK(BaseLLMClient):
+        model = "good/model"
+
+        def _call(self, prompt, system_prompt):
+            return LLMResponse(content="OK", usage=LLMUsage(estimated_cost=0.5))
+
+    client = _OK({"build": {"budget": 10.0}})
+    client.cumulative_usage.estimated_cost = 0.0
+    ok, detail = client.health_check()
+    assert ok and detail == "good/model"
+    assert client.cumulative_usage.estimated_cost == 0.0  # probe cost rolled back
+
+    class _Dead(BaseLLMClient):
+        model = "dead/model"
+
+        def _call(self, prompt, system_prompt):
+            raise RuntimeError("404 No endpoints found")
+
+    bad = _Dead({"build": {"budget": 10.0}})
+    ok, detail = bad.health_check()
+    assert not ok and "dead/model" in detail and "404" in detail
+
+
+# --- integration gate: real git + real pytest (would have caught self-build) -
+def _git(root, *args):
+    import subprocess
+
+    subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True)
+
+
+def _make_repo_with_passing_suite(root):
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@t.t")
+    _git(root, "config", "user.name", "t")
+    pkg = root / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    tdir = root / "tests"
+    tdir.mkdir()
+    (tdir / "test_basic.py").write_text(
+        "from pkg import VALUE\n\ndef test_value():\n    assert VALUE == 1\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "baseline")
+
+
+def _commit_task(root, task_id, mutate):
+    """Apply a mutation and commit it with the task(<id>): convention."""
+    mutate(root)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", f"task({task_id}): change")
+
+
+def test_integration_gate_reverts_regressing_task():
+    from types import SimpleNamespace
+    from my_project_orchestrator.agent import ProjectOrchestrator
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _make_repo_with_passing_suite(root)
+
+        # A task that breaks the suite the way the self-build did: a module
+        # referencing a name that no longer exists -> ImportError at collection.
+        def break_import(r):
+            (r / "pkg" / "__init__.py").write_text(
+                "from pkg.missing import GONE\nVALUE = 1\n", encoding="utf-8"
+            )
+
+        _commit_task(root, "T-bad", break_import)
+
+        project = SimpleNamespace(path=root, env_manager=None)
+        executor = MarkdownPlanExecutor()
+        orch = ProjectOrchestrator()
+        task = SimpleNamespace(id="T-bad")
+
+        # Sanity: suite is red at HEAD before the gate runs.
+        ok_before, _ = executor._run_command(
+            project, "python -m pytest -q", timeout=120
+        )
+        assert not ok_before
+
+        reverted = orch._integration_gate(
+            project, executor, "python -m pytest -q", [task], timeout=120
+        )
+        assert reverted == ["T-bad"]
+        ok_after, _ = executor._run_command(project, "python -m pytest -q", timeout=120)
+        assert ok_after  # tree restored to green
+
+
+def test_integration_gate_noop_when_suite_stays_green():
+    from types import SimpleNamespace
+    from my_project_orchestrator.agent import ProjectOrchestrator
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _make_repo_with_passing_suite(root)
+
+        def harmless(r):
+            (r / "pkg" / "extra.py").write_text("X = 2\n", encoding="utf-8")
+
+        _commit_task(root, "T-ok", harmless)
+
+        project = SimpleNamespace(path=root, env_manager=None)
+        executor = MarkdownPlanExecutor()
+        orch = ProjectOrchestrator()
+        task = SimpleNamespace(id="T-ok")
+        reverted = orch._integration_gate(
+            project, executor, "python -m pytest -q", [task], timeout=120
+        )
+        assert reverted == []
