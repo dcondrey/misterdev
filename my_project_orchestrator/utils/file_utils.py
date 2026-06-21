@@ -1,8 +1,31 @@
+import fnmatch
 import os
 import re
 import tempfile
 from pathlib import Path
 from typing import List
+
+
+def is_golden_path(file_path: str, patterns) -> bool:
+    """True if a project-relative path is part of the golden (protected) suite.
+
+    Supports an exact path, a directory prefix (``tests/golden/`` matches
+    everything beneath it), and a glob (``tests/test_contract_*.py``). Shared
+    by the executor (conceal + reject edits) and the symbol graph (exclude from
+    indexing) so the model can neither see nor modify these files.
+    """
+    if not patterns:
+        return False
+    norm = file_path.replace("\\", "/").lstrip("./")
+    for pat in patterns:
+        p = str(pat).replace("\\", "/").lstrip("./")
+        if not p:
+            continue
+        if norm == p or norm.startswith(p.rstrip("/") + "/"):
+            return True
+        if fnmatch.fnmatch(norm, p):
+            return True
+    return False
 
 
 def safe_ref_slug(value: str, fallback: str = "x", maxlen: int = 64) -> str:

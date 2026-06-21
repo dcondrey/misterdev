@@ -1,6 +1,6 @@
 # 🚀 Project Orchestrator
 
-**State-of-the-Art (SOTA) Autonomous Development Framework**
+**Autonomous Development Framework**
 
 Project Orchestrator is a modular, extensible Python framework designed to automate the entire software development lifecycle. By combining advanced LLM orchestration with local tool execution and deterministic state management, it enables autonomous "Try-Test-Fix" development loops that scale across complex, multi-module projects.
 
@@ -35,7 +35,7 @@ pip install -e .
 ### 2. Configuration
 Create a `project.yaml` in your project root:
 ```yaml
-name: "My SOTA App"
+name: "My App"
 llm:
   provider: "openrouter"
   model: "anthropic/claude-3.5-sonnet"
@@ -52,7 +52,7 @@ tools:
 # Scan and register a workspace
 project-orchestrator scan ./projects
 
-# Run a SOTA build
+# Run a build
 project-orchestrator build ./projects/my-app "add a robust login system with OAuth2"
 ```
 
@@ -76,7 +76,7 @@ project-orchestrator build ./projects/my-app "add a robust login system with OAu
 ---
 
 ## 🤝 Contributing
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details on our SOTA development standards.
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details on our development standards.
 
 ---
 *Built with ❤️ for the next generation of software engineers.*

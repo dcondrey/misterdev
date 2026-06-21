@@ -1,6 +1,5 @@
 import concurrent.futures
 import subprocess
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -25,7 +24,7 @@ from my_project_orchestrator.core.decomposer import (
     format_plan,
 )
 from my_project_orchestrator.core.validator import ValidationResult
-from my_project_orchestrator.core.gatekeeper import SOTAGateKeeper
+from my_project_orchestrator.core.gatekeeper import GateKeeper
 from my_project_orchestrator.core.sovereign import (
     StrategyOptimizer,
     RealTimeAligner,
@@ -43,8 +42,13 @@ from my_project_orchestrator.core.project import Project
 from my_project_orchestrator.core.models import Task
 from my_project_orchestrator.analyzers.project_analyzer import analyze_project
 from my_project_orchestrator.core.advisor import recommend_work
+from my_project_orchestrator.llm.client import BudgetExceededError
 from my_project_orchestrator.task_executors.markdown_plan_executor import (
     MarkdownPlanExecutor,
+)
+from my_project_orchestrator.agent_helpers import (
+    ProgressReporter,
+    _WorktreeProjectView,
 )
 from my_project_orchestrator.logging_setup import setup_logger
 
@@ -53,66 +57,50 @@ console = Console()
 
 MAX_CONSECUTIVE_FAILURES = 3
 
+# Safety backstop for "auto" convergence: the loop normally stops earlier on a
+# green gate, budget exhaustion, or no-progress, but this bounds a pathological
+# run that keeps producing genuinely different (yet still failing) fix tasks.
+CONVERGENCE_CEILING = 25
 
-class _WorktreeProjectView:
-    """A Project facade that overrides only `path` (for worktree execution).
 
-    Everything else (config, llm_client, topography, tools, env) delegates to
-    the base project, so the executor reads shared context but writes, builds,
-    and commits inside the worktree.
+def _combine_commands(*cmds: Optional[str]) -> Optional[str]:
+    """Join shell commands with ``&&`` (each parenthesised), or None if all empty.
+
+    Used to run the visible suite and the golden suite as one pass/fail check
+    so the existing single-command gate/bisect logic enforces both.
     """
-
-    def __init__(self, base, path):
-        self._base = base
-        self.path = path
-
-    def __getattr__(self, name):
-        return getattr(self._base, name)
+    present = [c for c in cmds if c]
+    if not present:
+        return None
+    return " && ".join(f"({c})" for c in present)
 
 
-class ProgressReporter:
-    """Lightweight wave/task progress logger for long runs."""
+def _check_golden_config(config) -> None:
+    """Warn when the golden suite is half-configured (a silent integrity hole).
 
-    def __init__(self, total_tasks: int):
-        self.total = total_tasks
-        self.completed = 0
-        self.failed = 0
-        self.current_wave = 0
-        self.start_time = time.time()
-        self._task_start: Optional[float] = None
-
-    def start_wave(self, wave_num: int, task_ids: list[str]):
-        self.current_wave = wave_num
-        logger.info(f"=== Wave {wave_num} === [{', '.join(task_ids)}]")
-
-    def start_task(self, task_id: str, title: str):
-        self._task_start = time.time()
-        logger.info(
-            f"[{self.completed + self.failed}/{self.total}] Starting {task_id}: {title}"
+    The two halves are independent: ``golden_paths`` protects+conceals the
+    files, ``golden_command`` enforces them as a gate. Configuring one without
+    the other silently drops a guarantee, so surface it loudly.
+    """
+    orch = config.get("orchestrator", {})
+    paths = orch.get("golden_paths") or []
+    command = orch.get("golden_command")
+    if command and not paths:
+        logger.warning(
+            "golden_command is set but golden_paths is empty: golden tests are "
+            "enforced as a gate but NOT protected from edits; the model could "
+            "weaken them. Set golden_paths to the same files."
         )
-
-    def end_task(self, task_id: str, success: bool):
-        elapsed = time.time() - self._task_start if self._task_start else 0
-        if success:
-            self.completed += 1
-            logger.info(
-                f"[{self.completed + self.failed}/{self.total}] {task_id} DONE ({elapsed:.0f}s)"
-            )
-        else:
-            self.failed += 1
-            logger.warning(
-                f"[{self.completed + self.failed}/{self.total}] {task_id} FAILED ({elapsed:.0f}s)"
-            )
-
-    def summary(self):
-        total_time = time.time() - self.start_time
-        logger.info(
-            f"=== Complete: {self.completed} done, {self.failed} failed, {total_time:.0f}s total ==="
+    if paths and not command:
+        logger.warning(
+            "golden_paths is set but golden_command is empty: golden files are "
+            "protected and hidden but never run as a gate. Set golden_command "
+            "to enforce them."
         )
 
 
 class ProjectOrchestrator:
-    """Main orchestrator with Sovereign Grounded SOTA workflow."""
+    """Main orchestrator with Sovereign Grounded workflow."""
 
     def __init__(self):
         self.registry = ProjectRegistry()
@@ -154,13 +142,14 @@ class ProjectOrchestrator:
         """Run pending devplan tasks with dependency-aware orchestration.
 
         Unlike build(), this executes a pre-written devplan: it skips the
-        analysis/spec/decomposition/SOTA-gate phases but adds topological
+        analysis/spec/decomposition/gate phases but adds topological
         ordering, progress-based crash recovery, contract injection, scratchpad
         learning, and change tracking around the existing markdown tasks.
         """
         project = self._get_or_register(project_path)
         if not project:
             return
+        _check_golden_config(project.config)
         if project.env_manager:
             project.env_manager.setup()
         project.task_manager.discover_tasks()
@@ -296,7 +285,7 @@ class ProjectOrchestrator:
         task.processor_data["recent_changes"] = changes.get_recent_changes_for_files(
             task.files_to_modify + task.files_to_create
         )
-        task.processor_data["sota_strategy"] = strategy_optimizer.select_best_strategy(
+        task.processor_data["strategy"] = strategy_optimizer.select_best_strategy(
             task.description, task.category, "", project.llm_client
         )
 
@@ -578,6 +567,7 @@ class ProjectOrchestrator:
         composed plan is shown and the user is asked to approve it before any
         task executes.
         """
+        _check_golden_config(project.config)
         # Sovereign Phase 1.5: Empirical Probes (only for SMART/CREATE modes).
         # Best-effort: probe discovery must never crash the build, so any
         # failure here degrades to no verified facts rather than aborting.
@@ -600,6 +590,7 @@ class ProjectOrchestrator:
                     verified_facts = "\n".join(probe_findings)
             except Exception as e:
                 logger.warning(f"Probe discovery failed (non-fatal): {e}")
+                report.degraded_subsystems.append(f"Empirical probes: {e}")
 
         # Phase 2: Generate Spec
         spec = self._generate_spec(
@@ -616,12 +607,14 @@ class ProjectOrchestrator:
                 spec = f"{lessons}\n\n{spec}"
         except Exception as e:
             logger.warning(f"Lesson injection failed (non-fatal): {e}")
+            report.degraded_subsystems.append(f"Lesson injection: {e}")
 
         try:
             planner = ABMCTSPlanner(project.llm_client)
             spec = planner.branch_and_evaluate(spec, assessment.summary())
         except Exception as e:
             logger.warning(f"AB-MCTS planning failed (non-fatal): {e}")
+            report.degraded_subsystems.append(f"AB-MCTS planning: {e}")
 
         # Phase 3: Decompose
         tasks = decompose_spec(
@@ -637,16 +630,44 @@ class ProjectOrchestrator:
             if not self._confirm(f"Proceed with these {len(tasks)} tasks?"):
                 return "Cancelled: plan not approved."
 
-        # Phase 4: Execution
-        self._execute_tasks(tasks, project, flags, report)
+        # Phases 4-5: Execute + Gate, wrapped in an outer convergence loop.
+        # The loop keeps re-attempting concrete gate failures until the gate is
+        # green, the budget runs out, or an iteration makes no progress. The
+        # default "auto" is budget-driven: it runs up to CONVERGENCE_CEILING but
+        # in practice stops on the budget/no-progress guards below. An explicit
+        # positive int caps the iterations hard instead.
+        raw_iterations = project.config.get("orchestrator", {}).get(
+            "max_build_iterations", "auto"
+        )
+        if (
+            isinstance(raw_iterations, int)
+            and not isinstance(raw_iterations, bool)
+            and raw_iterations > 0
+        ):
+            max_build_iterations = raw_iterations
+        else:
+            max_build_iterations = CONVERGENCE_CEILING
+        iteration = 0
+        prev_issues: Optional[list[str]] = None
+        while True:
+            iteration += 1
+            tasks_this_iter = len(tasks)
 
-        # Phase 5: SOTA Gates
-        if not flags.no_verify:
-            gatekeeper = SOTAGateKeeper(project.path, env_activate=env_activate)
+            # Phase 4: Execution
+            self._execute_tasks(tasks, project, flags, report)
+
+            # Phase 5: Gates
+            if flags.no_verify:
+                # No gate to converge on; preserve single-pass behavior.
+                break
+            gatekeeper = GateKeeper(project.path, env_activate=env_activate)
             commands = {
                 "build_command": assessment.structure.build_command,
                 "test_command": assessment.structure.test_command,
                 "lint_command": assessment.structure.lint_command,
+                "golden_command": project.config.get("orchestrator", {}).get(
+                    "golden_command"
+                ),
             }
             success, issues, final_health = gatekeeper.run_gates(commands)
             validation = ValidationResult()
@@ -661,9 +682,50 @@ class ProjectOrchestrator:
             report.validation_passed = success
             report.health_after = final_health
             self.last_build_succeeded = success
-            if not success:
-                logger.warning(f"SOTA Validation Failed: {issues}")
-                self._maybe_rollback_regression(project, report, assessment, flags)
+            if success:
+                break
+            logger.warning(f"Validation failed: {issues}")
+            self._maybe_rollback_regression(project, report, assessment, flags)
+
+            # Decide whether to attempt another convergence iteration.
+            if iteration >= max_build_iterations:
+                break
+            remaining_budget = getattr(project.llm_client, "budget_remaining", None)
+            if isinstance(remaining_budget, (int, float)) and remaining_budget <= 0:
+                logger.warning("Convergence halted: LLM budget exhausted.")
+                report.key_decisions.append(
+                    "Convergence halted: budget exhausted before next iteration"
+                )
+                break
+            # No-progress guards: don't loop on an iteration that ran nothing or
+            # produced the identical failure signature.
+            if tasks_this_iter == 0:
+                break
+            if prev_issues is not None and prev_issues == issues:
+                report.key_decisions.append(
+                    f"Convergence halted: iteration {iteration} reproduced the "
+                    "identical gate failures (no progress)"
+                )
+                break
+            prev_issues = list(issues)
+
+            # Build a targeted fix spec from the concrete gate failures plus any
+            # failed/deferred tasks, re-decompose it, and re-run the same path.
+            fix_spec = self._build_fix_spec(report, issues, final_health)
+            fix_tasks = decompose_spec(
+                fix_spec, assessment, mode, project.llm_client, str(project.path)
+            )
+            tasks = topological_sort(fix_tasks)
+            report.key_decisions.append(
+                f"Convergence iteration {iteration + 1}: re-attempting "
+                f"{len(issues)} gate failure(s) with {len(tasks)} fix task(s)"
+            )
+            if not tasks:
+                report.key_decisions.append(
+                    f"Convergence halted: iteration {iteration + 1} produced no "
+                    "fix tasks"
+                )
+                break
 
         # Phase 6: Metacognitive Audit (best-effort; never fail a finished build)
         report.finalize()
@@ -673,6 +735,7 @@ class ProjectOrchestrator:
             )
         except Exception as e:
             logger.warning(f"Session audit failed (non-fatal): {e}")
+            report.degraded_subsystems.append(f"Session audit: {e}")
 
         usage = project.llm_client.cumulative_usage
         report.llm_calls = usage.call_count
@@ -683,6 +746,40 @@ class ProjectOrchestrator:
 
         report.save(project.path)
         return report.to_markdown()
+
+    def _build_fix_spec(
+        self,
+        report: BuildReport,
+        issues: list[str],
+        final_health: HealthCheck,
+    ) -> str:
+        """Compose a targeted spec from the gate's concrete failures.
+
+        Used by the convergence loop for iterations 2+: instead of re-running
+        expensive discovery, it points decomposition straight at what the gate
+        flagged (build/test/lint output, failed and deferred tasks) so the next
+        pass fixes the gap rather than re-planning the whole build.
+        """
+        parts = ["# Convergence Fix Spec", "## Goal: make the gate pass\n"]
+        if issues:
+            parts.append("### Gate Failures")
+            for item in issues:
+                parts.append(f"- {item}")
+        if not final_health.builds and final_health.build_output:
+            parts.append(f"\n### Build Output\n{final_health.build_output[:1000]}")
+        if not final_health.tests_pass and final_health.test_output:
+            parts.append(f"\n### Test Output\n{final_health.test_output[:1000]}")
+        if not final_health.lint_clean and final_health.lint_output:
+            parts.append(f"\n### Lint Output\n{final_health.lint_output[:1000]}")
+        if report.failed_tasks:
+            parts.append("\n### Failed Tasks")
+            for t in report.failed_tasks:
+                parts.append(f"- {t.id}: {t.title}")
+        if report.deferred_tasks:
+            parts.append("\n### Deferred Tasks")
+            for t in report.deferred_tasks:
+                parts.append(f"- {t.id}: {t.title}")
+        return "\n".join(parts)
 
     def _maybe_rollback_regression(
         self,
@@ -799,6 +896,7 @@ class ProjectOrchestrator:
         failed_ids: set[str] = set()
         consecutive_failures = 0
         aborted = False
+        max_cost_per_task = orch_cfg.get("max_cost_per_task")
 
         # Register decomposed tasks with the TaskManager so status updates,
         # progress tracking, and contract lookups resolve by ID (otherwise
@@ -817,7 +915,13 @@ class ProjectOrchestrator:
         # in isolation but can't see cross-module breakage that only surfaces
         # when the whole package is imported together; without this, broken
         # tasks accumulate under later merges until the end-of-build gate.
-        test_cmd = report.assessment.structure.test_command
+        # Fold the golden suite into the per-wave gate so a task that breaks the
+        # immutable contract is bisected and reverted immediately, not just at
+        # the end-of-iteration GateKeeper.
+        test_cmd = _combine_commands(
+            report.assessment.structure.test_command,
+            orch_cfg.get("golden_command"),
+        )
         test_timeout = project.config.get("build", {}).get("test_timeout", 180)
         gate_active = (
             not flags.no_rollback
@@ -836,6 +940,19 @@ class ProjectOrchestrator:
                 gate_active = False
 
         while remaining and not aborted:
+            # Graceful budget stop: if the global budget is exhausted, do not
+            # launch another wave. Defer the remainder and break so the pipeline
+            # finalizes/reports normally instead of throwing mid-wave.
+            remaining_budget = getattr(project.llm_client, "budget_remaining", None)
+            if isinstance(remaining_budget, (int, float)) and remaining_budget <= 0:
+                logger.warning("Stopping run: LLM budget exhausted.")
+                report.key_decisions.append(
+                    "Stopped: budget exhausted; remaining work deferred"
+                )
+                for task in remaining:
+                    report.deferred_tasks.append(task)
+                break
+
             # Find all tasks whose dependencies are satisfied
             ready = []
             still_waiting = []
@@ -872,7 +989,7 @@ class ProjectOrchestrator:
                     report.assessment.summary(),
                     project.llm_client,
                 )
-                task.processor_data["sota_strategy"] = strategy
+                task.processor_data["strategy"] = strategy
                 task.processor_data["consensus_context"] = (
                     aligner.get_consensus_context()
                 )
@@ -889,7 +1006,7 @@ class ProjectOrchestrator:
                 filtered_ready = []
                 for task in ready:
                     action = self._interactive_prompt(
-                        task, task.processor_data.get("sota_strategy", "iterative")
+                        task, task.processor_data.get("strategy", "iterative")
                     )
                     if action == "quit":
                         aborted = True
@@ -924,6 +1041,46 @@ class ProjectOrchestrator:
 
             # Process results
             for task, result, error in results:
+                if isinstance(error, BudgetExceededError):
+                    # Budget ran out mid-task: revert any partial work and stop
+                    # the run gracefully rather than recording a failure.
+                    logger.warning(
+                        f"Stopping run: budget exhausted during {task.id} ({error})."
+                    )
+                    sha = executor.find_task_commit(project, task.id)
+                    if sha:
+                        executor.revert_task_commit(project, sha)
+                    report.deferred_tasks.append(task)
+                    report.key_decisions.append(
+                        "Stopped: budget exhausted; remaining work deferred"
+                    )
+                    aborted = True
+                    break
+                exceeded_fn = getattr(project.llm_client, "task_cost_exceeded", None)
+                if (
+                    max_cost_per_task is not None
+                    and exceeded_fn
+                    and exceeded_fn(task.id)
+                ):
+                    # This task alone blew its per-task cost cap: abandon and
+                    # revert it cleanly instead of burning more budget retrying.
+                    cap_fn = getattr(project.llm_client, "effective_task_cap", None)
+                    cap = (cap_fn(task.id) if cap_fn else None) or 0.0
+                    logger.warning(
+                        f"Task {task.id} hit per-task cost cap "
+                        f"(${cap:.2f}); abandoning and reverting."
+                    )
+                    sha = executor.find_task_commit(project, task.id)
+                    if sha:
+                        executor.revert_task_commit(project, sha)
+                    failed_ids.add(task.id)
+                    progress.mark_failed(task.id)
+                    report.deferred_tasks.append(task)
+                    report.key_decisions.append(
+                        f"Task {task.id} deferred: exceeded per-task cost cap "
+                        f"(${cap:.2f})"
+                    )
+                    continue
                 if error:
                     logger.error(f"Task {task.id} raised: {error}")
                     failed_ids.add(task.id)
@@ -993,35 +1150,89 @@ class ProjectOrchestrator:
             if task.id not in processed_ids:
                 report.deferred_tasks.append(task)
 
+    @staticmethod
+    def _task_file_set(task: Task) -> set:
+        """Declared files a task will touch (modify + create).
+
+        Tolerates non-list values (e.g. unconfigured mocks): only real lists
+        contribute paths, anything else is treated as "unknown / no claim".
+        """
+        files: set = set()
+        for attr in ("files_to_modify", "files_to_create"):
+            value = getattr(task, attr, None)
+            if isinstance(value, list):
+                files.update(str(p) for p in value)
+        return files
+
+    @classmethod
+    def _partition_disjoint(cls, ready: list[Task]) -> tuple[list, list]:
+        """Split tasks into a concurrent-safe group + a serial remainder.
+
+        A task joins the concurrent group only if its declared file set is
+        disjoint from every task already in that group; otherwise it is
+        deferred to the serial remainder so overlapping writes can't interleave.
+        """
+        concurrent_group: list = []
+        serial_remainder: list = []
+        claimed: set = set()
+        for task in ready:
+            files = cls._task_file_set(task)
+            if files & claimed:
+                serial_remainder.append(task)
+            else:
+                concurrent_group.append(task)
+                claimed |= files
+        return concurrent_group, serial_remainder
+
     def _execute_parallel(
         self, ready: list[Task], executor: MarkdownPlanExecutor, project: Project
     ) -> list:
         """Execute a batch of independent tasks concurrently.
 
         In "worktree" mode each task runs in its own git worktree so parallel
-        edits can't collide; otherwise (default "shared") git branching is
-        disabled and tasks share the working tree.
+        edits can't collide. When the mode is left at its default and the
+        project is a git repo, worktree isolation is preferred automatically;
+        "shared" must be requested explicitly to opt out. In shared mode only
+        tasks with disjoint declared file sets run in the same concurrent batch;
+        tasks whose file sets overlap are run serially afterwards.
         """
-        mode = project.config.get("orchestrator", {}).get("parallel_mode", "shared")
-        if mode == "worktree" and (project.path / ".git").exists():
+        orch_cfg = project.config.get("orchestrator", {})
+        mode = orch_cfg.get("parallel_mode", "shared")
+        explicit_mode = "parallel_mode" in orch_cfg
+        is_git_repo = (project.path / ".git").exists() is True
+        # Default (unset) mode on a git repo → isolate via worktrees.
+        prefer_worktrees = mode == "worktree" or (not explicit_mode and is_git_repo)
+        if prefer_worktrees and is_git_repo:
             return self._execute_parallel_worktrees(ready, executor, project)
 
+        concurrent_group, serial_remainder = self._partition_disjoint(ready)
         results = []
-        max_workers = project.config.get("orchestrator", {}).get("max_workers", 4)
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(len(ready), max_workers)
-        ) as pool:
-            future_to_task = {
-                pool.submit(executor.execute, task, project, use_git_branch=False): task
-                for task in ready
-            }
-            for future in concurrent.futures.as_completed(future_to_task):
-                task = future_to_task[future]
-                try:
-                    result = future.result()
-                    results.append((task, result, None))
-                except Exception as e:
-                    results.append((task, None, e))
+        max_workers = orch_cfg.get("max_workers", 4)
+        if concurrent_group:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(len(concurrent_group), max_workers)
+            ) as pool:
+                future_to_task = {
+                    pool.submit(
+                        executor.execute, task, project, use_git_branch=False
+                    ): task
+                    for task in concurrent_group
+                }
+                for future in concurrent.futures.as_completed(future_to_task):
+                    task = future_to_task[future]
+                    try:
+                        result = future.result()
+                        results.append((task, result, None))
+                    except Exception as e:
+                        results.append((task, None, e))
+
+        # Tasks with overlapping file claims run one at a time.
+        for task in serial_remainder:
+            try:
+                result = executor.execute(task, project, use_git_branch=False)
+                results.append((task, result, None))
+            except Exception as e:
+                results.append((task, None, e))
         return results
 
     def _execute_parallel_worktrees(

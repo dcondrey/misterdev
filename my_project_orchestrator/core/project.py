@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Optional
 
 from my_project_orchestrator.llm.client import BaseLLMClient, create_llm_client
 from my_project_orchestrator.environments.base_env import BaseEnvironmentManager
@@ -58,7 +58,11 @@ class Project:
         # every CLI command registers all known projects, and eagerly scanning
         # each one's whole tree just to list/status is wasted work. The executor
         # calls initialize() (idempotent) before it needs the graph.
-        self.topography = TopographyEngine(self.path, self.llm_client)
+        self.topography = TopographyEngine(
+            self.path,
+            self.llm_client,
+            golden_paths=config.get("orchestrator", {}).get("golden_paths", []),
+        )
 
     def _init_llm_client(self) -> BaseLLMClient:
         return create_llm_client(self.config)

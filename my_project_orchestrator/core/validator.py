@@ -217,11 +217,11 @@ def _parse_test_counts(output: str) -> Tuple[int, int]:
 
 
 # ----------------------------------------------------------------
-# Code Quality Validators (SOTA additions)
+# Code Quality Validators
 # ----------------------------------------------------------------
 
 
-class SOTAValidator:
+class CodeValidator:
     """Validates code syntax using AST parsing and structural checks."""
 
     @staticmethod
@@ -241,7 +241,7 @@ class SOTAValidator:
         # bracket check for shell rather than emit false "unclosed delimiter".
         if lang in ["shell", "sh", "bash", "zsh"]:
             return True, None
-        return SOTAValidator._basic_integrity_check(content)
+        return CodeValidator._basic_integrity_check(content)
 
     @staticmethod
     def _basic_integrity_check(content: str) -> Tuple[bool, Optional[str]]:

@@ -62,10 +62,22 @@ def code_gen_abort_check(accumulated: str) -> bool:
 class BaseLLMClient(ABC):
     """Abstract LLM client with token tracking and budget enforcement."""
 
+    # Fraction of budget-remaining a single task may spend when its per-task
+    # cap is set to "auto".
+    AUTO_TASK_CAP_FRACTION = 0.5
+
     def __init__(self, config: dict):
         self.config = config
         self.cumulative_usage = LLMUsage()
         self._budget = config.get("build", {}).get("budget", 100.0)
+        # Optional per-task cost ceiling. None disables it; a number is an
+        # absolute cap; "auto" makes it a fraction of the budget remaining when
+        # the task starts (snapshotted in track_task), so it shrinks as the run
+        # spends and no single task can drain the global budget.
+        self._max_cost_per_task = config.get("orchestrator", {}).get(
+            "max_cost_per_task"
+        )
+        self._task_caps: Dict[str, Optional[float]] = {}
 
     def generate(self, prompt: str, system_prompt: str = "") -> LLMResponse:
         """Generate a response with retry and budget enforcement.
@@ -76,6 +88,14 @@ class BaseLLMClient(ABC):
             raise BudgetExceededError(
                 f"Budget of ${self._budget:.2f} exceeded "
                 f"(spent ${self.cumulative_usage.estimated_cost:.2f})"
+            )
+        if self.task_cost_exceeded(getattr(self, "_current_task", None)):
+            task_id = getattr(self, "_current_task", None)
+            cap = self.effective_task_cap(task_id)
+            raise BudgetExceededError(
+                f"Per-task budget of ${cap:.2f} exceeded "
+                f"for task {task_id!r} "
+                f"(spent ${self.task_cost(task_id):.2f})"
             )
 
         max_retries = 3
@@ -172,10 +192,39 @@ class BaseLLMClient(ABC):
         """Attribute LLM cost/calls made in this block to a task id."""
         previous = getattr(self, "_current_task", None)
         self._current_task = task_id
+        # Snapshot the per-task cost cap on first entry so an "auto" cap is
+        # fixed to the budget available when the task started, not recomputed
+        # (and shrinking) on every call as the task spends.
+        if task_id is not None and task_id not in self._task_caps:
+            self._task_caps[task_id] = self._resolve_task_cap()
         try:
             yield
         finally:
             self._current_task = previous
+
+    def _resolve_task_cap(self) -> Optional[float]:
+        """Resolve the configured per-task cap to a dollar figure (or None)."""
+        raw = self._max_cost_per_task
+        if isinstance(raw, bool) or raw is None:
+            return None
+        if isinstance(raw, (int, float)):
+            return float(raw)
+        if isinstance(raw, str) and raw.strip().lower() == "auto":
+            return self.budget_remaining * self.AUTO_TASK_CAP_FRACTION
+        return None
+
+    def effective_task_cap(self, task_id: Optional[str]) -> Optional[float]:
+        """The dollar cap for a task, or None when uncapped.
+
+        Prefers the value snapshotted by ``track_task``; falls back to a live
+        resolve so the cap is meaningful even when queried before the task
+        block is entered.
+        """
+        if task_id is None:
+            return None
+        if task_id in self._task_caps:
+            return self._task_caps[task_id]
+        return self._resolve_task_cap()
 
     def _track_usage(self, usage: LLMUsage) -> None:
         self.cumulative_usage.prompt_tokens += usage.prompt_tokens
@@ -195,6 +244,21 @@ class BaseLLMClient(ABC):
     @property
     def budget_remaining(self) -> float:
         return max(0.0, self._budget - self.cumulative_usage.estimated_cost)
+
+    def task_cost(self, task_id: Optional[str]) -> float:
+        """Accumulated cost attributed to a task id (0.0 if untracked)."""
+        if task_id is None:
+            return 0.0
+        return getattr(self, "cost_by_task", {}).get(task_id, 0.0)
+
+    def task_cost_exceeded(self, task_id: Optional[str]) -> bool:
+        """True when task_id has crossed its snapshotted per-task cost cap."""
+        if task_id is None:
+            return False
+        cap = self.effective_task_cap(task_id)
+        if cap is None:
+            return False
+        return self.task_cost(task_id) >= cap
 
 
 class OpenRouterLLMClient(BaseLLMClient):

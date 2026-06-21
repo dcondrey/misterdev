@@ -19,9 +19,9 @@ from my_project_orchestrator.task_executors.markdown_plan_executor import (
     _detect_language,
     _LANG_MAP,
 )
-from my_project_orchestrator.core.gatekeeper import SOTAGateKeeper
+from my_project_orchestrator.core.gatekeeper import GateKeeper
 from my_project_orchestrator.core.error_classifier import classify_error, ErrorCategory
-from my_project_orchestrator.core.validator import ValidationResult, SOTAValidator
+from my_project_orchestrator.core.validator import ValidationResult, CodeValidator
 from my_project_orchestrator.core.change_tracker import ChangeTracker
 from my_project_orchestrator.core.sovereign import EphemeralCodeManager
 
@@ -88,11 +88,11 @@ def test_validate_edit_paths_rejects_escape_and_empty():
 
 def test_secret_assignment_heuristic():
     # Real assigned literal -> flagged.
-    assert SOTAGateKeeper._is_secret_assignment('api_key = "abcdef123456"')
+    assert GateKeeper._is_secret_assignment('api_key = "abcdef123456"')
     # Ordinary source constructs -> not flagged.
-    assert not SOTAGateKeeper._is_secret_assignment("token: String,")
-    assert not SOTAGateKeeper._is_secret_assignment("let token = get_token()")
-    assert not SOTAGateKeeper._is_secret_assignment('api_key = os.environ["API_KEY"]')
+    assert not GateKeeper._is_secret_assignment("token: String,")
+    assert not GateKeeper._is_secret_assignment("let token = get_token()")
+    assert not GateKeeper._is_secret_assignment('api_key = os.environ["API_KEY"]')
 
 
 def test_secret_scan_ignores_code_keeps_high_signal():
@@ -100,7 +100,7 @@ def test_secret_scan_ignores_code_keeps_high_signal():
         root = Path(td)
         (root / "engine.rs").write_text("pub struct S { token: String, secret: u64 }\n")
         (root / "leak.py").write_text('KEY = "sk-abc123def"\n')
-        gk = SOTAGateKeeper(root)
+        gk = GateKeeper(root)
         found = gk._scan_secrets()
         assert any("leak.py" in f for f in found)
         assert not any("engine.rs" in f for f in found)
@@ -137,7 +137,7 @@ def test_validation_summary_skip_for_unrun_gates():
 
 
 def test_shell_skips_delimiter_check():
-    ok, err = SOTAValidator.validate_code('x=$(echo "hi")\n', language="shell")
+    ok, err = CodeValidator.validate_code('x=$(echo "hi")\n', language="shell")
     assert ok and err is None
 
 
@@ -911,6 +911,150 @@ def test_run_project_executes_in_dependency_order():
         assert executed == ["001-a", "002-b"]
 
 
+# --- budget kill-switch / graceful checkpointing ----------------------------
+
+
+def _fresh_report():
+    from datetime import datetime, timezone
+    from my_project_orchestrator.core.report import BuildReport
+    from my_project_orchestrator.core.assessment import ProjectAssessment
+    from my_project_orchestrator.core.modes import BuildMode
+
+    return BuildReport(
+        BuildMode.COMPLETE, "p", ProjectAssessment(), datetime.now(timezone.utc)
+    )
+
+
+class _BudgetClient:
+    """Minimal stand-in for BaseLLMClient exposing the budget hooks agent uses."""
+
+    def __init__(self, budget_remaining=100.0, max_cost_per_task=None):
+        self.budget_remaining = budget_remaining
+        self._max_cost_per_task = max_cost_per_task
+        self.cost_by_task = {}
+
+    def task_cost(self, task_id):
+        return self.cost_by_task.get(task_id, 0.0)
+
+    def task_cost_exceeded(self, task_id):
+        if self._max_cost_per_task is None or task_id is None:
+            return False
+        return self.task_cost(task_id) >= self._max_cost_per_task
+
+
+def _budget_project(tmp, max_cost_per_task=None, budget_remaining=100.0):
+    from unittest.mock import MagicMock
+
+    project = MagicMock()
+    project.path = Path(tmp)
+    project.config = {
+        "language": "python",
+        "orchestrator": {
+            "max_consecutive_failures": 3,
+            **(
+                {"max_cost_per_task": max_cost_per_task}
+                if max_cost_per_task is not None
+                else {}
+            ),
+        },
+    }
+    project.llm_client = _BudgetClient(
+        budget_remaining=budget_remaining, max_cost_per_task=max_cost_per_task
+    )
+    return project
+
+
+def test_per_task_cost_cap_reverts_and_defers_not_failure():
+    from unittest.mock import patch, MagicMock
+    import my_project_orchestrator.agent as agent_mod
+    from my_project_orchestrator.core.modes import BuildFlags
+
+    with tempfile.TemporaryDirectory() as td:
+        project = _budget_project(td, max_cost_per_task=0.05)
+        task = _mock_task("T-cap")
+
+        reverted = []
+
+        class _Exec:
+            def __init__(self, *a, **k):
+                pass
+
+            def execute(self, t, proj):
+                # Pretend the task burned past its cap during execution.
+                project.llm_client.cost_by_task[t.id] = 0.10
+                r = MagicMock()
+                r.status = "failed"
+                return r
+
+            def find_task_commit(self, proj, tid):
+                return "deadbeef"
+
+            def revert_task_commit(self, proj, sha):
+                reverted.append(sha)
+                return True
+
+            def _run_command(self, *a, **k):
+                return True, ""
+
+        with (
+            patch.object(agent_mod, "MarkdownPlanExecutor", _Exec),
+            patch("my_project_orchestrator.agent.Scratchpad"),
+            patch("my_project_orchestrator.agent.RealTimeAligner"),
+            patch("my_project_orchestrator.agent.ContractRegistry"),
+            patch("my_project_orchestrator.agent.ChangeTracker"),
+            patch("my_project_orchestrator.agent.ProgressTracker") as MockProg,
+            patch("my_project_orchestrator.agent.StrategyOptimizer") as MockStrat,
+        ):
+            MockProg.return_value.completed = []
+            MockProg.return_value.needs_rerun.return_value = True
+            MockStrat.return_value.select_best_strategy.return_value = "iterative"
+            orch = agent_mod.ProjectOrchestrator()
+            report = _fresh_report()
+            flags = BuildFlags(no_rollback=True)
+            orch._execute_tasks([task], project, flags, report)
+
+        assert reverted == ["deadbeef"]
+        assert task in report.deferred_tasks
+        assert task not in report.failed_tasks
+        assert any("per-task cost cap" in d for d in report.key_decisions)
+
+
+def test_budget_exhausted_before_wave_defers_gracefully():
+    from unittest.mock import patch, MagicMock
+    import my_project_orchestrator.agent as agent_mod
+    from my_project_orchestrator.core.modes import BuildFlags
+
+    with tempfile.TemporaryDirectory() as td:
+        project = _budget_project(td, budget_remaining=0.0)
+        tasks = [_mock_task("T-1"), _mock_task("T-2")]
+
+        executed = []
+
+        class _Exec:
+            def __init__(self, *a, **k):
+                pass
+
+            def execute(self, t, proj):
+                executed.append(t.id)
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+            def _run_command(self, *a, **k):
+                return True, ""
+
+        with patch.object(agent_mod, "MarkdownPlanExecutor", _Exec):
+            orch = agent_mod.ProjectOrchestrator()
+            report = _fresh_report()
+            flags = BuildFlags(no_rollback=True)
+            orch._execute_tasks(tasks, project, flags, report)
+
+        assert executed == []  # no wave launched
+        assert {t.id for t in report.deferred_tasks} == {"T-1", "T-2"}
+        assert report.failed_tasks == []
+        assert any("budget exhausted" in d for d in report.key_decisions)
+
+
 # --- report persistence -----------------------------------------------------
 
 
@@ -1454,7 +1598,7 @@ def test_executor_execute_commits_real_and_out_of_scope_files(monkeypatch):
             dependencies=[],
             complexity="small",
             category="test",
-            processor_data={"sota_strategy": "surgical"},
+            processor_data={"strategy": "surgical"},
             execution_history=[],
         )
 
@@ -1767,7 +1911,7 @@ def test_save_lessons_handles_dict_rules_without_crashing():
 def test_extract_json_array_handles_prose_fences_and_garbage():
     from my_project_orchestrator.llm.responses import extract_json_array
 
-    assert extract_json_array('Here: [1, 2, 3] done') == [1, 2, 3]
+    assert extract_json_array("Here: [1, 2, 3] done") == [1, 2, 3]
     assert extract_json_array('```json\n["a","b"]\n```') == ["a", "b"]
     assert extract_json_array("no array here") == []
     assert extract_json_array("[broken", default=None) == []
@@ -1794,3 +1938,281 @@ def test_lazy_topography_not_built_at_registration(monkeypatch):
         # First explicit use builds it (idempotent).
         project.topography.initialize()
         assert project.topography._initialized is True
+
+
+# --- convergence loop: outer execute+gate iteration --------------------------
+class _CountingLLM:
+    """Offline LLM for convergence tests. decompose_spec is monkeypatched so
+    generate_code is only hit by best-effort phases (which are also stubbed)."""
+
+    def __init__(self, budget_remaining=100.0):
+        self.budget_remaining = budget_remaining
+        self._budget = budget_remaining
+        self.cumulative_usage = __import__(
+            "my_project_orchestrator.llm.client", fromlist=["LLMUsage"]
+        ).LLMUsage()
+        self.cost_by_task = {}
+
+    def generate_code(self, prompt, system_prompt=""):
+        return "spec"
+
+
+class _ScriptedGate:
+    """A GateKeeper stand-in returning a scripted (success, issues, health)
+    per run_gates call so a test can drive fail-then-pass sequences."""
+
+    sequence: list = []
+    _calls = 0
+
+    def __init__(self, *a, **k):
+        pass
+
+    def run_gates(self, commands):
+        from my_project_orchestrator.core.assessment import HealthCheck
+
+        idx = min(_ScriptedGate._calls, len(_ScriptedGate.sequence) - 1)
+        success, issues = _ScriptedGate.sequence[idx]
+        _ScriptedGate._calls += 1
+        health = HealthCheck(
+            builds=success,
+            tests_pass=success,
+            lint_clean=success,
+            test_output="" if success else "boom",
+        )
+        return success, list(issues), health
+
+
+def _run_convergence_pipeline(gate_sequence, max_iterations, budget=100.0):
+    """Drive _run_pipeline in DEBUG mode (no LLM spec/probe calls) with a
+    scripted gate and a counting _execute_tasks. Returns (report, exec_calls,
+    decompose_calls)."""
+    from unittest.mock import patch
+    import my_project_orchestrator.agent as agent_mod
+    from my_project_orchestrator.config import DEFAULT_CONFIG
+    from my_project_orchestrator.core.project import Project
+    from my_project_orchestrator.core.assessment import ProjectAssessment, HealthCheck
+    from my_project_orchestrator.core.modes import BuildMode, BuildFlags
+    from my_project_orchestrator.core.report import BuildReport
+    from datetime import datetime, timezone
+
+    _ScriptedGate.sequence = list(gate_sequence)
+    _ScriptedGate._calls = 0
+
+    counters = {"exec": 0, "decompose": 0}
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+        cfg["name"] = "fixture"
+        cfg["orchestrator"]["max_build_iterations"] = max_iterations
+        project = Project(repo, cfg)
+        project.llm_client = _CountingLLM(budget_remaining=budget)
+
+        assessment = ProjectAssessment()
+        assessment.structure.build_command = "true"
+        assessment.structure.test_command = "true"
+        assessment.health = HealthCheck(builds=True, tests_pass=True)
+
+        report = BuildReport(
+            BuildMode.DEBUG, "fixture", assessment, datetime.now(timezone.utc)
+        )
+        flags = BuildFlags(budget=budget)
+        orch = agent_mod.ProjectOrchestrator()
+
+        def fake_exec(tasks, project, flags, report):
+            counters["exec"] += 1
+
+        def fake_decompose(spec, assessment, mode, client, path):
+            counters["decompose"] += 1
+            return [_mock_task(f"FIX-{counters['decompose']}")]
+
+        with (
+            patch.object(orch, "_execute_tasks", side_effect=fake_exec),
+            patch.object(agent_mod, "decompose_spec", side_effect=fake_decompose),
+            patch.object(agent_mod, "topological_sort", side_effect=lambda x: x),
+            patch.object(agent_mod, "GateKeeper", _ScriptedGate),
+            patch.object(
+                agent_mod.ProjectOrchestrator,
+                "_maybe_rollback_regression",
+                return_value=None,
+            ),
+            patch.object(agent_mod, "SessionAuditor") as MockAuditor,
+        ):
+            MockAuditor.return_value.get_lessons_context.return_value = ""
+            MockAuditor.return_value.audit_session.return_value = None
+            orch._run_pipeline(
+                project, "fix things", BuildMode.DEBUG, flags, assessment, None, report
+            )
+
+    return report, counters["exec"], counters["decompose"]
+
+
+def _run_convergence_pipeline_with_cfg(gate_sequence, orchestrator_cfg):
+    """Like _run_convergence_pipeline but sets the orchestrator config block
+    verbatim, so the absent-key default (single pass) can be exercised."""
+    from unittest.mock import patch
+    import my_project_orchestrator.agent as agent_mod
+    from my_project_orchestrator.config import DEFAULT_CONFIG
+    from my_project_orchestrator.core.project import Project
+    from my_project_orchestrator.core.assessment import ProjectAssessment, HealthCheck
+    from my_project_orchestrator.core.modes import BuildMode, BuildFlags
+    from my_project_orchestrator.core.report import BuildReport
+    from datetime import datetime, timezone
+
+    _ScriptedGate.sequence = list(gate_sequence)
+    _ScriptedGate._calls = 0
+    counters = {"exec": 0, "decompose": 0}
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+        cfg["name"] = "fixture"
+        cfg["orchestrator"] = dict(orchestrator_cfg)
+        project = Project(repo, cfg)
+        project.llm_client = _CountingLLM()
+
+        assessment = ProjectAssessment()
+        assessment.structure.build_command = "true"
+        assessment.structure.test_command = "true"
+        assessment.health = HealthCheck(builds=True, tests_pass=True)
+
+        report = BuildReport(
+            BuildMode.DEBUG, "fixture", assessment, datetime.now(timezone.utc)
+        )
+        flags = BuildFlags(budget=100.0)
+        orch = agent_mod.ProjectOrchestrator()
+
+        def fake_exec(tasks, project, flags, report):
+            counters["exec"] += 1
+
+        def fake_decompose(spec, assessment, mode, client, path):
+            counters["decompose"] += 1
+            return [_mock_task(f"FIX-{counters['decompose']}")]
+
+        with (
+            patch.object(orch, "_execute_tasks", side_effect=fake_exec),
+            patch.object(agent_mod, "decompose_spec", side_effect=fake_decompose),
+            patch.object(agent_mod, "topological_sort", side_effect=lambda x: x),
+            patch.object(agent_mod, "GateKeeper", _ScriptedGate),
+            patch.object(
+                agent_mod.ProjectOrchestrator,
+                "_maybe_rollback_regression",
+                return_value=None,
+            ),
+            patch.object(agent_mod, "SessionAuditor") as MockAuditor,
+        ):
+            MockAuditor.return_value.get_lessons_context.return_value = ""
+            MockAuditor.return_value.audit_session.return_value = None
+            orch._run_pipeline(
+                project, "fix things", BuildMode.DEBUG, flags, assessment, None, report
+            )
+
+    return report, counters["exec"], counters["decompose"]
+
+
+def test_convergence_single_pass_when_cap_is_one():
+    # Gate fails, but cap=1 -> exactly one execute + one gate, no re-decompose.
+    # decompose_calls counts the baseline Phase-3 decompose (1); a fix
+    # re-decompose would push it to 2.
+    report, exec_calls, decompose_calls = _run_convergence_pipeline(
+        [(False, ["build broke"])], max_iterations=1
+    )
+    assert exec_calls == 1
+    assert decompose_calls == 1  # baseline only; no fix re-decompose
+    assert report.validation_passed is False
+    assert not any("Convergence iteration" in d for d in report.key_decisions)
+
+
+def test_convergence_passes_on_first_gate():
+    report, exec_calls, decompose_calls = _run_convergence_pipeline(
+        [(True, [])], max_iterations=3
+    )
+    assert exec_calls == 1
+    assert decompose_calls == 1  # baseline Phase-3 decompose only
+    assert report.validation_passed is True
+
+
+def test_convergence_fail_then_pass_runs_second_iteration():
+    # First gate red, second green: a second execute + re-decompose runs, build
+    # converges, and the final report reflects the LAST (passing) gate.
+    report, exec_calls, decompose_calls = _run_convergence_pipeline(
+        [(False, ["tests fail"]), (True, [])], max_iterations=3
+    )
+    assert exec_calls == 2
+    assert decompose_calls == 2  # baseline + one fix spec for iteration 2
+    assert report.validation_passed is True
+    assert any("Convergence iteration 2" in d for d in report.key_decisions)
+
+
+def test_convergence_stops_at_iteration_cap():
+    # Gate stays red with DIFFERENT issues each time so the no-progress guard
+    # doesn't trip; the cap must bound the loop at max_iterations executes.
+    report, exec_calls, decompose_calls = _run_convergence_pipeline(
+        [
+            (False, ["a"]),
+            (False, ["b"]),
+            (False, ["c"]),
+            (False, ["d"]),
+        ],
+        max_iterations=3,
+    )
+    assert exec_calls == 3  # bounded by cap
+    assert report.validation_passed is False
+
+
+def test_convergence_stops_on_no_progress_identical_failures():
+    # Identical issues on iterations 1 and 2 -> halt after the second gate even
+    # though the cap allows more.
+    report, exec_calls, decompose_calls = _run_convergence_pipeline(
+        [(False, ["same"]), (False, ["same"]), (False, ["same"])],
+        max_iterations=5,
+    )
+    assert exec_calls == 2
+    assert any("identical gate failures" in d for d in report.key_decisions)
+
+
+def test_convergence_stops_on_budget_exhaustion():
+    # Cap allows more iterations, but budget is zero -> no second iteration.
+    report, exec_calls, decompose_calls = _run_convergence_pipeline(
+        [(False, ["x"]), (True, [])], max_iterations=5, budget=0.0
+    )
+    assert exec_calls == 1
+    assert any(
+        "budget exhausted before next iteration" in d for d in report.key_decisions
+    )
+
+
+def test_combine_commands():
+    from my_project_orchestrator.agent import _combine_commands
+
+    assert (
+        _combine_commands("pytest", "pytest tests/golden")
+        == "(pytest) && (pytest tests/golden)"
+    )
+    assert _combine_commands("pytest", None) == "(pytest)"
+    assert _combine_commands(None, "golden") == "(golden)"
+    assert _combine_commands(None, None) is None
+    assert _combine_commands("", None) is None
+
+
+def test_check_golden_config_warns_on_half_configuration(caplog):
+    import logging
+    from my_project_orchestrator.agent import _check_golden_config
+
+    with caplog.at_level(logging.WARNING):
+        _check_golden_config({"orchestrator": {"golden_command": "pytest g"}})
+    assert any("not protected from edits" in r.message.lower() for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        _check_golden_config({"orchestrator": {"golden_paths": ["tests/golden/"]}})
+    assert any("never run as a gate" in r.message.lower() for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        # Both set (consistent) or both empty -> no warning.
+        _check_golden_config(
+            {"orchestrator": {"golden_paths": ["g/"], "golden_command": "pytest g"}}
+        )
+        _check_golden_config({"orchestrator": {}})
+    assert not caplog.records

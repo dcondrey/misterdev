@@ -4,19 +4,25 @@ from pathlib import Path
 
 from my_project_orchestrator.core.report import BuildReport
 from my_project_orchestrator.core.assessment import (
-    ProjectAssessment, HealthCheck, ProjectStructure, FeatureInventory,
-    ProjectContext, TechnicalDebt, RiskAssessment,
+    ProjectAssessment,
+    HealthCheck,
+    ProjectStructure,
+    FeatureInventory,
+    ProjectContext,
+    TechnicalDebt,
+    RiskAssessment,
 )
 from my_project_orchestrator.core.models import Task
 from my_project_orchestrator.core.modes import BuildMode
 from my_project_orchestrator.core.scratchpad import Scratchpad
+from my_project_orchestrator.core.validator import ValidationResult
 
 
 def _make_assessment(**overrides):
     return ProjectAssessment(
-        structure=overrides.get("structure", ProjectStructure(
-            project_type="library", languages=["rust"]
-        )),
+        structure=overrides.get(
+            "structure", ProjectStructure(project_type="library", languages=["rust"])
+        ),
         health=overrides.get("health", HealthCheck(builds=True, tests_pass=True)),
         tech_debt=TechnicalDebt(score=25),
         risk=RiskAssessment(level="low"),
@@ -69,18 +75,32 @@ def test_report_to_markdown_basic():
 
 def test_report_to_markdown_with_tasks():
     r = _make_report()
-    r.completed_tasks.append(Task(
-        id="T-001", description="Add posting shard", project_ref="test",
-        title="PostingShard impl", status="completed",
-    ))
-    r.failed_tasks.append(Task(
-        id="T-002", description="Add query engine", project_ref="test",
-        title="QueryEngine", status="failed",
-    ))
-    r.deferred_tasks.append(Task(
-        id="T-003", description="Add benchmarks", project_ref="test",
-        title="Benchmarks",
-    ))
+    r.completed_tasks.append(
+        Task(
+            id="T-001",
+            description="Add posting shard",
+            project_ref="test",
+            title="PostingShard impl",
+            status="completed",
+        )
+    )
+    r.failed_tasks.append(
+        Task(
+            id="T-002",
+            description="Add query engine",
+            project_ref="test",
+            title="QueryEngine",
+            status="failed",
+        )
+    )
+    r.deferred_tasks.append(
+        Task(
+            id="T-003",
+            description="Add benchmarks",
+            project_ref="test",
+            title="Benchmarks",
+        )
+    )
     r.finalize(datetime(2026, 1, 1, 1, 0, tzinfo=timezone.utc))
     md = r.to_markdown()
     assert "PostingShard impl" in md
@@ -94,7 +114,9 @@ def test_report_to_markdown_with_tasks():
 def test_report_to_markdown_with_health():
     r = _make_report()
     r.health_before = HealthCheck(builds=False, test_count=10, test_failures=3)
-    r.health_after = HealthCheck(builds=True, test_count=10, test_failures=0, lint_warnings=2)
+    r.health_after = HealthCheck(
+        builds=True, test_count=10, test_failures=0, lint_warnings=2
+    )
     r.finalize(datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc))
     md = r.to_markdown()
     assert "Health Before -> After" in md
@@ -117,7 +139,10 @@ def test_report_to_markdown_with_llm_usage():
 
 def test_report_to_markdown_with_key_decisions():
     r = _make_report()
-    r.key_decisions = ["Used parking_lot instead of std::sync", "Chose FxHashMap for perf"]
+    r.key_decisions = [
+        "Used parking_lot instead of std::sync",
+        "Chose FxHashMap for perf",
+    ]
     r.finalize(datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc))
     md = r.to_markdown()
     assert "Key Decisions" in md
@@ -142,6 +167,92 @@ def test_report_duration_calculation():
     assert "30.0 minutes" in md
 
 
+def test_report_verdict_ship():
+    r = _make_report()
+    r.completed_tasks.append(
+        Task(
+            id="T-001",
+            description="Add posting shard",
+            project_ref="test",
+            title="PostingShard impl",
+            status="completed",
+        )
+    )
+    r.validation_passed = True
+    v = ValidationResult()
+    v.build_ok = True
+    v.tests_ok = True
+    v.lint_ok = True
+    r.validation = v
+    r.finalize(datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc))
+    md = r.to_markdown()
+    assert "## Verdict: SHIP" in md
+    assert "### Evidence" in md
+    assert "1 completed, 0 failed, 0 deferred" in md
+    assert "**Blocking items:**" not in md
+
+
+def test_report_verdict_needs_review():
+    r = _make_report()
+    r.completed_tasks.append(
+        Task(
+            id="T-001",
+            description="Add posting shard",
+            project_ref="test",
+            title="PostingShard impl",
+            status="completed",
+        )
+    )
+    r.failed_tasks.append(
+        Task(
+            id="T-002",
+            description="Add query engine",
+            project_ref="test",
+            title="QueryEngine",
+            status="failed",
+        )
+    )
+    r.validation_passed = True
+    v = ValidationResult()
+    v.build_ok = True
+    v.tests_ok = True
+    r.validation = v
+    r.finalize(datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc))
+    md = r.to_markdown()
+    assert "## Verdict: NEEDS REVIEW" in md
+    assert "**Blocking items:**" in md
+    assert "Failed task T-002" in md
+
+
+def test_report_verdict_failed():
+    r = _make_report()
+    r.completed_tasks.append(
+        Task(
+            id="T-001",
+            description="Add posting shard",
+            project_ref="test",
+            title="PostingShard impl",
+            status="completed",
+        )
+    )
+    r.validation_passed = False
+    v = ValidationResult()
+    v.issues = ["build failed: missing dependency"]
+    r.validation = v
+    r.finalize(datetime(2026, 1, 1, 0, 5, tzinfo=timezone.utc))
+    md = r.to_markdown()
+    assert "## Verdict: FAILED" in md
+    assert "**Blocking items:**" in md
+    assert "missing dependency" in md
+
+
+def test_report_verdict_failed_when_nothing_done():
+    r = _make_report()
+    r.finalize(datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc))
+    md = r.to_markdown()
+    assert "## Verdict: FAILED" in md
+
+
 def test_report_debt_and_risk():
     r = _make_report()
     r.finalize(datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc))
@@ -150,3 +261,41 @@ def test_report_debt_and_risk():
     assert "25/100" in md
     assert "Risk Level" in md
     assert "LOW" in md
+
+
+def test_report_init_degraded_subsystems_empty():
+    r = _make_report()
+    assert r.degraded_subsystems == []
+
+
+def test_report_to_markdown_omits_degraded_when_empty():
+    r = _make_report()
+    r.finalize(datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc))
+    md = r.to_markdown()
+    assert "Degraded subsystems" not in md
+
+
+def test_report_to_markdown_renders_degraded_when_populated():
+    r = _make_report()
+    r.degraded_subsystems = [
+        "AB-MCTS planning: boom",
+        "Empirical probes: kaboom",
+    ]
+    r.finalize(datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc))
+    md = r.to_markdown()
+    assert "Degraded subsystems" in md
+    assert "AB-MCTS planning: boom" in md
+    assert "Empirical probes: kaboom" in md
+    assert "WITHOUT: AB-MCTS planning, Empirical probes" in md
+
+
+def test_report_to_dict_includes_degraded_subsystems():
+    r = _make_report()
+    r.degraded_subsystems = ["Session audit: nope"]
+    d = r.to_dict()
+    assert d["degraded_subsystems"] == ["Session audit: nope"]
+
+
+def test_report_to_dict_degraded_empty_by_default():
+    r = _make_report()
+    assert r.to_dict()["degraded_subsystems"] == []

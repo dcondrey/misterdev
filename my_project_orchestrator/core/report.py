@@ -45,6 +45,10 @@ class BuildReport:
         self.llm_cost: float = 0.0
         self.llm_cache_read_tokens: int = 0
         self.cost_by_task: dict = {}
+        # Best-effort subsystems that threw during the run (e.g. AB-MCTS,
+        # probes). Surfaced in the report so a silently-dead subsystem is
+        # visible to the morning reader, not just buried in a log.
+        self.degraded_subsystems: list[str] = []
 
     def finalize(self, end_time: Optional[datetime] = None):
         self.end_time = end_time or datetime.now(timezone.utc)
@@ -63,6 +67,7 @@ class BuildReport:
             "llm_calls": self.llm_calls,
             "llm_tokens": self.llm_tokens,
             "llm_cost": self.llm_cost,
+            "degraded_subsystems": list(self.degraded_subsystems),
         }
 
     def save(self, project_path: Path) -> Optional[Path]:
@@ -86,6 +91,69 @@ class BuildReport:
             logger.error(f"Failed to save build report: {e}")
             return None
 
+    def _verdict_block(self) -> list[str]:
+        """Top-line go/no-go verdict plus an evidence block, derived purely
+        from existing report fields (no LLM calls, no I/O)."""
+        n_completed = len(self.completed_tasks)
+        n_failed = len(self.failed_tasks)
+        n_deferred = len(self.deferred_tasks)
+        nothing_done = (n_completed + n_failed + n_deferred) == 0
+
+        if self.validation_passed is False or (
+            nothing_done and self.validation_passed is not True
+        ):
+            verdict = "FAILED"
+            reason = "build/test gate is red or nothing meaningful completed."
+        elif self.validation_passed and n_failed == 0:
+            verdict = "SHIP"
+            reason = "validation passed and no tasks failed."
+        else:
+            verdict = "NEEDS REVIEW"
+            reason = "build largely succeeded but has open issues; see below."
+
+        lines = [f"## Verdict: {verdict}", f"_{reason}_\n", "### Evidence"]
+        lines.append(
+            f"- Tasks: {n_completed} completed, {n_failed} failed, {n_deferred} deferred"
+        )
+        if self.validation:
+            lines.append(f"- Validation: {self.validation.summary()}")
+        elif self.validation_passed is not None:
+            lines.append(
+                f"- Validation: {'passed' if self.validation_passed else 'failed'}"
+            )
+        if self.health_before or self.health_after:
+            hb = self.health_before or HealthCheck()
+            ha = self.health_after or HealthCheck()
+            lines.append(
+                f"- Health: builds {'YES' if hb.builds else 'NO'} -> "
+                f"{'YES' if ha.builds else 'NO'}, "
+                f"tests {hb.test_failures} fail -> {ha.test_failures} fail, "
+                f"lint {hb.lint_warnings} -> {ha.lint_warnings} warnings"
+            )
+        if self.validation and self.validation.diff_stats:
+            lines.append(f"- Diff: {self.validation.diff_stats}")
+        if self.llm_calls > 0:
+            lines.append(
+                f"- LLM: {self.llm_calls} calls, {self.llm_tokens:,} tokens, "
+                f"${self.llm_cost:.4f}"
+            )
+
+        blocking = list(self.failed_tasks)
+        issues = list(self.validation.issues) if self.validation else []
+        if blocking or issues:
+            lines.append("\n**Blocking items:**")
+            for t in blocking:
+                lines.append(f"- Failed task {t.id}: {t.title or t.description[:60]}")
+            for issue in issues:
+                lines.append(f"- {issue}")
+        if self.degraded_subsystems:
+            names = ", ".join(d.split(":")[0] for d in self.degraded_subsystems)
+            lines.append(f"\n**Degraded subsystems** (ran WITHOUT: {names}):")
+            for d in self.degraded_subsystems:
+                lines.append(f"- {d}")
+        lines.append("")
+        return lines
+
     def to_markdown(self) -> str:
         self.end_time = self.end_time or datetime.now(timezone.utc)
         duration = (self.end_time - self.start_time).total_seconds()
@@ -100,13 +168,20 @@ class BuildReport:
             f"**Project**: {self.project_name} | **Type**: {s.project_type} | **Languages**: {langs}\n",
         ]
 
+        # Go/no-go verdict: someone returning to an unattended run must see
+        # "can I ship this?" up front, derived purely from existing fields,
+        # before scanning the task tables below.
+        lines.extend(self._verdict_block())
+
         # Validation banner: a failed quality gate must be visible at the top,
         # not buried while the report otherwise reads as a success.
         if self.validation_passed is not None:
             if self.validation_passed:
                 lines.append("**Validation: PASSED**\n")
             else:
-                lines.append("**Validation: FAILED** - quality gate did not pass; see issues below.")
+                lines.append(
+                    "**Validation: FAILED** - quality gate did not pass; see issues below."
+                )
                 if self.validation and self.validation.issues:
                     for issue in self.validation.issues:
                         lines.append(f"- {issue}")
@@ -119,12 +194,16 @@ class BuildReport:
             lines.append("|-------|--------|-------|")
             hb = self.health_before or HealthCheck()
             ha = self.health_after or HealthCheck()
-            lines.append(f"| Builds | {'YES' if hb.builds else 'NO'} | {'YES' if ha.builds else 'NO'} |")
+            lines.append(
+                f"| Builds | {'YES' if hb.builds else 'NO'} | {'YES' if ha.builds else 'NO'} |"
+            )
             lines.append(
                 f"| Tests | {hb.test_count - hb.test_failures} pass, {hb.test_failures} fail | "
                 f"{ha.test_count - ha.test_failures} pass, {ha.test_failures} fail |"
             )
-            lines.append(f"| Lint | {hb.lint_warnings} warnings | {ha.lint_warnings} warnings |")
+            lines.append(
+                f"| Lint | {hb.lint_warnings} warnings | {ha.lint_warnings} warnings |"
+            )
             lines.append("")
 
         # Technical Debt & Risk
@@ -161,7 +240,9 @@ class BuildReport:
             lines.append("| ID | Title | Status |")
             lines.append("|------|-------|--------|")
             for t in self.failed_tasks:
-                lines.append(f"| {t.id} | {t.title or t.description[:60]} | {t.status} |")
+                lines.append(
+                    f"| {t.id} | {t.title or t.description[:60]} | {t.status} |"
+                )
             lines.append("")
 
         # Deferred tasks
@@ -204,16 +285,24 @@ class BuildReport:
             )
             if self.llm_cache_read_tokens > 0 and self.llm_tokens > 0:
                 rate = 100.0 * self.llm_cache_read_tokens / self.llm_tokens
-                lines.append(f"- Cache: {self.llm_cache_read_tokens:,} tokens read from cache ({rate:.0f}% of total)")
+                lines.append(
+                    f"- Cache: {self.llm_cache_read_tokens:,} tokens read from cache ({rate:.0f}% of total)"
+                )
             if self.cost_by_task:
-                top = sorted(self.cost_by_task.items(), key=lambda kv: kv[1], reverse=True)[:5]
+                top = sorted(
+                    self.cost_by_task.items(), key=lambda kv: kv[1], reverse=True
+                )[:5]
                 lines.append("- Most expensive tasks:")
                 for tid, cost in top:
                     lines.append(f"  - {tid}: ${cost:.4f}")
             lines.append("")
 
         # Summary line
-        total = len(self.completed_tasks) + len(self.failed_tasks) + len(self.deferred_tasks)
+        total = (
+            len(self.completed_tasks)
+            + len(self.failed_tasks)
+            + len(self.deferred_tasks)
+        )
         validation_note = ""
         if self.validation_passed is False:
             validation_note = " VALIDATION FAILED."

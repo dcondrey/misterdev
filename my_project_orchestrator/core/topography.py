@@ -7,12 +7,11 @@ Features:
 - Lazy loading for high-speed CLI performance.
 """
 
-import json
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Any, Tuple
+from typing import Dict, List, Optional, Set, Any
 
 from my_project_orchestrator.logging_setup import setup_logger
-from my_project_orchestrator.utils.file_utils import read_file
+from my_project_orchestrator.utils.file_utils import read_file, is_golden_path
 
 logger = setup_logger(__name__)
 
@@ -51,6 +50,7 @@ def _get_ts_parsers() -> Dict[str, Any]:
     # single language() the loop above expects, so load it separately.
     try:
         import tree_sitter_typescript as tsts
+
         _ts_parsers["typescript"] = Parser(Language(tsts.language_typescript()))
         _ts_parsers["tsx"] = Parser(Language(tsts.language_tsx()))
         logger.debug("tree-sitter typescript grammar loaded")
@@ -66,35 +66,48 @@ def _get_ts_parsers() -> Dict[str, Any]:
 
     return _ts_parsers
 
+
 class SymbolNode:
-    def __init__(self, name: str, file_path: str, kind: str, start_line: int, end_line: int, content: str):
+    def __init__(
+        self,
+        name: str,
+        file_path: str,
+        kind: str,
+        start_line: int,
+        end_line: int,
+        content: str,
+    ):
         self.name = name
         self.file_path = file_path
-        self.kind = kind # 'function', 'class', 'method'
+        self.kind = kind  # 'function', 'class', 'method'
         self.start_line = start_line
         self.end_line = end_line
         self.content = content
         self.outgoing_calls: Set[str] = set()
         self.incoming_calls: Set[str] = set()
-        self.imports: List[Dict[str, str]] = [] # {name: ..., module: ...}
+        self.imports: List[Dict[str, str]] = []  # {name: ..., module: ...}
 
     def __repr__(self):
         return f"Symbol({self.kind}:{self.name} in {self.file_path})"
 
+
 _EXT_TO_LANG: Dict[str, str] = {
-    ".py": "python", ".pyi": "python",
+    ".py": "python",
+    ".pyi": "python",
     ".rs": "rust",
-    ".ts": "typescript", ".tsx": "tsx",
+    ".ts": "typescript",
+    ".tsx": "tsx",
 }
 
 
 class SymbolGraph:
     """Robust dependency graph with scope-aware parsing."""
 
-    def __init__(self, project_path: Path):
+    def __init__(self, project_path: Path, golden_paths=None):
         self.project_path = project_path
         self.symbols: Dict[str, SymbolNode] = {}
         self.parsers = _get_ts_parsers()
+        self.golden_paths = golden_paths or []
 
     def build(self):
         logger.info(f"Building symbol graph for {self.project_path}")
@@ -104,11 +117,20 @@ class SymbolGraph:
             logger.info("Tree-sitter not available; symbol graph disabled")
             return
 
-        _skip = frozenset((".venv", ".git", "__pycache__", "node_modules", "target", "build", "dist"))
-        supported_exts = {ext for ext, lang in _EXT_TO_LANG.items() if lang in self.parsers}
+        _skip = frozenset(
+            (".venv", ".git", "__pycache__", "node_modules", "target", "build", "dist")
+        )
+        supported_exts = {
+            ext for ext, lang in _EXT_TO_LANG.items() if lang in self.parsers
+        }
         source_files = [
-            f for f in self.project_path.rglob("*")
-            if f.suffix in supported_exts and not (_skip & set(f.parts))
+            f
+            for f in self.project_path.rglob("*")
+            if f.suffix in supported_exts
+            and not (_skip & set(f.parts))
+            and not is_golden_path(
+                str(f.relative_to(self.project_path)), self.golden_paths
+            )
         ]
 
         if not source_files:
@@ -136,60 +158,76 @@ class SymbolGraph:
         else:
             self._traverse_python(tree.root_node, content, rel_path)
 
-    def _traverse_python(self, node: Any, content: str, file_path: str, parent_class: Optional[str] = None):
-        if node.type == 'function_definition':
-            name_node = node.child_by_field_name('name')
+    def _traverse_python(
+        self,
+        node: Any,
+        content: str,
+        file_path: str,
+        parent_class: Optional[str] = None,
+    ):
+        if node.type == "function_definition":
+            name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte:name_node.end_byte]
+                name = content[name_node.start_byte : name_node.end_byte]
                 full_name = f"{parent_class}.{name}" if parent_class else name
-                self._add_symbol(full_name, file_path, 'method' if parent_class else 'function', node, content)
+                self._add_symbol(
+                    full_name,
+                    file_path,
+                    "method" if parent_class else "function",
+                    node,
+                    content,
+                )
 
-        elif node.type == 'class_definition':
-            name_node = node.child_by_field_name('name')
+        elif node.type == "class_definition":
+            name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte:name_node.end_byte]
-                self._add_symbol(name, file_path, 'class', node, content)
-                body_node = node.child_by_field_name('body')
+                name = content[name_node.start_byte : name_node.end_byte]
+                self._add_symbol(name, file_path, "class", node, content)
+                body_node = node.child_by_field_name("body")
                 if body_node:
                     for child in body_node.children:
-                        self._traverse_python(child, content, file_path, parent_class=name)
+                        self._traverse_python(
+                            child, content, file_path, parent_class=name
+                        )
                 return
 
         for child in node.children:
             self._traverse_python(child, content, file_path, parent_class)
 
-    def _traverse_rust(self, node: Any, content: str, file_path: str, parent: Optional[str] = None):
-        if node.type == 'function_item':
-            name_node = node.child_by_field_name('name')
+    def _traverse_rust(
+        self, node: Any, content: str, file_path: str, parent: Optional[str] = None
+    ):
+        if node.type == "function_item":
+            name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte:name_node.end_byte]
+                name = content[name_node.start_byte : name_node.end_byte]
                 full_name = f"{parent}::{name}" if parent else name
-                kind = 'method' if parent else 'function'
+                kind = "method" if parent else "function"
                 self._add_symbol(full_name, file_path, kind, node, content)
 
-        elif node.type == 'struct_item':
-            name_node = node.child_by_field_name('name')
+        elif node.type == "struct_item":
+            name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte:name_node.end_byte]
-                self._add_symbol(name, file_path, 'struct', node, content)
+                name = content[name_node.start_byte : name_node.end_byte]
+                self._add_symbol(name, file_path, "struct", node, content)
 
-        elif node.type == 'enum_item':
-            name_node = node.child_by_field_name('name')
+        elif node.type == "enum_item":
+            name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte:name_node.end_byte]
-                self._add_symbol(name, file_path, 'enum', node, content)
+                name = content[name_node.start_byte : name_node.end_byte]
+                self._add_symbol(name, file_path, "enum", node, content)
 
-        elif node.type == 'trait_item':
-            name_node = node.child_by_field_name('name')
+        elif node.type == "trait_item":
+            name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte:name_node.end_byte]
-                self._add_symbol(name, file_path, 'trait', node, content)
+                name = content[name_node.start_byte : name_node.end_byte]
+                self._add_symbol(name, file_path, "trait", node, content)
 
-        elif node.type == 'impl_item':
-            type_node = node.child_by_field_name('type')
+        elif node.type == "impl_item":
+            type_node = node.child_by_field_name("type")
             if type_node:
-                impl_name = content[type_node.start_byte:type_node.end_byte]
-                body_node = node.child_by_field_name('body')
+                impl_name = content[type_node.start_byte : type_node.end_byte]
+                body_node = node.child_by_field_name("body")
                 if body_node:
                     for child in body_node.children:
                         self._traverse_rust(child, content, file_path, parent=impl_name)
@@ -198,38 +236,48 @@ class SymbolGraph:
         for child in node.children:
             self._traverse_rust(child, content, file_path, parent)
 
-    def _traverse_typescript(self, node: Any, content: str, file_path: str, parent_class: Optional[str] = None):
+    def _traverse_typescript(
+        self,
+        node: Any,
+        content: str,
+        file_path: str,
+        parent_class: Optional[str] = None,
+    ):
         t = node.type
         if t == "function_declaration":
-            name_node = node.child_by_field_name('name')
+            name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte:name_node.end_byte]
-                self._add_symbol(name, file_path, 'function', node, content)
+                name = content[name_node.start_byte : name_node.end_byte]
+                self._add_symbol(name, file_path, "function", node, content)
 
-        elif t in ('class_declaration', 'interface_declaration'):
-            name_node = node.child_by_field_name('name')
+        elif t in ("class_declaration", "interface_declaration"):
+            name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte:name_node.end_byte]
-                self._add_symbol(name, file_path, 'class', node, content)
-                body_node = node.child_by_field_name('body')
+                name = content[name_node.start_byte : name_node.end_byte]
+                self._add_symbol(name, file_path, "class", node, content)
+                body_node = node.child_by_field_name("body")
                 if body_node:
                     for child in body_node.children:
-                        self._traverse_typescript(child, content, file_path, parent_class=name)
+                        self._traverse_typescript(
+                            child, content, file_path, parent_class=name
+                        )
                 return
 
-        elif t == 'method_definition':
-            name_node = node.child_by_field_name('name')
+        elif t == "method_definition":
+            name_node = node.child_by_field_name("name")
             if name_node and parent_class:
-                name = content[name_node.start_byte:name_node.end_byte]
-                self._add_symbol(f"{parent_class}.{name}", file_path, 'method', node, content)
+                name = content[name_node.start_byte : name_node.end_byte]
+                self._add_symbol(
+                    f"{parent_class}.{name}", file_path, "method", node, content
+                )
 
-        elif t == 'type_alias_declaration':
-            name_node = node.child_by_field_name('name')
+        elif t == "type_alias_declaration":
+            name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte:name_node.end_byte]
-                self._add_symbol(name, file_path, 'class', node, content)
+                name = content[name_node.start_byte : name_node.end_byte]
+                self._add_symbol(name, file_path, "class", node, content)
 
-        elif t == 'export_statement':
+        elif t == "export_statement":
             for child in node.children:
                 self._traverse_typescript(child, content, file_path, parent_class)
             return
@@ -237,13 +285,18 @@ class SymbolGraph:
         for child in node.children:
             self._traverse_typescript(child, content, file_path, parent_class)
 
-    def _add_symbol(self, name: str, file_path: str, kind: str, node: Any, content: str):
+    def _add_symbol(
+        self, name: str, file_path: str, kind: str, node: Any, content: str
+    ):
         key = f"{file_path}:{name}"
-        symbol_content = content[node.start_byte:node.end_byte]
+        symbol_content = content[node.start_byte : node.end_byte]
         self.symbols[key] = SymbolNode(
-            name, file_path, kind, 
-            node.start_point.row, node.end_point.row, 
-            symbol_content
+            name,
+            file_path,
+            kind,
+            node.start_point.row,
+            node.end_point.row,
+            symbol_content,
         )
 
     def _resolve_references(self):
@@ -256,13 +309,14 @@ class SymbolGraph:
                     symbol.outgoing_calls.add(other_key)
                     self.symbols[other_key].incoming_calls.add(key)
 
-class TopographyEngine:
-    """SOTA Topography Engine with Vector Persistence and Lazy Loading."""
 
-    def __init__(self, project_path: Path, llm_client: Any):
+class TopographyEngine:
+    """Topography Engine with Vector Persistence and Lazy Loading."""
+
+    def __init__(self, project_path: Path, llm_client: Any, golden_paths=None):
         self.project_path = project_path
         self.llm = llm_client
-        self.graph = SymbolGraph(project_path)
+        self.graph = SymbolGraph(project_path, golden_paths=golden_paths)
         self._initialized = False
 
     def initialize(self, force: bool = False):
@@ -274,7 +328,9 @@ class TopographyEngine:
         logger.info(f"Symbol graph: {len(self.graph.symbols)} symbols indexed")
         self._initialized = True
 
-    def get_context_for_task(self, query: str, related_files: List[str], max_symbols: int = 30) -> str:
+    def get_context_for_task(
+        self, query: str, related_files: List[str], max_symbols: int = 30
+    ) -> str:
         """Retrieves functional neighborhood and semantic context. Triggers lazy init."""
         self.initialize()
 
@@ -305,6 +361,8 @@ class TopographyEngine:
                 output += f"\n# {sym.kind.upper()}: {sym.name}\n{sym.content}\n"
 
         if len(context_symbols) > max_symbols:
-            output += f"\n(... {len(context_symbols) - max_symbols} more symbols omitted)\n"
+            output += (
+                f"\n(... {len(context_symbols) - max_symbols} more symbols omitted)\n"
+            )
 
         return output

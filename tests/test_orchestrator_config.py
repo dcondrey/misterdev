@@ -6,6 +6,7 @@ Verifies:
 - agent._execute_parallel reads max_workers from project.config.
 - ContextBudget accepts a custom max_tokens constructor argument.
 """
+
 import concurrent.futures
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
@@ -19,6 +20,7 @@ from my_project_orchestrator.core.context_budget import ContextBudget
 # ---------------------------------------------------------------------------
 # DEFAULT_CONFIG
 # ---------------------------------------------------------------------------
+
 
 class TestDefaultConfig:
     """Verify DEFAULT_CONFIG has the expected orchestrator section."""
@@ -38,17 +40,37 @@ class TestDefaultConfig:
     def test_max_task_attempts_default(self):
         assert DEFAULT_CONFIG["orchestrator"]["max_task_attempts"] == 3
 
-    def test_all_values_are_positive_integers(self):
+    def test_count_values_are_positive_integers(self):
+        # The numeric tuning knobs must be positive ints. Budget-driven keys
+        # ("auto"), booleans, and the float certainty_threshold are intentional
+        # and excluded.
+        int_keys = (
+            "max_consecutive_failures",
+            "max_workers",
+            "context_budget_tokens",
+            "max_task_attempts",
+        )
         cfg = DEFAULT_CONFIG["orchestrator"]
-        for key, value in cfg.items():
+        for key in int_keys:
+            value = cfg[key]
             assert isinstance(value, int) and value > 0, (
                 f"orchestrator.{key} should be a positive int, got {value!r}"
             )
+
+    def test_hardened_defaults_opted_in(self):
+        cfg = DEFAULT_CONFIG["orchestrator"]
+        assert cfg["max_build_iterations"] == "auto"
+        assert cfg["max_cost_per_task"] == "auto"
+        assert cfg["verify_acceptance"] is True
+        assert cfg["llm_acceptance_judge"] is True
+        assert cfg["allow_test_edits"] is False
+        assert cfg["certainty_threshold"] == 0.5
 
 
 # ---------------------------------------------------------------------------
 # ContextBudget – custom max_tokens
 # ---------------------------------------------------------------------------
+
 
 class TestContextBudgetCustomTokens:
     """ContextBudget already accepts max_tokens; verify the parameter works."""
@@ -90,11 +112,13 @@ class TestContextBudgetCustomTokens:
 # agent._execute_parallel – max_workers from config
 # ---------------------------------------------------------------------------
 
+
 class TestExecuteParallelMaxWorkers:
     """_execute_parallel should use orchestrator.max_workers from project.config."""
 
     def _make_orchestrator(self):
         from my_project_orchestrator.agent import ProjectOrchestrator
+
         return ProjectOrchestrator()
 
     def _make_project(self, orchestrator_cfg: dict) -> MagicMock:
@@ -116,13 +140,18 @@ class TestExecuteParallelMaxWorkers:
         executor = MagicMock()
         tasks = self._make_tasks(3)  # 3 tasks, max_workers=8 → min(3,8)=3
 
-        with patch("my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor") as MockPool:
+        with patch(
+            "my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor"
+        ) as MockPool:
             mock_ctx = MagicMock()
             MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
             MockPool.return_value.__exit__ = MagicMock(return_value=False)
             mock_ctx.submit.return_value = MagicMock()
 
-            with patch("my_project_orchestrator.agent.concurrent.futures.as_completed", return_value=[]):
+            with patch(
+                "my_project_orchestrator.agent.concurrent.futures.as_completed",
+                return_value=[],
+            ):
                 orchestrator._execute_parallel(tasks, executor, project)
 
             MockPool.assert_called_once_with(max_workers=3)
@@ -134,13 +163,18 @@ class TestExecuteParallelMaxWorkers:
         executor = MagicMock()
         tasks = self._make_tasks(2)
 
-        with patch("my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor") as MockPool:
+        with patch(
+            "my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor"
+        ) as MockPool:
             mock_ctx = MagicMock()
             MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
             MockPool.return_value.__exit__ = MagicMock(return_value=False)
             mock_ctx.submit.return_value = MagicMock()
 
-            with patch("my_project_orchestrator.agent.concurrent.futures.as_completed", return_value=[]):
+            with patch(
+                "my_project_orchestrator.agent.concurrent.futures.as_completed",
+                return_value=[],
+            ):
                 orchestrator._execute_parallel(tasks, executor, project)
 
             MockPool.assert_called_once_with(max_workers=2)
@@ -153,13 +187,18 @@ class TestExecuteParallelMaxWorkers:
         executor = MagicMock()
         tasks = self._make_tasks(6)  # 6 tasks, default max_workers=4 → min(6,4)=4
 
-        with patch("my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor") as MockPool:
+        with patch(
+            "my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor"
+        ) as MockPool:
             mock_ctx = MagicMock()
             MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
             MockPool.return_value.__exit__ = MagicMock(return_value=False)
             mock_ctx.submit.return_value = MagicMock()
 
-            with patch("my_project_orchestrator.agent.concurrent.futures.as_completed", return_value=[]):
+            with patch(
+                "my_project_orchestrator.agent.concurrent.futures.as_completed",
+                return_value=[],
+            ):
                 orchestrator._execute_parallel(tasks, executor, project)
 
             MockPool.assert_called_once_with(max_workers=4)
@@ -171,26 +210,110 @@ class TestExecuteParallelMaxWorkers:
         executor = MagicMock()
         tasks = self._make_tasks(10)  # 10 tasks, default max_workers=4 → min(10,4)=4
 
-        with patch("my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor") as MockPool:
+        with patch(
+            "my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor"
+        ) as MockPool:
             mock_ctx = MagicMock()
             MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
             MockPool.return_value.__exit__ = MagicMock(return_value=False)
             mock_ctx.submit.return_value = MagicMock()
 
-            with patch("my_project_orchestrator.agent.concurrent.futures.as_completed", return_value=[]):
+            with patch(
+                "my_project_orchestrator.agent.concurrent.futures.as_completed",
+                return_value=[],
+            ):
                 orchestrator._execute_parallel(tasks, executor, project)
 
             MockPool.assert_called_once_with(max_workers=4)
 
 
 # ---------------------------------------------------------------------------
+# agent._execute_parallel – disjoint-file partitioning in shared mode
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteParallelDisjoint:
+    """Shared mode runs only disjoint-file tasks in one concurrent batch."""
+
+    def _make_orchestrator(self):
+        from my_project_orchestrator.agent import ProjectOrchestrator
+
+        return ProjectOrchestrator()
+
+    def _make_project(self):
+        project = MagicMock()
+        # Explicit shared mode → no worktree promotion; non-git project.
+        project.config = {"orchestrator": {"parallel_mode": "shared"}}
+        project.path = MagicMock()
+        (project.path / ".git").exists.return_value = False
+        return project
+
+    def _make_task(self, tid, modify=None, create=None):
+        t = MagicMock()
+        t.id = tid
+        t.files_to_modify = list(modify or [])
+        t.files_to_create = list(create or [])
+        return t
+
+    def test_overlapping_tasks_not_in_same_batch(self):
+        orchestrator = self._make_orchestrator()
+        project = self._make_project()
+
+        # t0 & t1 share no files (disjoint → concurrent).
+        # t2 overlaps t0 on a.py (must be serialized, not submitted to pool).
+        t0 = self._make_task("t0", modify=["a.py"])
+        t1 = self._make_task("t1", modify=["b.py"])
+        t2 = self._make_task("t2", modify=["a.py", "c.py"])
+        tasks = [t0, t1, t2]
+
+        executor = MagicMock()
+        executor.execute.return_value = MagicMock()
+
+        submitted = []
+
+        def fake_submit(fn, task, proj, use_git_branch=False):
+            submitted.append(task)
+            fut = MagicMock()
+            fut.result.return_value = MagicMock()
+            return fut
+
+        with patch(
+            "my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor"
+        ) as MockPool:
+            mock_ctx = MagicMock()
+            MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
+            MockPool.return_value.__exit__ = MagicMock(return_value=False)
+            mock_ctx.submit.side_effect = fake_submit
+
+            with patch(
+                "my_project_orchestrator.agent.concurrent.futures.as_completed",
+                side_effect=lambda d: list(d),
+            ):
+                results = orchestrator._execute_parallel(tasks, executor, project)
+
+            # Only the disjoint pair was submitted concurrently.
+            assert {t.id for t in submitted} == {"t0", "t1"}
+            # Pool sized for the concurrent group (2), not all 3 tasks.
+            MockPool.assert_called_once_with(max_workers=2)
+
+        # t2 ran serially via the executor directly (not through the pool).
+        serial_ids = {c.args[0].id for c in executor.execute.call_args_list}
+        assert serial_ids == {"t2"}
+        # Every task is represented in the returned tuples.
+        assert {t.id for t, _, _ in results} == {"t0", "t1", "t2"}
+
+
+# ---------------------------------------------------------------------------
 # agent._execute_tasks – max_consecutive_failures from config
 # ---------------------------------------------------------------------------
+
 
 class TestExecuteTasksMaxConsecutiveFailures:
     """_execute_tasks should abort after the configured number of consecutive failures."""
 
-    def _run_execute_tasks_with_config(self, orchestrator_cfg: dict, num_tasks: int = 5):
+    def _run_execute_tasks_with_config(
+        self, orchestrator_cfg: dict, num_tasks: int = 5
+    ):
         """Helper: run _execute_tasks with all-failing tasks and return the report mock."""
         from my_project_orchestrator.agent import ProjectOrchestrator
         from my_project_orchestrator.core.modes import BuildFlags
@@ -326,3 +449,36 @@ class TestExecuteTasksMaxConsecutiveFailures:
         attempted_5 = len(report_5.failed_tasks) + len(report_5.completed_tasks)
 
         assert attempted_5 >= attempted_2
+
+
+# ---------------------------------------------------------------------------
+# orchestrator.max_build_iterations – convergence cap default
+# ---------------------------------------------------------------------------
+
+
+class TestMaxBuildIterationsConfig:
+    """The convergence loop reads orchestrator.max_build_iterations, defaulting
+    to 1 so existing single-pass behavior is preserved when the key is absent."""
+
+    def test_absent_key_defaults_to_auto_dynamic(self):
+        # With no max_build_iterations key the default is "auto": a failing gate
+        # is re-attempted (not a single pass). It still terminates here via the
+        # no-progress guard once the identical failure repeats.
+        from tests.test_orchestrator_fixes import _run_convergence_pipeline_with_cfg
+
+        report, exec_calls, decompose_calls = _run_convergence_pipeline_with_cfg(
+            gate_sequence=[(False, ["broke"])], orchestrator_cfg={}
+        )
+        assert exec_calls == 2  # iterated once more, not a single pass
+        assert decompose_calls == 2  # baseline + one targeted fix re-decompose
+        assert any("no progress" in d.lower() for d in report.key_decisions)
+
+    def test_explicit_higher_cap_enables_iteration(self):
+        from tests.test_orchestrator_fixes import _run_convergence_pipeline_with_cfg
+
+        report, exec_calls, decompose_calls = _run_convergence_pipeline_with_cfg(
+            gate_sequence=[(False, ["broke"]), (True, [])],
+            orchestrator_cfg={"max_build_iterations": 3},
+        )
+        assert exec_calls == 2
+        assert decompose_calls == 2  # baseline + one fix re-decompose

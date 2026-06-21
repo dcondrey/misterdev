@@ -13,36 +13,76 @@ BANNED_MARKERS = ("todo!", "FIXME", "HACK", "XXX", "placeholder", "dummy")
 
 # High-signal patterns: a bare substring match is enough to flag a file.
 SECRET_PATTERNS = (
-    "PRIVATE KEY", "BEGIN RSA", "BEGIN EC", "BEGIN DSA",
-    "sk-", "ghp_", "gho_", "AKIA",
+    "PRIVATE KEY",
+    "BEGIN RSA",
+    "BEGIN EC",
+    "BEGIN DSA",
+    "sk-",
+    "ghp_",
+    "gho_",
+    "AKIA",
 )
 
 # Low-signal credential keys. These appear constantly in ordinary source
 # (struct fields, function params, config keys), so they are only flagged when
 # assigned a concrete quoted literal, not a variable/env reference.
 ASSIGNMENT_SECRET_KEYS = (
-    "password", "passwd", "secret", "api_key", "apikey", "access_key", "token",
+    "password",
+    "passwd",
+    "secret",
+    "api_key",
+    "apikey",
+    "access_key",
+    "token",
 )
 
 # Extensions to skip during file scanning
-SKIP_DIRS = frozenset({
-    ".venv", "venv", ".git", "node_modules", "__pycache__",
-    "target", "build", "dist", ".tox", ".mypy_cache", ".eggs",
-})
+SKIP_DIRS = frozenset(
+    {
+        ".venv",
+        "venv",
+        ".git",
+        "node_modules",
+        "__pycache__",
+        "target",
+        "build",
+        "dist",
+        ".tox",
+        ".mypy_cache",
+        ".eggs",
+    }
+)
 
-CODE_EXTENSIONS = frozenset({
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".rs", ".go", ".java",
-    ".c", ".cpp", ".h", ".rb", ".php", ".swift", ".kt", ".sh",
-})
+CODE_EXTENSIONS = frozenset(
+    {
+        ".py",
+        ".js",
+        ".ts",
+        ".tsx",
+        ".jsx",
+        ".rs",
+        ".go",
+        ".java",
+        ".c",
+        ".cpp",
+        ".h",
+        ".rb",
+        ".php",
+        ".swift",
+        ".kt",
+        ".sh",
+    }
+)
 
 
-class SOTAGateKeeper:
-    """Implements the SOTA gate sequence for project validation.
+class GateKeeper:
+    """Implements the gate sequence for project validation.
 
     Gates:
       G1: Build compiles
       G2: Lint passes
       G3: Tests pass
+      G3.5: Golden suite (model-blind, immutable; if configured)
       G4: Type check (if available)
       G5: Completeness scan (no banned markers in source)
       G6: Secrets scan (no leaked credentials)
@@ -53,7 +93,9 @@ class SOTAGateKeeper:
         self.project_path = project_path
         self.env_activate = env_activate
 
-    def run_gates(self, commands: Dict[str, Optional[str]]) -> Tuple[bool, List[str], HealthCheck]:
+    def run_gates(
+        self, commands: Dict[str, Optional[str]]
+    ) -> Tuple[bool, List[str], HealthCheck]:
         """Run the gate sequence. Returns (success, issues, final_health)."""
         issues: List[str] = []
         health = HealthCheck()
@@ -61,7 +103,9 @@ class SOTAGateKeeper:
         # G1: Build
         build_cmd = commands.get("build_command")
         if build_cmd:
-            success, output = _run_cmd(build_cmd, self.project_path, self.env_activate, timeout=180)
+            success, output = _run_cmd(
+                build_cmd, self.project_path, self.env_activate, timeout=180
+            )
             health.builds = success
             health.build_output = output
             if not success:
@@ -73,7 +117,9 @@ class SOTAGateKeeper:
         # G2: Lint
         lint_cmd = commands.get("lint_command")
         if lint_cmd:
-            success, output = _run_cmd(lint_cmd, self.project_path, self.env_activate, timeout=120)
+            success, output = _run_cmd(
+                lint_cmd, self.project_path, self.env_activate, timeout=120
+            )
             health.lint_clean = success
             health.lint_output = output
             if not success:
@@ -84,7 +130,9 @@ class SOTAGateKeeper:
         # G3: Tests
         test_cmd = commands.get("test_command")
         if test_cmd:
-            success, output = _run_cmd(test_cmd, self.project_path, self.env_activate, timeout=180)
+            success, output = _run_cmd(
+                test_cmd, self.project_path, self.env_activate, timeout=180
+            )
             health.tests_pass = success
             health.test_output = output
             if not success:
@@ -93,12 +141,30 @@ class SOTAGateKeeper:
         else:
             health.tests_pass = True
 
-        # G4: Type check (optional)
+        # G3.5: Golden suite. Tests the model never sees and cannot edit, so a
+        # gamed visible suite can't hide a regression. Blocking like G1/G3.
+        golden_cmd = commands.get("golden_command")
+        if golden_cmd:
+            success, output = _run_cmd(
+                golden_cmd, self.project_path, self.env_activate, timeout=180
+            )
+            if not success:
+                issues.append("G3.5: Golden suite failed")
+                health.tests_pass = False
+                health.test_output = output
+                return False, issues, health
+
+        # G4: Type check (optional). Blocking like G1/G3: a configured
+        # typecheck command that fails short-circuits the gate so broken types
+        # can't slip through. When none is configured, skip with no penalty.
         typecheck_cmd = commands.get("typecheck_command")
         if typecheck_cmd:
-            success, output = _run_cmd(typecheck_cmd, self.project_path, self.env_activate, timeout=120)
+            success, _output = _run_cmd(
+                typecheck_cmd, self.project_path, self.env_activate, timeout=120
+            )
             if not success:
                 issues.append("G4: Type check failed")
+                return False, issues, health
 
         # G5: Completeness scan
         banned_found = self._scan_banned_markers()
@@ -120,7 +186,26 @@ class SOTAGateKeeper:
         return len(issues) == 0, issues, health
 
     def _scan_banned_markers(self) -> List[str]:
-        """G5: Scan source files for banned markers (TODO!, FIXME, HACK, etc.)."""
+        """G5: Scan ADDED lines for banned markers (TODO!, FIXME, HACK, etc.).
+
+        Only flags markers this build introduced. In a git repo we look at the
+        added lines of the diff (staged + unstaged vs HEAD); a pre-existing
+        marker in an untouched region of a modified file is left alone. Outside
+        a git repo there is no diff to scope to, so we fall back to scanning the
+        whole tree (the previous behavior) rather than skipping the gate.
+        """
+        added = self._iter_diff_added_lines()
+        if added is None:
+            return self._scan_banned_markers_whole_tree()
+        found = set()
+        for _path, line in added:
+            for marker in BANNED_MARKERS:
+                if marker in line:
+                    found.add(marker)
+        return sorted(found)
+
+    def _scan_banned_markers_whole_tree(self) -> List[str]:
+        """Non-git fallback for G5: scan every source file."""
         found = set()
         for path in self._iter_source_files():
             try:
@@ -133,7 +218,28 @@ class SOTAGateKeeper:
         return sorted(found)
 
     def _scan_secrets(self) -> List[str]:
-        """G6: Scan for patterns that look like leaked secrets."""
+        """G6: Scan ADDED lines for patterns that look like leaked secrets.
+
+        Like G5, this is scoped to the diff in a git repo so only secrets this
+        build introduced are flagged, and falls back to a whole-tree scan when
+        not in a git repo. Returns the changed file paths that contain a secret.
+        """
+        added = self._iter_diff_added_lines()
+        if added is None:
+            return self._scan_secrets_whole_tree()
+        # Group added lines per file, then reuse the existing content check so
+        # the multi-line / per-line secret detection stays identical.
+        by_file: Dict[str, List[str]] = {}
+        for path, line in added:
+            by_file.setdefault(path, []).append(line)
+        flagged = []
+        for path, lines in by_file.items():
+            if self._content_has_secret("\n".join(lines)):
+                flagged.append(path)
+        return flagged
+
+    def _scan_secrets_whole_tree(self) -> List[str]:
+        """Non-git fallback for G6: scan every source file."""
         flagged = []
         for path in self._iter_source_files():
             try:
@@ -144,13 +250,64 @@ class SOTAGateKeeper:
                 flagged.append(str(path.relative_to(self.project_path)))
         return flagged
 
+    def _iter_diff_added_lines(self) -> Optional[List[Tuple[str, str]]]:
+        """Return ``(file_path, added_line)`` pairs from the git diff.
+
+        Covers both staged and unstaged changes against HEAD (the union of
+        ``git diff --cached`` and ``git diff``), so any line this build added is
+        seen regardless of whether it was staged yet. Returns ``None`` when the
+        project is not a git repo, signalling callers to fall back to a
+        whole-tree scan. Only added lines (``+``) of code-extension files are
+        included; the diff header lines (``+++``) are skipped.
+        """
+        try:
+            check = subprocess.run(
+                "git rev-parse --is-inside-work-tree",
+                shell=True,
+                cwd=self.project_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception:
+            return None
+        if check.returncode != 0 or check.stdout.strip() != "true":
+            return None
+        added: List[Tuple[str, str]] = []
+        for cmd in (
+            "git diff --cached --diff-filter=ACMR -U0",
+            "git diff --diff-filter=ACMR -U0",
+        ):
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    shell=True,
+                    cwd=self.project_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except Exception:
+                continue
+            current_file = ""
+            for line in proc.stdout.splitlines():
+                if line.startswith("+++ b/"):
+                    current_file = line[len("+++ b/") :]
+                    continue
+                if line.startswith("+++") or not line.startswith("+"):
+                    continue
+                if current_file and Path(current_file).suffix not in CODE_EXTENSIONS:
+                    continue
+                added.append((current_file, line[1:]))
+        return added
+
     @staticmethod
     def _content_has_secret(content: str) -> bool:
         for pattern in SECRET_PATTERNS:
             if pattern in content:
                 return True
         for line in content.splitlines():
-            if SOTAGateKeeper._is_secret_assignment(line):
+            if GateKeeper._is_secret_assignment(line):
                 return True
         return False
 
@@ -172,7 +329,11 @@ class SOTAGateKeeper:
             if value.startswith(quote):
                 literal = value[1:].split(quote, 1)[0]
                 low = literal.lower()
-                if len(literal) >= 6 and not literal.startswith("${") and "env" not in low:
+                if (
+                    len(literal) >= 6
+                    and not literal.startswith("${")
+                    and "env" not in low
+                ):
                     return True
         return False
 
@@ -182,16 +343,24 @@ class SOTAGateKeeper:
         try:
             proc = subprocess.run(
                 "git diff --cached --diff-filter=ACMR -U0",
-                shell=True, cwd=self.project_path,
-                capture_output=True, text=True, timeout=30,
+                shell=True,
+                cwd=self.project_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             diff_text = proc.stdout
         except Exception:
             return issues
 
         debug_markers = (
-            "console.log(", "print(", "println!", "dbg!(",
-            "debugger", "binding.pry", "import pdb",
+            "console.log(",
+            "print(",
+            "println!",
+            "dbg!(",
+            "debugger",
+            "binding.pry",
+            "import pdb",
         )
         for line in diff_text.splitlines():
             if not line.startswith("+") or line.startswith("+++"):

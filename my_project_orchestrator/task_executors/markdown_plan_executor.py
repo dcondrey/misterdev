@@ -1,9 +1,12 @@
 """Markdown plan executor - executes tasks via LLM with Try-Test-Fix loop."""
 
+import ast
+import re
 import shlex
 import subprocess
+from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from my_project_orchestrator.core.context_budget import ContextBudget
 from my_project_orchestrator.core.models import Task, ExecutionResult
@@ -15,7 +18,7 @@ from my_project_orchestrator.task_executors.base_executor import BaseTaskExecuto
 from my_project_orchestrator.llm.responses import LLMResponseParser
 from my_project_orchestrator.llm.client import code_gen_abort_check
 from my_project_orchestrator.core.validator import (
-    SOTAValidator,
+    CodeValidator,
     CertaintyScorer,
     StallDetector,
 )
@@ -24,7 +27,9 @@ from my_project_orchestrator.core.error_classifier import (
     format_classified_error,
     classify_error,
 )
-from my_project_orchestrator.utils.file_utils import write_file
+from my_project_orchestrator.utils.file_utils import write_file, is_golden_path
+
+_is_golden_path = is_golden_path
 
 logger = setup_logger(__name__)
 
@@ -78,6 +83,310 @@ def _detect_language(file_path: str) -> str:
     return _LANG_MAP.get(ext, "text")
 
 
+# Path patterns that mark a file as holding tests, covering the languages in
+# _LANG_MAP. Used to decide which edits get the tamper-resistance check.
+_TEST_FILE_PATTERNS = (
+    re.compile(r"(^|/)test_[^/]+\.py$"),
+    re.compile(r"_test\.py$"),
+    re.compile(r"(^|/)conftest\.py$"),
+    re.compile(r"\.test\.(js|jsx|ts|tsx)$"),
+    re.compile(r"\.spec\.(js|jsx|ts|tsx)$"),
+    re.compile(r"_test\.go$"),
+    re.compile(r"_test\.(rs|rb)$"),
+    re.compile(r"(^|/)test_[^/]+\.(rb|c|cpp|cc)$"),
+    re.compile(r"Test[^/]*\.java$"),
+    re.compile(r"(^|/)tests?/"),
+)
+
+# Skip/ignore markers per language. Their COUNT must not grow across an edit:
+# more skips is the cheapest way to make a suite "pass" by not running it.
+_SKIP_PATTERNS = (
+    re.compile(
+        r"@(?:pytest\.mark\.skip|pytest\.mark\.skipif|unittest\.skip"
+        r"|unittest\.SkipTest|skip|skipif)\b"
+    ),
+    re.compile(r"\b(?:it|describe|test|context)\.skip\b"),
+    re.compile(r"\bxit\b|\bxdescribe\b"),
+    re.compile(r"#\[ignore\b"),
+    re.compile(r"\bt\.Skip(?:Now)?\b|\bt\.SkipNow\b"),
+    re.compile(r"@(?:Ignore|Disabled)\b"),
+    re.compile(r"\.skip\s*\(|\.todo\s*\("),
+)
+
+# Things that count as a "test" definition per language. We compare the total
+# across all patterns rather than per-pattern so an edit can't dodge the check
+# by converting one form of test to another.
+_TEST_DEF_PATTERNS = (
+    re.compile(r"(?m)^\s*def\s+test\w*\s*\("),
+    re.compile(r"\b(?:it|test)\s*\(\s*['\"`]"),
+    re.compile(r"#\[test\]"),
+    re.compile(r"(?m)^\s*func\s+Test\w*\s*\("),
+    re.compile(r"@Test\b"),
+)
+
+# Assertion-ish forms. Weakening a test often keeps the function but guts its
+# checks, so a drop in assertion count is just as suspicious as a dropped test.
+_ASSERT_PATTERNS = (
+    re.compile(r"(?m)^\s*assert\b"),
+    re.compile(r"\bself\.assert\w+\s*\("),
+    re.compile(r"\bexpect\s*\("),
+    re.compile(r"\bassert(?:_eq|_ne|_matches)?!\s*\("),
+    re.compile(r"\bpytest\.raises\b|\bassertRaises\b"),
+)
+
+# Trivially-true assertions: a cheap way to keep the assertion COUNT steady
+# while removing the actual check ("assert True", "expect(true).toBe(true)").
+# An increase in these across an edit is treated as weakening, cross-language.
+_TAUTOLOGY_PATTERNS = (
+    re.compile(r"(?m)^\s*assert\s+(?:True|1)\s*(?:,|$)"),
+    re.compile(r"\bself\.assertTrue\s*\(\s*True\s*\)"),
+    re.compile(r"\bself\.assertFalse\s*\(\s*False\s*\)"),
+    re.compile(r"\bassert!\s*\(\s*true\s*\)"),
+    re.compile(r"\bexpect\s*\(\s*true\s*\)\s*\.\s*to(?:Be|Equal)\s*\(\s*true\s*\)"),
+    re.compile(r"\bassert\s+1\s*===?\s*1\b"),
+)
+
+# In-body skip calls (vs the decorator forms in _SKIP_PATTERNS): inserting one
+# of these short-circuits a test at runtime while leaving it visibly defined.
+_INBODY_SKIP_PATTERNS = (
+    re.compile(r"\bpytest\.skip\s*\("),
+    re.compile(r"\bself\.skipTest\s*\("),
+    re.compile(r"\bunittest\.SkipTest\b"),
+    re.compile(r"\bt\.Skip(?:Now)?\s*\("),
+)
+
+# Fraction of the build budget that must remain before the LLM acceptance judge
+# (default-on) is allowed to spend; below it, free-text criteria pass for free.
+JUDGE_MIN_BUDGET_FRACTION = 0.1
+
+
+def _is_test_file(file_path: str) -> bool:
+    """True if the path names a test file in one of the supported languages."""
+    norm = file_path.replace("\\", "/")
+    return any(p.search(norm) for p in _TEST_FILE_PATTERNS)
+
+
+# Known test/build runners that mark the START of a runnable acceptance command.
+# We only treat acceptance_criteria as a command when one of these verbs appears,
+# so free-text criteria ("the login form rejects empty passwords") are never
+# mis-parsed into a command. Ordered/anchored so multi-word runners match before
+# their first word (e.g. "python -m pytest" before bare "python").
+_ACCEPTANCE_RUNNERS = (
+    r"python3?\s+-m\s+pytest",
+    r"pytest",
+    r"cargo\s+test",
+    r"cargo\s+build",
+    r"cargo\s+check",
+    r"cargo\s+clippy",
+    r"go\s+test",
+    r"go\s+build",
+    r"npm\s+test",
+    r"npm\s+run\s+\S+",
+    r"npx\s+\S+",
+    r"yarn\s+\S+",
+    r"pnpm\s+\S+",
+    r"make\s+\S+",
+    r"make",
+    r"ruff(?:\s+\S+)?",
+    r"mypy",
+    r"pyright",
+    r"tsc",
+    r"jest",
+    r"vitest",
+    r"tox",
+    r"phpunit",
+    r"rspec",
+    r"gradle\s+\S+",
+    r"\./gradlew\s+\S+",
+    r"mvn\s+\S+",
+)
+
+# A runnable command starts at a known runner and runs to the end of the line (or
+# a sentence-terminating boundary). Anything before the runner (e.g. "Verify that
+# ") is dropped. The trailing tail is trimmed by _extract_acceptance_command.
+_ACCEPTANCE_COMMAND_RE = re.compile(
+    r"(?P<cmd>(?:" + "|".join(_ACCEPTANCE_RUNNERS) + r")[^\n]*)",
+    re.IGNORECASE,
+)
+
+# Trailing prose that commonly follows a quoted command and is not part of it,
+# e.g. "pytest tests/test_auth.py passes". Stripped from the extracted command.
+_ACCEPTANCE_TAIL_RE = re.compile(
+    r"\s+(?:passes?|succeeds?|should\s+pass|must\s+pass|exits?\s+0|"
+    r"returns?\s+0|is\s+green|all\s+green|cleanly|without\s+errors?)\b.*$",
+    re.IGNORECASE,
+)
+
+
+def _extract_acceptance_command(criteria: str) -> Optional[str]:
+    """Extract a single runnable command from an acceptance-criteria string.
+
+    Conservative: returns a command only when the text begins (after optional
+    lead-in prose) with a known test/build runner. Trailing prose like
+    "... passes" is trimmed so the runner sees just the command. Returns None
+    for free-text criteria so un-parseable sentences never fail a task.
+    """
+    if not criteria:
+        return None
+    # Prefer a command fenced in backticks if present, but still require it to
+    # start with a known runner so prose in backticks isn't run blindly.
+    for candidate in re.findall(r"`([^`]+)`", criteria):
+        m = _ACCEPTANCE_COMMAND_RE.match(candidate.strip())
+        if m:
+            return _ACCEPTANCE_TAIL_RE.sub("", m.group("cmd")).strip()
+    m = _ACCEPTANCE_COMMAND_RE.search(criteria)
+    if not m:
+        return None
+    cmd = m.group("cmd").strip()
+    # Cut at the first sentence boundary so a trailing English sentence on the
+    # same line doesn't get fed to the shell.
+    cmd = re.split(r"(?<=\S)[.;]\s+[A-Z]", cmd, maxsplit=1)[0].strip()
+    cmd = _ACCEPTANCE_TAIL_RE.sub("", cmd).strip()
+    return cmd or None
+
+
+def _test_metrics(content: str) -> Tuple[int, int, int]:
+    """Cheap structural metrics for a test file: (tests, asserts, skips).
+
+    Deterministic regex counts only, no parsing. Used to compare a test file
+    before vs after an edit; growth is fine, shrinkage/more-skips is tamper.
+    """
+    tests = sum(len(p.findall(content)) for p in _TEST_DEF_PATTERNS)
+    asserts = sum(len(p.findall(content)) for p in _ASSERT_PATTERNS)
+    skips = sum(
+        len(p.findall(content)) for p in (*_SKIP_PATTERNS, *_INBODY_SKIP_PATTERNS)
+    )
+    return tests, asserts, skips
+
+
+def _count_tautologies(content: str) -> int:
+    """Count trivially-true assertions (regex, cross-language)."""
+    return sum(len(p.findall(content)) for p in _TAUTOLOGY_PATTERNS)
+
+
+def _diagnose_tampering(before: str, after: str) -> Optional[str]:
+    """Return a reason string if `after` weakens the test file, else None.
+
+    Tampering = fewer tests, fewer assertions, more skip markers (decorator or
+    in-body), or more trivially-true assertions. Pure additions (new
+    tests/assertions) are allowed and return None.
+    """
+    bt, ba, bs = _test_metrics(before)
+    at, aa, as_ = _test_metrics(after)
+    reasons = []
+    if at < bt:
+        reasons.append(f"test count dropped {bt}->{at}")
+    if aa < ba:
+        reasons.append(f"assertion count dropped {ba}->{aa}")
+    if as_ > bs:
+        reasons.append(f"skip/ignore markers increased {bs}->{as_}")
+    btaut, ataut = _count_tautologies(before), _count_tautologies(after)
+    if ataut > btaut:
+        reasons.append(f"trivially-true assertions increased {btaut}->{ataut}")
+    return "; ".join(reasons) if reasons else None
+
+
+def _ast_call_name(func: ast.AST) -> Optional[str]:
+    """Best-effort dotted-call leaf name: ``self.assertEqual`` -> assertEqual."""
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
+def _assertion_key(node: ast.AST) -> Optional[str]:
+    """A structure-based identity for one assertion, or None if it isn't one.
+
+    Keys on what the assertion checks (the AST of the condition / call args),
+    not on its position or enclosing function, so the same check has the same
+    key wherever it lives.
+    """
+    if isinstance(node, ast.Assert):
+        return "assert:" + ast.dump(node.test)
+    if isinstance(node, ast.Call):
+        name = _ast_call_name(node.func)
+        if name and (name.startswith("assert") or name in ("expect", "raises")):
+            args = ",".join(ast.dump(a) for a in node.args)
+            return f"{name}:{args}"
+    return None
+
+
+def _py_assertion_multiset(content: str) -> Optional["Counter"]:
+    """Structural multiset of every assertion inside Python ``test*`` functions.
+
+    Because assertions are keyed by structure (see ``_assertion_key``) rather
+    than by their enclosing test's name or order, renaming, moving, reordering,
+    splitting, or merging tests leaves the multiset unchanged. Only an assertion
+    that disappears without an identical one reappearing is a real loss of
+    coverage. Returns None when the content does not parse.
+    """
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return None
+    counts: Counter = Counter()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not node.name.startswith("test"):
+            continue
+        for sub in ast.walk(node):
+            key = _assertion_key(sub)
+            if key:
+                counts[key] += 1
+    return counts
+
+
+def _parametrize_count(content: str) -> int:
+    """Count ``parametrize``-style decorators (a legit way to reshape asserts)."""
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return 0
+    total = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            target = dec.func if isinstance(dec, ast.Call) else dec
+            if _ast_call_name(target) == "parametrize":
+                total += 1
+    return total
+
+
+def _py_skip_count(content: str) -> int:
+    return sum(
+        len(p.findall(content)) for p in (*_SKIP_PATTERNS, *_INBODY_SKIP_PATTERNS)
+    )
+
+
+def _diagnose_py_tampering(before: str, after: str) -> Optional[str]:
+    """Python tamper diagnosis keyed on assertion survival, not test identity.
+
+    Flags only genuine weakening: assertions that vanish without an identical
+    check reappearing anywhere, an increase in trivially-true assertions, or
+    more skip markers. Renames, moves, reorders, splits, and merges all
+    preserve the assertion multiset and pass. Parametrization legitimately
+    reshapes assertions, so a net loss is not held against an edit that adds a
+    parametrize decorator. Returns None when either revision fails to parse.
+    """
+    before_asserts = _py_assertion_multiset(before)
+    after_asserts = _py_assertion_multiset(after)
+    if before_asserts is None or after_asserts is None:
+        return None
+    reasons = []
+    if _parametrize_count(after) <= _parametrize_count(before):
+        lost = sum((before_asserts - after_asserts).values())
+        if lost:
+            reasons.append(f"{lost} assertion(s) removed or weakened")
+    if _count_tautologies(after) > _count_tautologies(before):
+        reasons.append("trivially-true assertions increased")
+    if _py_skip_count(after) > _py_skip_count(before):
+        reasons.append("skip markers increased")
+    return "; ".join(reasons) if reasons else None
+
+
 class MarkdownPlanExecutor(BaseTaskExecutor):
     """Executes tasks with a Try-Test-Fix loop.
 
@@ -110,8 +419,23 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             orch_cfg.get("context_budget_tokens", 100000),
         )
 
+        # Minimum LLM certainty required to accept a task as completed when no
+        # test gate ran. Deterministic: compared against the heuristic certainty
+        # score only, never another LLM call.
+        certainty_threshold = orch_cfg.get("certainty_threshold", 0.5)
+
+        # Per-task acceptance gate. Cheap deterministic command path is on by
+        # default; the LLM-judge fallback is off by default so the default path
+        # adds zero extra LLM calls. When no command is found and the judge is
+        # off, acceptance is a no-op (behaviour identical to before this gate).
+        verify_acceptance = orch_cfg.get("verify_acceptance", True)
+        llm_acceptance_judge = orch_cfg.get("llm_acceptance_judge", False)
+
         files_key = processor_config.get("target_files_key", "files_to_modify")
         test_cmd_key = processor_config.get("test_command_key", "test_command")
+        typecheck_cmd_key = processor_config.get(
+            "typecheck_command_key", "typecheck_command"
+        )
 
         target_files = task.processor_data.get(files_key, [])
         if isinstance(target_files, str):
@@ -120,7 +444,19 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             set(target_files + task.files_to_modify + task.files_to_create)
         )
 
+        # Golden suite: never task the model with these files and never read
+        # them into its context. Combined with the edit-time rejection in
+        # _validate_edit_paths, the model cannot see or alter them.
+        golden_paths = orch_cfg.get("golden_paths", [])
+        target_files = [f for f in target_files if not _is_golden_path(f, golden_paths)]
+        context_files = [
+            f for f in task.context_files if not _is_golden_path(f, golden_paths)
+        ]
+
         test_command = task.processor_data.get(test_cmd_key)
+        typecheck_command = task.processor_data.get(
+            typecheck_cmd_key
+        ) or project.config.get(typecheck_cmd_key)
         build_cfg = project.config.get("build", {})
         build_timeout = build_cfg.get("build_timeout", 120)
         test_timeout = build_cfg.get("test_timeout", 180)
@@ -160,18 +496,16 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         for attempt in range(max_retries):
             logger.info(f"Attempt {attempt + 1}/{max_retries} for task {task.id}")
 
-            code_context = self._get_code_context(
-                project, target_files, task.context_files
-            )
+            code_context = self._get_code_context(project, target_files, context_files)
             topo_context = project.topography.get_context_for_task(
                 task.description, target_files
             )
             scratchpad_context = self.scratchpad.format_context(
-                files=target_files + task.context_files,
+                files=target_files + context_files,
                 tags=[task.category],
             )
 
-            strategy = task.processor_data.get("sota_strategy", "iterative")
+            strategy = task.processor_data.get("strategy", "iterative")
             consensus = task.processor_data.get("consensus_context", "None")
             interface_contracts = task.processor_data.get("interface_contracts", "")
             recent_changes = task.processor_data.get("recent_changes", "")
@@ -206,9 +540,9 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                 "acceptance_criteria": task.acceptance_criteria,
                 "consensus_context": allocated["consensus_context"],
                 "interface_contracts": allocated["interface_contracts"],
-                "sota_strategy": strategy.upper(),
-                "sota_invariants": (
-                    f"SOTA Strategy: {strategy.upper()}. Output MUST be syntactically valid. "
+                "strategy": strategy.upper(),
+                "invariants": (
+                    f"Strategy: {strategy.upper()}. Output MUST be syntactically valid. "
                     "Provide certainty indicators."
                 ),
             }
@@ -249,7 +583,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                 logger.warning(
                     f"LLM stream aborted for {task.id}; retrying with stricter instruction."
                 )
-                error_logs = "SOTA ERROR: response was not code. Output ONLY file edits as code blocks with file paths."
+                error_logs = "ERROR: response was not code. Output ONLY file edits as code blocks with file paths."
                 continue
 
             certainty = CertaintyScorer.compute_score(llm_response)
@@ -264,20 +598,31 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                 if stall_risk > 0.7:
                     logger.warning(f"High stall risk detected ({stall_risk:.2f}).")
                     if attempt > 1:
-                        error_logs = "SOTA ERROR: Stalling detected. Try a fundamentally different approach."
+                        error_logs = "ERROR: Stalling detected. Try a fundamentally different approach."
                         continue
 
                 validation_failed = False
                 for file_path, content in edits.items():
                     lang = _detect_language(file_path)
-                    valid, error = SOTAValidator.validate_code(content, language=lang)
+                    valid, error = CodeValidator.validate_code(content, language=lang)
                     if not valid:
-                        logger.error(f"SOTA Validation Failed for {file_path}: {error}")
-                        error_logs = f"SOTA SYNTAX ERROR in {file_path}:\n{error}"
+                        logger.error(f"Validation failed for {file_path}: {error}")
+                        error_logs = f"SYNTAX ERROR in {file_path}:\n{error}"
                         validation_failed = True
                         break
 
                 if validation_failed:
+                    continue
+
+                tamper = self._detect_test_tampering(project, edits)
+                if tamper:
+                    logger.error(f"Test tampering rejected: {tamper}")
+                    error_logs = (
+                        "ERROR: test files were weakened. Do not delete "
+                        "tests, weaken assertions, or add skip/ignore markers "
+                        "to make the suite pass. Fix the real code instead. "
+                        f"Detected: {tamper}"
+                    )
                     continue
 
                 self._apply_edits(project, edits)
@@ -299,12 +644,42 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                     )
                     continue
 
+            if typecheck_command:
+                success, output = self._run_command(
+                    project, typecheck_command, timeout=build_timeout
+                )
+                if not success:
+                    logger.warning(f"Type check failed on attempt {attempt + 1}")
+                    locations = resolver.resolve_errors(output)
+                    attributed_error = resolver.format_for_llm(locations)
+                    classified = format_classified_error(output)
+                    error_logs = self._build_error_context(
+                        prior_errors, attempt, output, classified, attributed_error
+                    )
+                    continue
+
             if test_command:
                 success, output = self._run_command(
                     project, test_command, timeout=test_timeout
                 )
                 if success:
                     logger.info("Tests passed successfully.")
+                    acc_ok, acc_output = self._verify_acceptance(
+                        project,
+                        task,
+                        verify_acceptance,
+                        llm_acceptance_judge,
+                        test_timeout,
+                    )
+                    if not acc_ok:
+                        logger.warning(
+                            f"Acceptance criteria not met on attempt {attempt + 1}."
+                        )
+                        classified = format_classified_error(acc_output)
+                        error_logs = self._build_acceptance_error_context(
+                            prior_errors, attempt, task, classified
+                        )
+                        continue
                     self._record_success(task, target_files)
                     self._commit_task(
                         project,
@@ -324,7 +699,38 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                     error_logs = self._build_error_context(
                         prior_errors, attempt, output, classified, attributed_error
                     )
+            elif certainty < certainty_threshold:
+                # No test gate ran, so completion rests entirely on the LLM's
+                # word. With low certainty that's not enough to trust: force a
+                # retry (which escalates to surgical once attempts run out)
+                # instead of silently accepting unverified code.
+                logger.warning(
+                    f"No tests ran and certainty {certainty:.2f} < "
+                    f"{certainty_threshold:.2f}; refusing silent completion."
+                )
+                error_logs = (
+                    "ERROR: no tests verify this change and the response "
+                    "expressed low certainty. Provide a higher-confidence, "
+                    "syntactically valid edit with explicit verification."
+                )
+                continue
             else:
+                acc_ok, acc_output = self._verify_acceptance(
+                    project,
+                    task,
+                    verify_acceptance,
+                    llm_acceptance_judge,
+                    test_timeout,
+                )
+                if not acc_ok:
+                    logger.warning(
+                        f"Acceptance criteria not met on attempt {attempt + 1}."
+                    )
+                    classified = format_classified_error(acc_output)
+                    error_logs = self._build_acceptance_error_context(
+                        prior_errors, attempt, task, classified
+                    )
+                    continue
                 self._record_success(task, target_files)
                 self._commit_task(
                     project,
@@ -340,15 +746,15 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         # Strategy escalation: if current strategy failed, try one more attempt
         # with "surgical". Guarded by _depth so escalation can never recurse more
         # than once, even if the strategy-selection logic changes later.
-        current_strategy = task.processor_data.get("sota_strategy", "iterative")
+        current_strategy = task.processor_data.get("strategy", "iterative")
         if current_strategy != "surgical" and _depth < 1:
             logger.info(
                 f"Escalating strategy from {current_strategy} to surgical for final attempt"
             )
             self._abort_task(project, branch_name, base_branch, snapshot)
 
-            task.processor_data["sota_strategy"] = "surgical"
-            task.processor_data["sota_invariants"] = (
+            task.processor_data["strategy"] = "surgical"
+            task.processor_data["invariants"] = (
                 "ESCALATED: Previous strategy failed. Use SURGICAL approach: "
                 "make the smallest possible change to fix the immediate error. "
                 "Do not refactor or restructure. Minimal, targeted fix only."
@@ -697,6 +1103,119 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             )
         return f"{history}{classified}\n\n{attributed_error}"
 
+    def _verify_acceptance(
+        self,
+        project: Project,
+        task: Task,
+        verify_acceptance: bool,
+        llm_acceptance_judge: bool,
+        timeout: int,
+    ) -> Tuple[bool, str]:
+        """Verify the task's acceptance_criteria after build/test gates pass.
+
+        Returns (passed, output). Deterministic primary path: extract an
+        explicit runnable command from acceptance_criteria and run it; a
+        non-zero exit fails acceptance. When acceptance_criteria is empty, the
+        gate is disabled, or no command can be confidently extracted, this is a
+        no-op that passes (behaviour identical to before this gate) unless the
+        default-off ``orchestrator.llm_acceptance_judge`` flag is set, in which
+        case an LLM judge is consulted. Never blocks on un-parseable free text.
+        """
+        if not verify_acceptance:
+            return True, ""
+        criteria = (task.acceptance_criteria or "").strip()
+        if not criteria:
+            return True, ""
+        command = _extract_acceptance_command(criteria)
+        if command:
+            logger.info(f"Verifying acceptance criteria via command: {command}")
+            success, output = self._run_command(project, command, timeout=timeout)
+            if success:
+                logger.info("Acceptance criteria command passed.")
+                return True, ""
+            return False, (
+                f"Acceptance criterion not met: `{criteria}`\n"
+                f"Ran: {command}\n"
+                f"Command exited non-zero:\n{output}"
+            )
+        if llm_acceptance_judge and self._judge_affordable(project):
+            return self._llm_acceptance_judge(project, task, criteria)
+        return True, ""
+
+    def _judge_affordable(self, project: Project) -> bool:
+        """True while enough budget remains to spend on the LLM acceptance judge.
+
+        Cost control for the (now default-on) judge: once the run has burned
+        through all but ``JUDGE_MIN_BUDGET_FRACTION`` of the budget, stop paying
+        for free-text judging and let those criteria pass, reserving the last
+        funds for actually fixing code. Fail-open when budget can't be read.
+        """
+        client = project.llm_client
+        remaining = getattr(client, "budget_remaining", None)
+        total = getattr(client, "_budget", None)
+        if not isinstance(remaining, (int, float)) or not isinstance(
+            total, (int, float)
+        ):
+            return True
+        if total <= 0:
+            return True
+        return remaining > total * JUDGE_MIN_BUDGET_FRACTION
+
+    def _llm_acceptance_judge(
+        self, project: Project, task: Task, criteria: str
+    ) -> Tuple[bool, str]:
+        """Default-off LLM fallback judging free-text acceptance criteria.
+
+        Only reached when ``orchestrator.llm_acceptance_judge`` is true and no
+        runnable command could be extracted. A failure to reach a confident
+        verdict passes (fail-open) so an unreliable judge never blocks a task.
+        """
+        try:
+            prompt = (
+                "A code task has just passed its build and test gates. Judge "
+                "ONLY whether the stated acceptance criterion is satisfied by "
+                "the task's implementation. Reply with PASS or FAIL on the "
+                "first line, then a brief reason.\n\n"
+                f"Task: {task.description}\n"
+                f"Acceptance criterion: {criteria}\n"
+            )
+            verdict = project.llm_client.generate_code(prompt, "")
+        except Exception as e:
+            logger.warning(f"LLM acceptance judge failed, passing open: {e}")
+            return True, ""
+        first = (verdict or "").strip().splitlines()
+        if first and first[0].strip().upper().startswith("FAIL"):
+            return False, (
+                f"Acceptance criterion not met (LLM judge): `{criteria}`\n{verdict}"
+            )
+        return True, ""
+
+    def _build_acceptance_error_context(
+        self,
+        prior_errors: List[str],
+        attempt: int,
+        task: Task,
+        classified: str,
+    ) -> str:
+        """Format an acceptance failure into the same retry context as other gates.
+
+        Makes the unmet criterion explicit so the next attempt targets it rather
+        than re-submitting a change that only satisfies the build/test gates.
+        """
+        prior_errors.append(f"Attempt {attempt + 1}: acceptance criteria not met")
+        history = ""
+        if len(prior_errors) > 1:
+            past = "\n".join(f"- {e}" for e in prior_errors[:-1])
+            history = (
+                "### Previous Attempt Failures (a different approach is required)\n"
+                f"{past}\n\n"
+            )
+        return (
+            f"{history}### Acceptance criterion not met\n"
+            f"The build and tests passed, but the task's acceptance criterion "
+            f"was not satisfied:\n{task.acceptance_criteria}\n\n{classified}"
+        )
+
     def _validate_edit_paths(
         self, project: Project, task: Task, edits: Dict[str, str]
     ) -> Dict[str, str]:
@@ -709,10 +1228,14 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         """
         project_root = project.path.resolve()
         expected = set(task.files_to_modify + task.files_to_create)
+        golden_paths = project.config.get("orchestrator", {}).get("golden_paths", [])
         valid: Dict[str, str] = {}
         for path, content in edits.items():
             if ".." in Path(path).parts or Path(path).is_absolute():
                 logger.error(f"Rejected edit with unsafe path: {path}")
+                continue
+            if _is_golden_path(path, golden_paths):
+                logger.error(f"Rejected edit to protected golden file: {path}")
                 continue
             full = (project.path / path).resolve()
             try:
@@ -729,6 +1252,44 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                 logger.warning(f"LLM modified file outside task scope: {path}")
             valid[path] = content
         return valid
+
+    def _detect_test_tampering(
+        self, project: Project, edits: Dict[str, str]
+    ) -> Optional[str]:
+        """Reject edits that weaken existing test files (deterministic gate).
+
+        For each edited TEST file that already exists on disk, compares the
+        current (pre-edit) content against the proposed content. An edit that
+        reduces tests/assertions or adds skip markers is tampering: the test
+        gate must not be satisfied by gutting the gate. New test files and
+        purely additive edits pass. Set ``orchestrator.allow_test_edits`` to
+        skip the check (escape hatch); it defaults to off (check enforced).
+        Must be called BEFORE ``_apply_edits`` so the on-disk content still
+        reflects the pre-edit state.
+        """
+        if project.config.get("orchestrator", {}).get("allow_test_edits"):
+            return None
+        reasons = []
+        for file_path, content in edits.items():
+            if not _is_test_file(file_path):
+                continue
+            full_path = project.path / file_path
+            if not full_path.exists():
+                continue
+            try:
+                before = full_path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            # Python uses precise assertion-survival diagnosis (resistant to
+            # rename/move/split/merge); other languages fall back to the
+            # cross-language regex totals, which can't parse structure.
+            if file_path.endswith((".py", ".pyi")):
+                reason = _diagnose_py_tampering(before, content)
+            else:
+                reason = _diagnose_tampering(before, content)
+            if reason:
+                reasons.append(f"{file_path} ({reason})")
+        return "; ".join(reasons) if reasons else None
 
     def _apply_edits(self, project: Project, edits: Dict[str, str]):
         for file_path, content in edits.items():

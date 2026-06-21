@@ -1,6 +1,6 @@
 orchestrator_version: "1.0"
 name: "Project Orchestrator"
-description: "6-phase autonomous build workflow with topological task ordering, contract extraction, and SOTA gate validation. Goal: expand test coverage for untested modules."
+description: "6-phase autonomous build workflow with topological task ordering, contract extraction, and gate validation. Goal: expand test coverage for untested modules."
 language: "python"
 repo_path: "."
 devplan_dir: "devplan"
@@ -55,7 +55,7 @@ prompt_templates:
     Test runner: pytest. Package manager: uv. No virtualenv activation needed; use uv run.
     Follow existing test patterns: use tempfile.TemporaryDirectory for isolation, FakeProject/FakeLLMClient for mocking.
     Do NOT modify public API signatures unless the task explicitly requires it.
-    {sota_invariants}
+    {invariants}
     {consensus_context}
   task_completion_instruction: |
     ## Task

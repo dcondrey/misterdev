@@ -94,3 +94,25 @@ def test_topography_max_symbols_cap():
             engine.graph.symbols[f"big.py:fn_{i}"] = node
         ctx = engine.get_context_for_task("query", ["big.py"], max_symbols=5)
         assert "omitted" in ctx
+
+
+def test_golden_excluded_from_symbol_graph():
+    import tempfile
+    from pathlib import Path
+    from my_project_orchestrator.core.topography import SymbolGraph
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "tests" / "golden").mkdir(parents=True)
+        (root / "src").mkdir()
+        (root / "src" / "app.py").write_text(
+            "def app_visible_symbol():\n    return 1\n", encoding="utf-8"
+        )
+        (root / "tests" / "golden" / "test_contract.py").write_text(
+            "def golden_secret_symbol():\n    return 2\n", encoding="utf-8"
+        )
+        g = SymbolGraph(root, golden_paths=["tests/golden/"])
+        g.build()
+        indexed = " ".join(g.symbols.keys())
+        # Golden symbols must never be indexed (regardless of parser availability).
+        assert "golden_secret_symbol" not in indexed

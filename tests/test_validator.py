@@ -1,25 +1,25 @@
 from my_project_orchestrator.core.validator import (
-    SOTAValidator, CertaintyScorer, StallDetector, _tokenize,
+    CodeValidator, CertaintyScorer, StallDetector, _tokenize,
 )
 
 
-def test_sota_validator_valid_python():
-    valid, err = SOTAValidator.validate_code("x = 1 + 2\ndef f(): pass")
+def test_code_validator_valid_python():
+    valid, err = CodeValidator.validate_code("x = 1 + 2\ndef f(): pass")
     assert valid and err is None
 
 
-def test_sota_validator_invalid_python():
-    valid, err = SOTAValidator.validate_code("def f(")
+def test_code_validator_invalid_python():
+    valid, err = CodeValidator.validate_code("def f(")
     assert not valid and "Syntax error" in err
 
 
-def test_sota_validator_balanced_braces():
-    valid, err = SOTAValidator.validate_code("fn main() { let x = [1, 2]; }", language="rust")
+def test_code_validator_balanced_braces():
+    valid, err = CodeValidator.validate_code("fn main() { let x = [1, 2]; }", language="rust")
     assert valid and err is None
 
 
-def test_sota_validator_unbalanced():
-    valid, err = SOTAValidator.validate_code("fn main() { let x = [1, 2; }", language="rust")
+def test_code_validator_unbalanced():
+    valid, err = CodeValidator.validate_code("fn main() { let x = [1, 2; }", language="rust")
     assert not valid
 
 

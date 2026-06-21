@@ -20,7 +20,7 @@ DEFAULT_CONFIG = {
         "system": (
             "You are an expert developer. Follow the strategy, honor interface contracts exactly, "
             "and ensure your output is syntactically valid.\n"
-            "{sota_invariants}\n{consensus_context}"
+            "{invariants}\n{consensus_context}"
         ),
         "task_completion_instruction": (
             "## Task\n{task.description}\n\n"
@@ -55,6 +55,19 @@ DEFAULT_CONFIG = {
         "context_budget_tokens": 100000,
         "max_task_attempts": 3,
         "integration_gate": True,
+        # Hardened defaults: everything opted in. "auto" keys are budget-driven
+        # (see BaseLLMClient / agent convergence loop) so the global build.budget
+        # is the single master constraint.
+        "max_build_iterations": "auto",
+        "certainty_threshold": 0.5,
+        "max_cost_per_task": "auto",
+        "allow_test_edits": False,
+        "verify_acceptance": True,
+        "llm_acceptance_judge": True,
+        # Golden suite: files the model never sees and may never edit, plus a
+        # command to run them as a blocking gate. Empty/None = feature off.
+        "golden_paths": [],
+        "golden_command": None,
     },
     "build_command": None,
     "test_command": None,
