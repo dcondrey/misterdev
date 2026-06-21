@@ -3,7 +3,6 @@
 import ast
 import re
 import shlex
-import subprocess
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -21,6 +20,7 @@ from my_project_orchestrator.core.validator import (
     CodeValidator,
     CertaintyScorer,
     StallDetector,
+    _run_cmd,
 )
 from my_project_orchestrator.core.error_resolver import ErrorResolver
 from my_project_orchestrator.core.error_classifier import (
@@ -410,27 +410,34 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         processor_config = self._get_processor_config(project)
 
         # Read max_task_attempts from orchestrator config, falling back to processor config, then hardcoded default
-        orch_cfg = project.config.get("orchestrator", {})
-        default_attempts = orch_cfg.get("max_task_attempts", 3)
+        default_attempts = get_setting(
+            project.config, "orchestrator", "max_task_attempts"
+        )
         max_retries = processor_config.get("max_retries_per_task", default_attempts)
 
         # Read context budget tokens from orchestrator config or task processor_data
         context_budget_tokens = task.processor_data.get(
             "context_budget_tokens",
-            orch_cfg.get("context_budget_tokens", 100000),
+            get_setting(project.config, "orchestrator", "context_budget_tokens"),
         )
 
         # Minimum LLM certainty required to accept a task as completed when no
         # test gate ran. Deterministic: compared against the heuristic certainty
         # score only, never another LLM call.
-        certainty_threshold = orch_cfg.get("certainty_threshold", 0.5)
+        certainty_threshold = get_setting(
+            project.config, "orchestrator", "certainty_threshold"
+        )
 
         # Per-task acceptance gate. Cheap deterministic command path is on by
         # default; the LLM-judge fallback is off by default so the default path
         # adds zero extra LLM calls. When no command is found and the judge is
         # off, acceptance is a no-op (behaviour identical to before this gate).
-        verify_acceptance = orch_cfg.get("verify_acceptance", True)
-        llm_acceptance_judge = orch_cfg.get("llm_acceptance_judge", False)
+        verify_acceptance = get_setting(
+            project.config, "orchestrator", "verify_acceptance"
+        )
+        llm_acceptance_judge = get_setting(
+            project.config, "orchestrator", "llm_acceptance_judge"
+        )
 
         files_key = processor_config.get("target_files_key", "files_to_modify")
         test_cmd_key = processor_config.get("test_command_key", "test_command")
@@ -448,7 +455,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         # Golden suite: never task the model with these files and never read
         # them into its context. Combined with the edit-time rejection in
         # _validate_edit_paths, the model cannot see or alter them.
-        golden_paths = orch_cfg.get("golden_paths", [])
+        golden_paths = get_setting(project.config, "orchestrator", "golden_paths")
         target_files = [f for f in target_files if not _is_golden_path(f, golden_paths)]
         context_files = [
             f for f in task.context_files if not _is_golden_path(f, golden_paths)
@@ -925,21 +932,8 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             self._revert_files(project, snapshot)
 
     def _git(self, project: Project, command: str) -> tuple:
-        try:
-            proc = subprocess.run(
-                command,
-                shell=True,
-                cwd=project.path,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            output = proc.stdout
-            if proc.stderr:
-                output += "\n" + proc.stderr
-            return proc.returncode == 0, output.strip()
-        except Exception as e:
-            return False, str(e)
+        ok, output = _run_cmd(command, project.path, None, timeout=30)
+        return ok, output.strip()
 
     # ----------------------------------------------------------------
     # Command execution and file operations
@@ -947,27 +941,10 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
 
     def _run_command(self, project: Project, command: str, timeout: int = 120) -> tuple:
         logger.info(f"Running: {command} (timeout={timeout}s)")
-        cmd = command
-        if project.env_manager:
-            activation = project.env_manager.activate_command()
-            cmd = f"{activation} && {command}"
-        try:
-            proc = subprocess.run(
-                cmd,
-                shell=True,
-                cwd=project.path,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            output = proc.stdout
-            if proc.stderr:
-                output += "\n" + proc.stderr
-            return proc.returncode == 0, output
-        except subprocess.TimeoutExpired:
-            return False, f"Command timed out after {timeout}s: {command}"
-        except Exception as e:
-            return False, str(e)
+        activation = (
+            project.env_manager.activate_command() if project.env_manager else None
+        )
+        return _run_cmd(command, project.path, activation, timeout)
 
     def _snapshot_files(
         self, project: Project, files: List[str]
@@ -1055,7 +1032,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
 
         Returns (text, aborted). Streaming is enabled via llm.streaming=true.
         """
-        if project.config.get("llm", {}).get("streaming"):
+        if get_setting(project.config, "llm", "streaming"):
             resp = project.llm_client.generate_stream(
                 prompt, system_prompt, abort_check=code_gen_abort_check
             )
@@ -1070,9 +1047,8 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         Routes by task complexity first, then strategy. Returns None when no
         routing is configured so the client keeps its default model.
         """
-        llm_cfg = project.config.get("llm", {})
-        routing = llm_cfg.get("routing", {})
-        models = llm_cfg.get("models", {})
+        routing = get_setting(project.config, "llm", "routing")
+        models = get_setting(project.config, "llm", "models")
         if not routing or not models:
             return None
         tier = routing.get(task.complexity) or routing.get(strategy)
@@ -1228,7 +1204,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         """
         project_root = project.path.resolve()
         expected = set(task.files_to_modify + task.files_to_create)
-        golden_paths = project.config.get("orchestrator", {}).get("golden_paths", [])
+        golden_paths = get_setting(project.config, "orchestrator", "golden_paths")
         valid: Dict[str, str] = {}
         for path, content in edits.items():
             if ".." in Path(path).parts or Path(path).is_absolute():
@@ -1267,7 +1243,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         Must be called BEFORE ``_apply_edits`` so the on-disk content still
         reflects the pre-edit state.
         """
-        if project.config.get("orchestrator", {}).get("allow_test_edits"):
+        if get_setting(project.config, "orchestrator", "allow_test_edits"):
             return None
         reasons = []
         for file_path, content in edits.items():

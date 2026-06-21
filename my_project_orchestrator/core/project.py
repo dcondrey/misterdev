@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional
 
+from my_project_orchestrator.config import get_setting
 from my_project_orchestrator.llm.client import BaseLLMClient, create_llm_client
 from my_project_orchestrator.environments.base_env import BaseEnvironmentManager
 from my_project_orchestrator.environments.venv_env import VenvEnvironmentManager
@@ -61,7 +62,7 @@ class Project:
         self.topography = TopographyEngine(
             self.path,
             self.llm_client,
-            golden_paths=config.get("orchestrator", {}).get("golden_paths", []),
+            golden_paths=get_setting(config, "orchestrator", "golden_paths"),
         )
 
     def _init_llm_client(self) -> BaseLLMClient:

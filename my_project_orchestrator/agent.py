@@ -76,6 +76,16 @@ def _combine_commands(*cmds: Optional[str]) -> Optional[str]:
     return " && ".join(f"({c})" for c in present)
 
 
+def _budget_exhausted(client) -> bool:
+    """True when the client reports a non-positive remaining budget.
+
+    Defensive: a non-numeric ``budget_remaining`` (e.g. a test double) is not
+    treated as exhausted.
+    """
+    remaining = getattr(client, "budget_remaining", None)
+    return isinstance(remaining, (int, float)) and remaining <= 0
+
+
 def _apply_budget_ceiling(client, flag_budget: float) -> None:
     """Set the client budget to the tighter of its config budget and the flag.
 
@@ -226,8 +236,8 @@ class ProjectOrchestrator:
         strategy_optimizer = StrategyOptimizer()
         executor = MarkdownPlanExecutor(scratchpad=scratchpad)
         lang = (project.config.get("language") or "python").lower()
-        max_consecutive_failures = project.config.get("orchestrator", {}).get(
-            "max_consecutive_failures", MAX_CONSECUTIVE_FAILURES
+        max_consecutive_failures = get_setting(
+            project.config, "orchestrator", "max_consecutive_failures"
         )
 
         completed_ids = set(progress.completed)
@@ -438,24 +448,10 @@ class ProjectOrchestrator:
                 logger.error(f"Model preflight failed: {detail}")
                 return f"Error: {detail}. Set a valid model in config before building."
 
-        env_activate = None
-        if project.env_manager:
-            project.env_manager.setup()
-            env_activate = project.env_manager.activate_command()
+        env_activate = self._setup_env(project)
 
         # Phase 1: Analysis
-        assessment = analyze_project(
-            project.path,
-            project.llm_client,
-            build_command=project.config.get("build_command"),
-            test_command=project.config.get("test_command"),
-            lint_command=project.config.get("lint_command"),
-            env_activate=env_activate,
-            build_timeout=get_setting(project.config, "build", "build_timeout"),
-            test_timeout=get_setting(project.config, "build", "test_timeout"),
-            lint_timeout=get_setting(project.config, "build", "lint_timeout"),
-            parallel=get_setting(project.config, "build", "parallel_analysis"),
-        )
+        assessment = self._analyze(project, env_activate)
 
         report = BuildReport(mode, project.name, assessment, start_time)
         report.health_before = assessment.health.model_copy()
@@ -495,24 +491,10 @@ class ProjectOrchestrator:
             console.print(f"[red]Model preflight failed:[/] {detail}")
             return f"Error: {detail}. Set a valid model in config before building."
 
-        env_activate = None
-        if project.env_manager:
-            project.env_manager.setup()
-            env_activate = project.env_manager.activate_command()
+        env_activate = self._setup_env(project)
 
         console.print(f"[bold]Analyzing[/] {project.name} ...")
-        assessment = analyze_project(
-            project.path,
-            project.llm_client,
-            build_command=project.config.get("build_command"),
-            test_command=project.config.get("test_command"),
-            lint_command=project.config.get("lint_command"),
-            env_activate=env_activate,
-            build_timeout=get_setting(project.config, "build", "build_timeout"),
-            test_timeout=get_setting(project.config, "build", "test_timeout"),
-            lint_timeout=get_setting(project.config, "build", "lint_timeout"),
-            parallel=get_setting(project.config, "build", "parallel_analysis"),
-        )
+        assessment = self._analyze(project, env_activate)
         console.print(Panel(assessment.summary(), title="Current state", expand=False))
 
         recs = recommend_work(assessment, project.llm_client)
@@ -661,7 +643,7 @@ class ProjectOrchestrator:
         # AB-MCTS branch-and-evaluate is off by default: it fires several serial
         # LLM calls before any work begins (observed ~30 min on one build) for
         # marginal spec refinement. Opt in with orchestrator.enable_ab_mcts.
-        if project.config.get("orchestrator", {}).get("enable_ab_mcts", False):
+        if get_setting(project.config, "orchestrator", "enable_ab_mcts"):
             try:
                 planner = ABMCTSPlanner(project.llm_client)
                 spec = planner.branch_and_evaluate(spec, assessment.summary())
@@ -695,8 +677,8 @@ class ProjectOrchestrator:
         # default "auto" is budget-driven: it runs up to CONVERGENCE_CEILING but
         # in practice stops on the budget/no-progress guards below. An explicit
         # positive int caps the iterations hard instead.
-        raw_iterations = project.config.get("orchestrator", {}).get(
-            "max_build_iterations", "auto"
+        raw_iterations = get_setting(
+            project.config, "orchestrator", "max_build_iterations"
         )
         if (
             isinstance(raw_iterations, int)
@@ -730,8 +712,8 @@ class ProjectOrchestrator:
                 "build_command": assessment.structure.build_command,
                 "test_command": assessment.structure.test_command,
                 "lint_command": assessment.structure.lint_command,
-                "golden_command": project.config.get("orchestrator", {}).get(
-                    "golden_command"
+                "golden_command": get_setting(
+                    project.config, "orchestrator", "golden_command"
                 ),
             }
             success, issues, final_health = gatekeeper.run_gates(commands)
@@ -755,8 +737,7 @@ class ProjectOrchestrator:
             # Decide whether to attempt another convergence iteration.
             if iteration >= max_build_iterations:
                 break
-            remaining_budget = getattr(project.llm_client, "budget_remaining", None)
-            if isinstance(remaining_budget, (int, float)) and remaining_budget <= 0:
+            if _budget_exhausted(project.llm_client):
                 logger.warning("Convergence halted: LLM budget exhausted.")
                 report.key_decisions.append(
                     "Convergence halted: budget exhausted before next iteration"
@@ -957,16 +938,17 @@ class ProjectOrchestrator:
         executor = MarkdownPlanExecutor(scratchpad=scratchpad)
         report.scratchpad = scratchpad
 
-        orch_cfg = project.config.get("orchestrator", {})
-        max_consecutive_failures = orch_cfg.get(
-            "max_consecutive_failures", MAX_CONSECUTIVE_FAILURES
+        max_consecutive_failures = get_setting(
+            project.config, "orchestrator", "max_consecutive_failures"
         )
 
         completed_ids = set(progress.completed)
         failed_ids: set[str] = set()
         consecutive_failures = 0
         aborted = False
-        max_cost_per_task = orch_cfg.get("max_cost_per_task")
+        max_cost_per_task = get_setting(
+            project.config, "orchestrator", "max_cost_per_task"
+        )
 
         # Register decomposed tasks with the TaskManager so status updates,
         # progress tracking, and contract lookups resolve by ID (otherwise
@@ -990,12 +972,12 @@ class ProjectOrchestrator:
         # the end-of-iteration GateKeeper.
         test_cmd = _combine_commands(
             report.assessment.structure.test_command,
-            orch_cfg.get("golden_command"),
+            get_setting(project.config, "orchestrator", "golden_command"),
         )
         test_timeout = get_setting(project.config, "build", "test_timeout")
         gate_active = (
             not flags.no_rollback
-            and orch_cfg.get("integration_gate", True)
+            and get_setting(project.config, "orchestrator", "integration_gate")
             and bool(test_cmd)
             and (Path(project.path) / ".git").exists()
         )
@@ -1013,8 +995,7 @@ class ProjectOrchestrator:
             # Graceful budget stop: if the global budget is exhausted, do not
             # launch another wave. Defer the remainder and break so the pipeline
             # finalizes/reports normally instead of throwing mid-wave.
-            remaining_budget = getattr(project.llm_client, "budget_remaining", None)
-            if isinstance(remaining_budget, (int, float)) and remaining_budget <= 0:
+            if _budget_exhausted(project.llm_client):
                 logger.warning("Stopping run: LLM budget exhausted.")
                 report.key_decisions.append(
                     "Stopped: budget exhausted; remaining work deferred"
@@ -1266,18 +1247,17 @@ class ProjectOrchestrator:
         tasks with disjoint declared file sets run in the same concurrent batch;
         tasks whose file sets overlap are run serially afterwards.
         """
-        orch_cfg = project.config.get("orchestrator", {})
-        mode = orch_cfg.get("parallel_mode", "shared")
-        explicit_mode = "parallel_mode" in orch_cfg
+        mode = get_setting(project.config, "orchestrator", "parallel_mode")
         is_git_repo = (project.path / ".git").exists() is True
-        # Default (unset) mode on a git repo → isolate via worktrees.
-        prefer_worktrees = mode == "worktree" or (not explicit_mode and is_git_repo)
+        # "auto" (default) isolates via worktrees on a git repo; the value itself
+        # carries the intent, so no fragile "was it explicitly set" detection.
+        prefer_worktrees = mode == "worktree" or (mode == "auto" and is_git_repo)
         if prefer_worktrees and is_git_repo:
             return self._execute_parallel_worktrees(ready, executor, project)
 
         concurrent_group, serial_remainder = self._partition_disjoint(ready)
         results = []
-        max_workers = orch_cfg.get("max_workers", 4)
+        max_workers = get_setting(project.config, "orchestrator", "max_workers")
         if concurrent_group:
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=min(len(concurrent_group), max_workers)
@@ -1348,7 +1328,7 @@ class ProjectOrchestrator:
             except Exception as e:
                 return (task, None, e, wt_path, branch)
 
-        max_workers = project.config.get("orchestrator", {}).get("max_workers", 4)
+        max_workers = get_setting(project.config, "orchestrator", "max_workers")
         raw = []
         if prepared:
             with concurrent.futures.ThreadPoolExecutor(
@@ -1458,6 +1438,32 @@ class ProjectOrchestrator:
             )
 
         return f"# Auto Spec\n{prompt}"
+
+    def _setup_env(self, project: Project) -> Optional[str]:
+        """Initialize the project's env manager and return its activation prefix."""
+        if project.env_manager:
+            project.env_manager.setup()
+            return project.env_manager.activate_command()
+        return None
+
+    def _analyze(self, project: Project, env_activate: Optional[str]):
+        """Phase 1 analysis with config-driven commands and timeouts.
+
+        Shared by build() and interactive_plan() so the analyzer's parameters
+        (and any future config wiring) live in exactly one place.
+        """
+        return analyze_project(
+            project.path,
+            project.llm_client,
+            build_command=project.config.get("build_command"),
+            test_command=project.config.get("test_command"),
+            lint_command=project.config.get("lint_command"),
+            env_activate=env_activate,
+            build_timeout=get_setting(project.config, "build", "build_timeout"),
+            test_timeout=get_setting(project.config, "build", "test_timeout"),
+            lint_timeout=get_setting(project.config, "build", "lint_timeout"),
+            parallel=get_setting(project.config, "build", "parallel_analysis"),
+        )
 
     def _get_or_register(self, project_path: str | Path) -> Optional[Project]:
         project = self.registry.get_project(project_path)

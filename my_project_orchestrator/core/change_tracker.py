@@ -11,16 +11,26 @@ assumptions about code that was modified by earlier tasks.
 import json
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from my_project_orchestrator.logging_setup import setup_logger
-from my_project_orchestrator.utils.file_utils import atomic_write
+from my_project_orchestrator.utils.file_utils import (
+    atomic_write,
+    orchestrator_state_file,
+)
 
 logger = setup_logger(__name__)
 
 
 class TaskChange:
-    def __init__(self, task_id: str, files: List[str], diff_summary: str, additions: int, deletions: int):
+    def __init__(
+        self,
+        task_id: str,
+        files: List[str],
+        diff_summary: str,
+        additions: int,
+        deletions: int,
+    ):
         self.task_id = task_id
         self.files = files
         self.diff_summary = diff_summary
@@ -52,8 +62,7 @@ class ChangeTracker:
 
     def __init__(self, project_path: Path):
         self.project_path = project_path
-        self._file = project_path / ".orchestrator" / "changes.json"
-        self._file.parent.mkdir(parents=True, exist_ok=True)
+        self._file = orchestrator_state_file(project_path, "changes.json")
         self.changes: Dict[str, TaskChange] = {}
         self._load()
 
@@ -70,7 +79,9 @@ class ChangeTracker:
         data = {tid: tc.to_dict() for tid, tc in self.changes.items()}
         atomic_write(self._file, json.dumps(data, indent=2))
 
-    def record_task_changes(self, task_id: str, modified_files: List[str]) -> TaskChange:
+    def record_task_changes(
+        self, task_id: str, modified_files: List[str]
+    ) -> TaskChange:
         """Record what a completed task changed. Call after task commit."""
         diff_summary = self._get_task_diff(task_id, modified_files)
         additions, deletions = self._count_diff_stats(diff_summary)
@@ -84,10 +95,14 @@ class ChangeTracker:
         )
         self.changes[task_id] = change
         self._save()
-        logger.info(f"Tracked changes for {task_id}: {len(modified_files)} files, +{additions}/-{deletions}")
+        logger.info(
+            f"Tracked changes for {task_id}: {len(modified_files)} files, +{additions}/-{deletions}"
+        )
         return change
 
-    def get_recent_changes_for_files(self, target_files: List[str], max_entries: int = 5) -> str:
+    def get_recent_changes_for_files(
+        self, target_files: List[str], max_entries: int = 5
+    ) -> str:
         """Get recent changes that touched any of the target files."""
         relevant = []
         for change in reversed(list(self.changes.values())):
@@ -106,7 +121,9 @@ class ChangeTracker:
             lines.append(f"+{change.additions}/-{change.deletions} lines")
             if change.diff_summary:
                 # Show only the parts relevant to overlapping files
-                filtered = self._filter_diff_for_files(change.diff_summary, overlap_files)
+                filtered = self._filter_diff_for_files(
+                    change.diff_summary, overlap_files
+                )
                 if filtered:
                     lines.append(f"```diff\n{filtered}\n```")
 
@@ -140,10 +157,17 @@ class ChangeTracker:
 
     def _find_task_commit(self, task_id: str) -> str:
         """Find the SHA of the commit recording this task, if any."""
-        out = self._run_git([
-            "log", "--all", "-n", "1", "--format=%H",
-            "--fixed-strings", f"--grep=task({task_id}):",
-        ])
+        out = self._run_git(
+            [
+                "log",
+                "--all",
+                "-n",
+                "1",
+                "--format=%H",
+                "--fixed-strings",
+                f"--grep=task({task_id}):",
+            ]
+        )
         lines = out.splitlines()
         return lines[0].strip() if lines else ""
 
@@ -151,8 +175,11 @@ class ChangeTracker:
         """Run a git command (list form, no shell) and return stdout, or ''."""
         try:
             proc = subprocess.run(
-                ["git", *args], cwd=self.project_path,
-                capture_output=True, text=True, timeout=30,
+                ["git", *args],
+                cwd=self.project_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
             return proc.stdout.strip() if proc.returncode == 0 else ""
         except Exception as e:
@@ -169,7 +196,9 @@ class ChangeTracker:
                 deletions += 1
         return additions, deletions
 
-    def _filter_diff_for_files(self, diff: str, target_files: set, max_lines: int = 30) -> str:
+    def _filter_diff_for_files(
+        self, diff: str, target_files: set, max_lines: int = 30
+    ) -> str:
         """Extract diff hunks for specific files only."""
         lines = diff.splitlines()
         output = []

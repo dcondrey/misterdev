@@ -12,7 +12,10 @@ from pathlib import Path
 from typing import Dict, Optional, Set
 
 from my_project_orchestrator.logging_setup import setup_logger
-from my_project_orchestrator.utils.file_utils import atomic_write
+from my_project_orchestrator.utils.file_utils import (
+    atomic_write,
+    orchestrator_state_file,
+)
 
 logger = setup_logger(__name__)
 
@@ -50,8 +53,7 @@ class ProgressTracker:
     """Persists build progress so a crash at task 18 resumes from 18, not 1."""
 
     def __init__(self, project_path: Path):
-        self._file = project_path / ".orchestrator" / "progress.json"
-        self._file.parent.mkdir(parents=True, exist_ok=True)
+        self._file = orchestrator_state_file(project_path, "progress.json")
         self.completed: Set[str] = set()
         self.failed: Set[str] = set()
         self.hashes: Dict[str, str] = {}

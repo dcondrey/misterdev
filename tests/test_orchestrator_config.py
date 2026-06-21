@@ -323,6 +323,10 @@ class TestExecuteTasksMaxConsecutiveFailures:
         project = MagicMock()
         project.config = {"orchestrator": orchestrator_cfg, "language": "python"}
         project.path = Path("/tmp/fake_proj")
+        # This suite exercises the consecutive-failure limit, not cost caps. A
+        # bare MagicMock client returns truthy for task_cost_exceeded, which
+        # would spuriously trip the (now default-"auto") per-task cap branch.
+        project.llm_client.task_cost_exceeded.return_value = False
 
         failed_result = MagicMock()
         failed_result.status = "failed"
@@ -388,6 +392,9 @@ class TestExecuteTasksMaxConsecutiveFailures:
         project = MagicMock()
         project.config = {}  # No orchestrator key
         project.path = Path("/tmp/fake_proj")
+        # Not a cost-cap test; stop the bare MagicMock client from tripping the
+        # default-"auto" per-task cap branch.
+        project.llm_client.task_cost_exceeded.return_value = False
 
         failed_result = MagicMock()
         failed_result.status = "failed"
@@ -519,11 +526,13 @@ def _accessed_config_keys():
                 and isinstance(node.args[0].value, str)
             ):
                 keys.add(node.args[0].value)
-            # get_setting(config, section, "key") -> key is the 3rd positional arg
+            # get_setting(config, section, "key") and
+            # get_section_setting(section, section_dict, "key") both carry the
+            # key as the 3rd positional arg.
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
-                and node.func.id == "get_setting"
+                and node.func.id in ("get_setting", "get_section_setting")
                 and len(node.args) >= 3
                 and isinstance(node.args[2], ast.Constant)
                 and isinstance(node.args[2].value, str)
@@ -597,3 +606,40 @@ def test_config_manager_warns_on_unknown_yaml_key(tmp_path, caplog):
     assert any("build.buildtimeout" in r.message for r in caplog.records)
     # The typo is ignored; the real key keeps its schema default.
     assert cfg["build"]["build_timeout"] == 120
+
+
+def test_parallel_mode_auto_isolates_via_worktrees_on_git_repo(tmp_path):
+    # Regression guard: parallel_mode "auto" (the default) must use worktrees on
+    # a git repo. This broke silently once parallel_mode gained a DEFAULT_CONFIG
+    # entry and the old "was it explicitly set" membership check became useless.
+    from my_project_orchestrator.agent import ProjectOrchestrator
+
+    (tmp_path / ".git").mkdir()
+    orch = ProjectOrchestrator()
+    project = MagicMock()
+    project.path = tmp_path
+    project.config = {"orchestrator": {"parallel_mode": "auto"}}
+    tasks = [MagicMock(), MagicMock()]
+
+    with patch.object(
+        ProjectOrchestrator, "_execute_parallel_worktrees", return_value=[]
+    ) as wt:
+        orch._execute_parallel(tasks, MagicMock(), project)
+    wt.assert_called_once()
+
+
+def test_parallel_mode_shared_does_not_use_worktrees_on_git_repo(tmp_path):
+    from my_project_orchestrator.agent import ProjectOrchestrator
+
+    (tmp_path / ".git").mkdir()
+    orch = ProjectOrchestrator()
+    project = MagicMock()
+    project.path = tmp_path
+    project.config = {"orchestrator": {"parallel_mode": "shared", "max_workers": 2}}
+    tasks = []  # empty: shared path returns immediately, no real execution
+
+    with patch.object(
+        ProjectOrchestrator, "_execute_parallel_worktrees", return_value=[]
+    ) as wt:
+        orch._execute_parallel(tasks, MagicMock(), project)
+    wt.assert_not_called()

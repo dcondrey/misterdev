@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
 
+from my_project_orchestrator.config import get_section_setting, get_setting
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -69,13 +70,13 @@ class BaseLLMClient(ABC):
     def __init__(self, config: dict):
         self.config = config
         self.cumulative_usage = LLMUsage()
-        self._budget = config.get("build", {}).get("budget", 100.0)
+        self._budget = get_setting(config, "build", "budget")
         # Optional per-task cost ceiling. None disables it; a number is an
         # absolute cap; "auto" makes it a fraction of the budget remaining when
         # the task starts (snapshotted in track_task), so it shrinks as the run
         # spends and no single task can drain the global budget.
-        self._max_cost_per_task = config.get("orchestrator", {}).get(
-            "max_cost_per_task"
+        self._max_cost_per_task = get_setting(
+            config, "orchestrator", "max_cost_per_task"
         )
         self._task_caps: Dict[str, Optional[float]] = {}
 
@@ -282,13 +283,13 @@ class OpenRouterLLMClient(BaseLLMClient):
         super().__init__(config)
         llm_config = config.get("llm", {})
 
-        env_var_name = llm_config.get("api_key_env_var", "OPENROUTER_API_KEY")
+        env_var_name = get_section_setting("llm", llm_config, "api_key_env_var")
         self.api_key = os.environ.get(env_var_name)
         if not self.api_key:
             raise ValueError(f"API key environment variable '{env_var_name}' not set.")
 
-        self.model = llm_config.get("model", "anthropic/claude-3.5-sonnet")
-        self.temperature = llm_config.get("temperature", 0.1)
+        self.model = get_section_setting("llm", llm_config, "model")
+        self.temperature = get_section_setting("llm", llm_config, "temperature")
 
         from openai import OpenAI
 
@@ -385,13 +386,13 @@ class AnthropicLLMClient(BaseLLMClient):
         super().__init__(config)
         llm_config = config.get("llm", {})
 
-        env_var_name = llm_config.get("api_key_env_var", "ANTHROPIC_API_KEY")
+        env_var_name = get_section_setting("llm", llm_config, "api_key_env_var")
         self.api_key = os.environ.get(env_var_name)
         if not self.api_key:
             raise ValueError(f"API key environment variable '{env_var_name}' not set.")
 
-        self.model = llm_config.get("model", "claude-sonnet-4-20250514")
-        self.temperature = llm_config.get("temperature", 0.1)
+        self.model = get_section_setting("llm", llm_config, "model")
+        self.temperature = get_section_setting("llm", llm_config, "temperature")
         self.max_tokens = llm_config.get("max_tokens", 8192)
 
         try:
@@ -514,7 +515,7 @@ class FailoverLLMClient(BaseLLMClient):
         super().__init__(config)
         self.primary = _create_single_client(config)
         self.failover_clients: list[BaseLLMClient] = []
-        for fc in config.get("llm", {}).get("failover", []):
+        for fc in get_setting(config, "llm", "failover"):
             try:
                 merged = {**config, "llm": {**config["llm"], **fc, "failover": []}}
                 self.failover_clients.append(_create_single_client(merged))
@@ -551,7 +552,7 @@ class FailoverLLMClient(BaseLLMClient):
 
 
 def _create_single_client(config: dict) -> BaseLLMClient:
-    provider = config.get("llm", {}).get("provider", "openrouter")
+    provider = get_setting(config, "llm", "provider")
     if provider == "openrouter":
         return OpenRouterLLMClient(config)
     elif provider == "anthropic":
@@ -562,6 +563,6 @@ def _create_single_client(config: dict) -> BaseLLMClient:
 
 def create_llm_client(config: dict) -> BaseLLMClient:
     """Factory: returns a failover-wrapped client when failover config exists."""
-    if config.get("llm", {}).get("failover"):
+    if get_setting(config, "llm", "failover"):
         return FailoverLLMClient(config)
     return _create_single_client(config)

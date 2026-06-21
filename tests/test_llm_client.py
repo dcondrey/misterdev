@@ -140,8 +140,22 @@ def test_create_llm_client_invalid_provider():
         create_llm_client({"llm": {"provider": "nonexistent"}})
 
 
-def test_per_task_cost_cap_disabled_by_default():
+def test_per_task_cost_cap_auto_by_default():
+    # Hardened default is "auto" (budget-driven cap on), per the schema — not
+    # disabled. (Production configs are merged with DEFAULT_CONFIG, so this was
+    # already the effective default; only unmerged test dicts saw None.)
     client = FakeLLMClient(config={"llm": {}, "build": {"budget": 10.0}})
+    assert client._max_cost_per_task == "auto"
+
+
+def test_per_task_cost_cap_disabled_when_explicitly_none():
+    client = FakeLLMClient(
+        config={
+            "llm": {},
+            "build": {"budget": 10.0},
+            "orchestrator": {"max_cost_per_task": None},
+        }
+    )
     assert client._max_cost_per_task is None
     assert not client.task_cost_exceeded("T-1")
 

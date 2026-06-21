@@ -42,6 +42,17 @@ def safe_ref_slug(value: str, fallback: str = "x", maxlen: int = 64) -> str:
     return s[:maxlen] or fallback
 
 
+def orchestrator_state_file(project_path: str | Path, name: str) -> Path:
+    """Path to a JSON state file under the project's ``.orchestrator/`` dir.
+
+    Creates the parent directory and centralizes the state-dir convention shared
+    by the progress/contracts/change trackers so it lives in exactly one place.
+    """
+    f = Path(project_path) / ".orchestrator" / name
+    f.parent.mkdir(parents=True, exist_ok=True)
+    return f
+
+
 def read_file(file_path: str | Path) -> str:
     """Reads the content of a file."""
     with open(file_path, "r", encoding="utf-8") as f:

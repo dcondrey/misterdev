@@ -2,13 +2,16 @@ import frontmatter
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+from my_project_orchestrator.config import get_setting
 from my_project_orchestrator.core.models import Task
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
 
+
 class TaskManager:
     """Manages discovery, loading, and updating of tasks for a project."""
+
     def __init__(self, project: Any):
         self.project = project
         self.devplan_dir = self.project.config.get("devplan_dir", "devplan")
@@ -33,7 +36,7 @@ class TaskManager:
                 logger.error(f"Error loading task from {file_path}: {e}")
 
         self._resolve_dependency_ids()
-        if self.project.config.get("orchestrator", {}).get("auto_detect_dependencies", False):
+        if get_setting(self.project.config, "orchestrator", "auto_detect_dependencies"):
             self._detect_file_overlaps()
         logger.info(f"Discovered {len(discovered_tasks)} tasks.")
         return discovered_tasks
@@ -77,11 +80,17 @@ class TaskManager:
                     resolved.append(dep)
                 else:
                     # Try prefix match: "001" matches "001-posting-shard"
-                    matches = [tid for tid in all_ids if tid.startswith(dep + "-") or tid == dep]
+                    matches = [
+                        tid
+                        for tid in all_ids
+                        if tid.startswith(dep + "-") or tid == dep
+                    ]
                     if len(matches) == 1:
                         resolved.append(matches[0])
                     elif len(matches) > 1:
-                        logger.warning(f"Ambiguous dependency '{dep}' in {task.id}: matches {matches}")
+                        logger.warning(
+                            f"Ambiguous dependency '{dep}' in {task.id}: matches {matches}"
+                        )
                         resolved.append(matches[0])
                     else:
                         logger.warning(f"Unresolved dependency '{dep}' in {task.id}")
@@ -91,12 +100,12 @@ class TaskManager:
     def _load_task_from_file(self, file_path: Path) -> Optional[Task]:
         with open(file_path, "r", encoding="utf-8") as f:
             post = frontmatter.load(f)
-            
+
         if not post.metadata or "status" not in post.metadata:
             return None
 
         task_id = file_path.stem
-        
+
         meta = post.metadata
         depends_on = meta.get("depends_on", [])
         if isinstance(depends_on, str):
@@ -124,7 +133,9 @@ class TaskManager:
 
     def update_task_status(self, task_id: str, new_status: str):
         if task_id not in self.tasks:
-            logger.warning(f"Task {task_id} not in task registry, status update skipped.")
+            logger.warning(
+                f"Task {task_id} not in task registry, status update skipped."
+            )
             return
 
         task = self.tasks[task_id]
@@ -136,9 +147,9 @@ class TaskManager:
             try:
                 with open(task.source_ref, "r", encoding="utf-8") as f:
                     post = frontmatter.load(f)
-                
-                post.metadata['status'] = new_status
-                
+
+                post.metadata["status"] = new_status
+
                 with open(task.source_ref, "w", encoding="utf-8") as f:
                     f.write(frontmatter.dumps(post))
                 logger.info(f"Updated task {task_id} status to {new_status}")

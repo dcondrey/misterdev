@@ -25,6 +25,13 @@ class LLMSettings:
     provider: str = "openrouter"
     model: str = "anthropic/claude-sonnet-4.6"
     temperature: float = 0.1
+    api_key_env_var: str = "OPENROUTER_API_KEY"
+    streaming: bool = False
+    failover: List[Dict[str, Any]] = field(default_factory=list)
+    # Per-task model routing: routing maps complexity/strategy -> tier name,
+    # models maps tier name -> model id. Empty = use the default model.
+    routing: Dict[str, Any] = field(default_factory=dict)
+    models: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -35,6 +42,8 @@ class BuildSettings:
     test_timeout: int = 180
     lint_timeout: int = 120
     parallel_analysis: bool = True
+    # Global spend ceiling for a run; the master budget constraint.
+    budget: float = 100.0
 
 
 @dataclass
@@ -60,6 +69,10 @@ class OrchestratorSettings:
     # AB-MCTS spec refinement fires several serial LLM calls before any work;
     # off by default (marginal value, large latency/cost).
     enable_ab_mcts: bool = False
+    # "auto" (worktree isolation on a git repo, else shared), "shared" (one
+    # working tree), or "worktree" (always isolate each parallel task).
+    parallel_mode: str = "auto"
+    auto_detect_dependencies: bool = False
 
 
 PROMPT_TEMPLATES = {
@@ -111,18 +124,41 @@ DEFAULT_CONFIG = {
 }
 
 
+_SCHEMA_FIELDS = {
+    section: frozenset(f.name for f in fields(schema))
+    for section, schema in _SECTION_SCHEMAS.items()
+}
+
+
+def get_section_setting(section: str, section_cfg: Dict[str, Any], key: str) -> Any:
+    """Like :func:`get_setting`, but for a caller that already holds the section
+    sub-dict (e.g. the LLM client receives only ``config["llm"]``).
+
+    Same two guarantees: single-source default (from DEFAULT_CONFIG) and a typo
+    in ``key`` raises instead of silently returning a default.
+    """
+    known = _SCHEMA_FIELDS.get(section)
+    if known is not None and key not in known:
+        raise KeyError(
+            f"Unknown config key '{section}.{key}' is not a field of "
+            f"{_SECTION_SCHEMAS[section].__name__}. Known: {sorted(known)}"
+        )
+    if key in (section_cfg or {}):
+        return section_cfg[key]
+    return DEFAULT_CONFIG.get(section, {}).get(key)
+
+
 def get_setting(config: Dict[str, Any], section: str, key: str) -> Any:
     """Read config[section][key], falling back to the canonical DEFAULT_CONFIG.
 
-    Single source of truth for defaults: call sites pass no literal default, so
-    the per-key default lives in exactly one place (the dataclass schema, via
-    DEFAULT_CONFIG) and cannot drift the way copy-pasted ``.get(key, 120)``
-    literals do.
+    Two guarantees:
+    - Single source of truth for defaults: call sites pass no literal default,
+      so a key's default lives in exactly one place (the dataclass schema).
+    - Typo-safe: for a schema-validated section, an unknown ``key`` raises
+      immediately (caught in tests/dev) instead of silently returning a default.
+      This is the full-sweep typo protection without replacing the config dict.
     """
-    section_cfg = config.get(section) or {}
-    if key in section_cfg:
-        return section_cfg[key]
-    return DEFAULT_CONFIG.get(section, {}).get(key)
+    return get_section_setting(section, config.get(section) or {}, key)
 
 
 def warn_unknown_keys(project_config: Dict[str, Any]) -> List[str]:
