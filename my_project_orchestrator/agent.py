@@ -530,34 +530,50 @@ class ProjectOrchestrator:
         composed plan is shown and the user is asked to approve it before any
         task executes.
         """
-        # Sovereign Phase 1.5: Empirical Probes (only for SMART/CREATE modes)
+        # Sovereign Phase 1.5: Empirical Probes (only for SMART/CREATE modes).
+        # Best-effort: probe discovery must never crash the build, so any
+        # failure here degrades to no verified facts rather than aborting.
         verified_facts = ""
         if mode in (BuildMode.SMART, BuildMode.CREATE):
             logger.info("Phase 1.5: Empirical Probe Discovery")
-            probe_gen = ProbeGenerator(project.llm_client)
-            with EphemeralCodeManager(project.path) as ephemeral:
-                probes = probe_gen.generate_probes(prompt, assessment.summary())
-                probe_findings = []
-                for p in probes:
-                    success, output = ephemeral.run_ephemeral_script(
-                        p.get("script", ""), name=f"probe_{p.get('name', 'unknown')}"
-                    )
-                    probe_findings.append(f"Probe: {p.get('name', '?')} -> {output}")
-                verified_facts = "\n".join(probe_findings)
+            try:
+                probe_gen = ProbeGenerator(project.llm_client)
+                with EphemeralCodeManager(project.path) as ephemeral:
+                    probes = probe_gen.generate_probes(prompt, assessment.summary())
+                    probe_findings = []
+                    for p in probes:
+                        success, output = ephemeral.run_ephemeral_script(
+                            p.get("script", ""),
+                            name=f"probe_{p.get('name', 'unknown')}",
+                        )
+                        probe_findings.append(
+                            f"Probe: {p.get('name', '?')} -> {output}"
+                        )
+                    verified_facts = "\n".join(probe_findings)
+            except Exception as e:
+                logger.warning(f"Probe discovery failed (non-fatal): {e}")
 
         # Phase 2: Generate Spec
         spec = self._generate_spec(
             mode, prompt, assessment, project, facts=verified_facts
         )
 
-        # Sovereign: Metacognitive Context Injection
+        # Sovereign enhancements (metacognition, AB-MCTS) are best-effort: they
+        # refine the spec but must not crash the build, so each degrades to the
+        # current spec on failure rather than aborting before any work is done.
         auditor = SessionAuditor(project.path, project.llm_client)
-        lessons = auditor.get_lessons_context()
-        if lessons:
-            spec = f"{lessons}\n\n{spec}"
+        try:
+            lessons = auditor.get_lessons_context()
+            if lessons:
+                spec = f"{lessons}\n\n{spec}"
+        except Exception as e:
+            logger.warning(f"Lesson injection failed (non-fatal): {e}")
 
-        planner = ABMCTSPlanner(project.llm_client)
-        spec = planner.branch_and_evaluate(spec, assessment.summary())
+        try:
+            planner = ABMCTSPlanner(project.llm_client)
+            spec = planner.branch_and_evaluate(spec, assessment.summary())
+        except Exception as e:
+            logger.warning(f"AB-MCTS planning failed (non-fatal): {e}")
 
         # Phase 3: Decompose
         tasks = decompose_spec(
@@ -601,11 +617,14 @@ class ProjectOrchestrator:
                 logger.warning(f"SOTA Validation Failed: {issues}")
                 self._maybe_rollback_regression(project, report, assessment, flags)
 
-        # Phase 6: Metacognitive Audit
+        # Phase 6: Metacognitive Audit (best-effort; never fail a finished build)
         report.finalize()
-        auditor.audit_session(
-            report.completed_tasks, report.failed_tasks, str(report.scratchpad)
-        )
+        try:
+            auditor.audit_session(
+                report.completed_tasks, report.failed_tasks, str(report.scratchpad)
+            )
+        except Exception as e:
+            logger.warning(f"Session audit failed (non-fatal): {e}")
 
         usage = project.llm_client.cumulative_usage
         report.llm_calls = usage.call_count

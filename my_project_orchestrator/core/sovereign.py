@@ -7,6 +7,7 @@ Inspired by June 2026 arXiv research:
 """
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -30,19 +31,27 @@ class EphemeralCodeManager:
 
     def __init__(self, project_path: Path):
         self.session_id = uuid.uuid4().hex[:8]
-        self.ephemeral_dir = project_path / ".orchestrator" / "ephemeral" / self.session_id
+        self.ephemeral_dir = (
+            project_path / ".orchestrator" / "ephemeral" / self.session_id
+        )
         self.ephemeral_dir.mkdir(parents=True, exist_ok=True)
 
     def run_ephemeral_script(self, code: str, name: str = "temp") -> Tuple[bool, str]:
         """Executes a transient script and returns its output."""
-        script_path = self.ephemeral_dir / f"{name}_{uuid.uuid4().hex[:4]}.py"
-        script_path.write_text(code, encoding="utf-8")
-
+        # Sanitize the (LLM-supplied) name: a '/' or other path char would turn
+        # the filename into a non-existent subdir and raise on write, crashing
+        # the whole build from this best-effort probe step.
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)[:60] or "temp"
+        script_path = self.ephemeral_dir / f"{safe}_{uuid.uuid4().hex[:4]}.py"
         logger.info(f"Executing ephemeral logic: {script_path.name}")
         try:
+            self.ephemeral_dir.mkdir(parents=True, exist_ok=True)
+            script_path.write_text(code, encoding="utf-8")
             res = subprocess.run(
                 [sys.executable, str(script_path)],
-                capture_output=True, text=True, timeout=60,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             output = res.stdout
             if res.stderr:
@@ -92,14 +101,18 @@ class ABMCTSPlanner:
         simulations = []
         for i in range(branches):
             prompt = (
-                f"Simulation Path {i+1}: Propose a unique implementation strategy "
+                f"Simulation Path {i + 1}: Propose a unique implementation strategy "
                 f"for this task.\nContext: {context}\nTask: {task}"
             )
-            strategy = self.llm.generate_code(prompt, "You are a competitive systems architect.")
+            strategy = self.llm.generate_code(
+                prompt, "You are a competitive systems architect."
+            )
             simulations.append(strategy)
 
         # Self-Evaluation / Discordance-Aware Selection
-        numbered = "\n".join(f"--- PATH {i+1} ---\n{s}" for i, s in enumerate(simulations))
+        numbered = "\n".join(
+            f"--- PATH {i + 1} ---\n{s}" for i, s in enumerate(simulations)
+        )
         eval_prompt = (
             f"Evaluate these {branches} competing implementation strategies.\n"
             f"Select the one with the highest 'Verifiability' and lowest 'Regression Risk'.\n\n"
@@ -107,20 +120,24 @@ class ABMCTSPlanner:
             f"Return ONLY the content of the selected strategy."
         )
         logger.info("AB-MCTS: Evaluating branches...")
-        return self.llm.generate_code(eval_prompt, "You are a discordance-aware evaluator.")
+        return self.llm.generate_code(
+            eval_prompt, "You are a discordance-aware evaluator."
+        )
 
 
 class ProbeGenerator:
     """Synthesizes empirical fact-finding probes with high-rigor reflection.
-    
-    Identifies 'assumptions' in the spec and generates scripts to verify them 
+
+    Identifies 'assumptions' in the spec and generates scripts to verify them
     using Python's 'inspect', 'ast', and 'dir' modules for reflective analysis.
     """
 
     def __init__(self, llm_client: BaseLLMClient):
         self.llm = llm_client
 
-    def generate_probes(self, spec: str, assessment_summary: str) -> List[Dict[str, str]]:
+    def generate_probes(
+        self, spec: str, assessment_summary: str
+    ) -> List[Dict[str, str]]:
         """Analyzes spec and generates a list of {name, purpose, script} probes."""
         prompt = f"""Analyze this technical spec and project assessment.
 Identify 1-3 critical 'assumptions' or 'unknowns' about the live codebase or environment.
@@ -141,16 +158,19 @@ Return ONLY the JSON array.
 """
         logger.info("Generating empirical probes...")
         try:
-            response = self.llm.generate_code(prompt, "You are a senior empirical researcher.")
+            response = self.llm.generate_code(
+                prompt, "You are a senior empirical researcher."
+            )
             text = response.strip()
             start = text.find("[")
             end = text.rfind("]")
             if start >= 0 and end > start:
-                return json.loads(text[start:end + 1])
+                return json.loads(text[start : end + 1])
         except Exception as e:
             logger.error(f"Failed to generate probes: {e}")
 
         return []
+
 
 class ToolSynthesizer:
     """Synthesizes project-local helper tools on-the-fly."""
@@ -159,7 +179,9 @@ class ToolSynthesizer:
         self.tools_dir = project_path / ".orchestrator" / "synthesized_tools"
         self.tools_dir.mkdir(parents=True, exist_ok=True)
 
-    def synthesize_tool(self, name: str, purpose: str, llm_client: BaseLLMClient) -> str:
+    def synthesize_tool(
+        self, name: str, purpose: str, llm_client: BaseLLMClient
+    ) -> str:
         """Asks LLM to generate a Python script for a specific purpose."""
         prompt = (
             f"Synthesize a standalone Python script to serve as a local tool.\n"
@@ -196,8 +218,11 @@ class StrategyOptimizer:
         self._cache: Dict[str, str] = {}
 
     def select_best_strategy(
-        self, task_description: str, task_category: str,
-        project_summary: str, llm_client: BaseLLMClient,
+        self,
+        task_description: str,
+        task_category: str,
+        project_summary: str,
+        llm_client: BaseLLMClient,
     ) -> str:
         """Select strategy, using cache for repeated categories."""
         if task_category in self._cache:
@@ -206,7 +231,7 @@ class StrategyOptimizer:
             return cached
 
         strategy_list = "\n".join(
-            f"{i+1}. {k}: {v}" for i, (k, v) in enumerate(self.STRATEGIES.items())
+            f"{i + 1}. {k}: {v}" for i, (k, v) in enumerate(self.STRATEGIES.items())
         )
         prompt = (
             f"Select the most efficient execution strategy.\n\n"
@@ -216,7 +241,11 @@ class StrategyOptimizer:
             f"Available Strategies:\n{strategy_list}\n\n"
             f"Return ONLY the key (surgical, iterative, architectural, or agentic)."
         )
-        best = llm_client.generate_code(prompt, "You are a workflow optimizer.").strip().lower()
+        best = (
+            llm_client.generate_code(prompt, "You are a workflow optimizer.")
+            .strip()
+            .lower()
+        )
         if best not in self.STRATEGIES:
             best = "iterative"
 
@@ -244,11 +273,13 @@ class RealTimeAligner:
 
     def certify_decision(self, decision: str, rationale: str):
         """Records a certified project decision to keep future tasks aligned."""
-        self.data["decisions"].append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "decision": decision,
-            "rationale": rationale,
-        })
+        self.data["decisions"].append(
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "decision": decision,
+                "rationale": rationale,
+            }
+        )
         self.cert_file.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
         logger.info(f"Certified Decision: {decision}")
 

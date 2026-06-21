@@ -1340,3 +1340,17 @@ def test_needs_rerun_skips_stale_idmatch_without_hash():
         h = compute_task_hash(new_task, root)
         pt.mark_completed("T-001", h)
         assert not pt.needs_rerun("T-001", h)
+
+
+# --- ephemeral probe name with path chars must not crash (live build #3) -----
+def test_ephemeral_script_name_with_slash_does_not_crash():
+    from my_project_orchestrator.core.sovereign import EphemeralCodeManager
+
+    with tempfile.TemporaryDirectory() as td:
+        with EphemeralCodeManager(Path(td)) as mgr:
+            # LLM named a probe "CLI Runner / Invocation Mechanism Probe" -> the
+            # '/' previously turned the filename into a missing subdir and raised.
+            ok, out = mgr.run_ephemeral_script(
+                "print('hi')", name="probe_CLI Runner / Invocation Mechanism Probe"
+            )
+            assert ok and "hi" in out
