@@ -155,16 +155,18 @@ def run_health_check(
     timeout: int = 120,
     build_timeout: Optional[int] = None,
     test_timeout: Optional[int] = None,
+    lint_timeout: Optional[int] = None,
 ) -> HealthCheck:
     """Run health check and return structured result for assessment.
 
-    build_timeout/test_timeout override the shared ``timeout`` per command so a
-    slow compiler (e.g. cargo with ort/tokenizers) isn't falsely reported as a
-    build failure when it merely exceeds the default. Lint reuses test_timeout.
+    Per-command timeouts override the shared ``timeout`` so a slow compiler or
+    linter (e.g. cargo with ort/tokenizers, clippy over a workspace) isn't
+    falsely reported as failing when it merely exceeds the default.
     """
     health = HealthCheck()
     bt = build_timeout if build_timeout is not None else timeout
     tt = test_timeout if test_timeout is not None else timeout
+    lt = lint_timeout if lint_timeout is not None else tt
 
     if build_command:
         health.builds, health.build_output = _run_cmd(
@@ -188,7 +190,7 @@ def run_health_check(
             lint_command,
             project_path,
             env_activate,
-            tt,
+            lt,
         )
 
     return health

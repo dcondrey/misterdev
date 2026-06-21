@@ -95,13 +95,15 @@ class GateKeeper:
         env_activate: Optional[str] = None,
         build_timeout: int = 180,
         test_timeout: int = 180,
+        lint_timeout: Optional[int] = None,
     ):
         self.project_path = Path(project_path)
         self.env_activate = env_activate
-        # Honor the project's configured timeouts so a slow compiler isn't
-        # falsely failed by the gate the way the analyzer once was.
+        # Honor the project's configured timeouts so a slow compiler or linter
+        # isn't falsely failed by the gate the way the analyzer once was.
         self.build_timeout = build_timeout
         self.test_timeout = test_timeout
+        self.lint_timeout = lint_timeout if lint_timeout is not None else test_timeout
 
     def run_gates(
         self, commands: Dict[str, Optional[str]]
@@ -134,7 +136,7 @@ class GateKeeper:
                 lint_cmd,
                 self.project_path,
                 self.env_activate,
-                timeout=self.test_timeout,
+                timeout=self.lint_timeout,
             )
             health.lint_clean = success
             health.lint_output = output

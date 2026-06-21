@@ -104,6 +104,7 @@ def decompose_spec(
     mode: BuildMode,
     llm_client: BaseLLMClient,
     project_ref: str,
+    max_tasks: int = MAX_TASKS,
 ) -> list[Task]:
     """Use LLM to decompose a spec into ordered tasks with dependencies."""
     s = assessment.structure
@@ -156,7 +157,7 @@ def decompose_spec(
         risk_level=assessment.risk.level,
         spec=spec,
         mode=mode.value,
-        max_tasks=MAX_TASKS,
+        max_tasks=max_tasks,
     )
 
     logger.info("Decomposing spec into tasks via LLM...")
@@ -177,9 +178,9 @@ def decompose_spec(
     _add_implicit_dependencies(tasks)
 
     # Validate and cap
-    if len(tasks) > MAX_TASKS:
-        logger.warning(f"LLM returned {len(tasks)} tasks, capping at {MAX_TASKS}")
-        tasks = tasks[:MAX_TASKS]
+    if len(tasks) > max_tasks:
+        logger.warning(f"LLM returned {len(tasks)} tasks, capping at {max_tasks}")
+        tasks = tasks[:max_tasks]
 
     return tasks
 

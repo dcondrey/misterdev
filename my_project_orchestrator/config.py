@@ -1,81 +1,150 @@
 import yaml
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict, List, Optional
 
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
 
-# Basic global defaults
+
+# ---------------------------------------------------------------------------
+# Typed config schema (single source of truth).
+#
+# Each knob's name, type, and default live in exactly one place: a dataclass
+# field. DEFAULT_CONFIG is GENERATED from these below, so the dict that the rest
+# of the codebase consumes can never drift from the schema, and a default can no
+# longer be copy-pasted (and diverge) across call sites. Stdlib dataclasses, no
+# pydantic: config is loaded from trusted local YAML, so attribute typing +
+# unknown-key validation is enough; we don't need runtime coercion.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LLMSettings:
+    provider: str = "openrouter"
+    model: str = "anthropic/claude-sonnet-4.6"
+    temperature: float = 0.1
+
+
+@dataclass
+class BuildSettings:
+    max_tasks: int = 30
+    max_consecutive_failures: int = 3
+    build_timeout: int = 120
+    test_timeout: int = 180
+    lint_timeout: int = 120
+    parallel_analysis: bool = True
+
+
+@dataclass
+class OrchestratorSettings:
+    max_consecutive_failures: int = 3
+    max_workers: int = 4
+    context_budget_tokens: int = 100000
+    max_task_attempts: int = 3
+    integration_gate: bool = True
+    # "auto" keys are budget-driven (BaseLLMClient / convergence loop) so the
+    # global build.budget is the single master constraint. Typed Any because
+    # they accept "auto", a number, or None.
+    max_build_iterations: Any = "auto"
+    certainty_threshold: float = 0.5
+    max_cost_per_task: Any = "auto"
+    allow_test_edits: bool = False
+    verify_acceptance: bool = True
+    llm_acceptance_judge: bool = True
+    # Golden suite: files the model never sees and may never edit, plus a
+    # blocking-gate command. Empty/None = feature off.
+    golden_paths: List[str] = field(default_factory=list)
+    golden_command: Optional[str] = None
+    # AB-MCTS spec refinement fires several serial LLM calls before any work;
+    # off by default (marginal value, large latency/cost).
+    enable_ab_mcts: bool = False
+
+
+PROMPT_TEMPLATES = {
+    "system": (
+        "You are an expert developer. Follow the strategy, honor interface contracts exactly, "
+        "and ensure your output is syntactically valid.\n"
+        "{invariants}\n{consensus_context}"
+    ),
+    "task_completion_instruction": (
+        "## Task\n{task.description}\n\n"
+        "## Acceptance Criteria\n{acceptance_criteria}\n\n"
+        "## Files to Edit\n{task.target_files}\n\n"
+        "## Interface Contracts (MUST honor exact signatures)\n{interface_contracts}\n\n"
+        "## Recent Changes to Related Files\n{recent_changes}\n\n"
+        "## Scratchpad (learnings from previous tasks)\n{scratchpad}\n\n"
+        "## Code Context\n{code_context}\n\n"
+        "Output your changes as markdown code blocks with file paths."
+    ),
+    "error_correction_instruction": (
+        "## Previous Attempt Failed\n{error_logs}\n\n"
+        "## Task\n{task.description}\n\n"
+        "## Interface Contracts\n{interface_contracts}\n\n"
+        "## Code Context\n{code_context}\n\n"
+        "Fix the error. Output corrected code as markdown code blocks with file paths."
+    ),
+}
+
+# Sections whose keys are schema-validated (used for both DEFAULT_CONFIG
+# generation and project.yaml typo detection).
+_SECTION_SCHEMAS = {
+    "llm": LLMSettings,
+    "build": BuildSettings,
+    "orchestrator": OrchestratorSettings,
+}
+
+# Generated from the schemas above — do not hand-edit section contents; change
+# the dataclass fields instead.
 DEFAULT_CONFIG = {
     "orchestrator_version": "1.0",
-    "llm": {
-        "provider": "openrouter",
-        "model": "anthropic/claude-sonnet-4.6",
-        "temperature": 0.1,
-    },
+    "llm": asdict(LLMSettings()),
     "tools": [],
     "environment": {"type": "none"},
-    "prompt_templates": {
-        "system": (
-            "You are an expert developer. Follow the strategy, honor interface contracts exactly, "
-            "and ensure your output is syntactically valid.\n"
-            "{invariants}\n{consensus_context}"
-        ),
-        "task_completion_instruction": (
-            "## Task\n{task.description}\n\n"
-            "## Acceptance Criteria\n{acceptance_criteria}\n\n"
-            "## Files to Edit\n{task.target_files}\n\n"
-            "## Interface Contracts (MUST honor exact signatures)\n{interface_contracts}\n\n"
-            "## Recent Changes to Related Files\n{recent_changes}\n\n"
-            "## Scratchpad (learnings from previous tasks)\n{scratchpad}\n\n"
-            "## Code Context\n{code_context}\n\n"
-            "Output your changes as markdown code blocks with file paths."
-        ),
-        "error_correction_instruction": (
-            "## Previous Attempt Failed\n{error_logs}\n\n"
-            "## Task\n{task.description}\n\n"
-            "## Interface Contracts\n{interface_contracts}\n\n"
-            "## Code Context\n{code_context}\n\n"
-            "Fix the error. Output corrected code as markdown code blocks with file paths."
-        ),
-    },
-    "build": {
-        "max_tasks": 30,
-        "max_attempts_per_task": 3,
-        "max_consecutive_failures": 3,
-        "build_timeout": 120,
-        "test_timeout": 180,
-        "lint_timeout": 120,
-        "parallel_analysis": True,
-    },
-    "orchestrator": {
-        "max_consecutive_failures": 3,
-        "max_workers": 4,
-        "context_budget_tokens": 100000,
-        "max_task_attempts": 3,
-        "integration_gate": True,
-        # Hardened defaults: everything opted in. "auto" keys are budget-driven
-        # (see BaseLLMClient / agent convergence loop) so the global build.budget
-        # is the single master constraint.
-        "max_build_iterations": "auto",
-        "certainty_threshold": 0.5,
-        "max_cost_per_task": "auto",
-        "allow_test_edits": False,
-        "verify_acceptance": True,
-        "llm_acceptance_judge": True,
-        # Golden suite: files the model never sees and may never edit, plus a
-        # command to run them as a blocking gate. Empty/None = feature off.
-        "golden_paths": [],
-        "golden_command": None,
-        # AB-MCTS spec refinement fires several serial LLM calls before any work;
-        # off by default (marginal value, large latency/cost).
-        "enable_ab_mcts": False,
-    },
+    "prompt_templates": PROMPT_TEMPLATES,
+    "build": asdict(BuildSettings()),
+    "orchestrator": asdict(OrchestratorSettings()),
     "build_command": None,
     "test_command": None,
     "lint_command": None,
 }
+
+
+def get_setting(config: Dict[str, Any], section: str, key: str) -> Any:
+    """Read config[section][key], falling back to the canonical DEFAULT_CONFIG.
+
+    Single source of truth for defaults: call sites pass no literal default, so
+    the per-key default lives in exactly one place (the dataclass schema, via
+    DEFAULT_CONFIG) and cannot drift the way copy-pasted ``.get(key, 120)``
+    literals do.
+    """
+    section_cfg = config.get(section) or {}
+    if key in section_cfg:
+        return section_cfg[key]
+    return DEFAULT_CONFIG.get(section, {}).get(key)
+
+
+def warn_unknown_keys(project_config: Dict[str, Any]) -> List[str]:
+    """Warn about keys in a schema-validated section that the schema doesn't know.
+
+    Catches a user's typo in project.yaml (e.g. ``buildtimeout: 300``) which the
+    deep-merge would otherwise silently ignore. Returns the unknown keys found.
+    """
+    unknown: List[str] = []
+    for section, schema in _SECTION_SCHEMAS.items():
+        sub = project_config.get(section)
+        if not isinstance(sub, dict):
+            continue
+        known = {f.name for f in fields(schema)}
+        for key in sub:
+            if key not in known:
+                unknown.append(f"{section}.{key}")
+                logger.warning(
+                    f"Unknown config key '{section}.{key}' in project.yaml is "
+                    f"ignored (typo? known {section} keys: {sorted(known)})"
+                )
+    return unknown
 
 
 class ConfigManager:
@@ -110,6 +179,9 @@ class ConfigManager:
                 logger.error(f"Failed to load project config at {yaml_path}: {e}")
         else:
             logger.warning(f"No project.yaml found at {project_dir}")
+
+        # Surface typo'd keys before they get silently ignored by the merge.
+        warn_unknown_keys(project_config)
 
         # Merge defaults with project config (deep copy to avoid mutating defaults)
         import copy

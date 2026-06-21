@@ -27,6 +27,7 @@ from my_project_orchestrator.core.error_classifier import (
     format_classified_error,
     classify_error,
 )
+from my_project_orchestrator.config import get_setting
 from my_project_orchestrator.utils.file_utils import write_file, is_golden_path
 
 _is_golden_path = is_golden_path
@@ -457,9 +458,8 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         typecheck_command = task.processor_data.get(
             typecheck_cmd_key
         ) or project.config.get(typecheck_cmd_key)
-        build_cfg = project.config.get("build", {})
-        build_timeout = build_cfg.get("build_timeout", 120)
-        test_timeout = build_cfg.get("test_timeout", 180)
+        build_timeout = get_setting(project.config, "build", "build_timeout")
+        test_timeout = get_setting(project.config, "build", "test_timeout")
 
         # Atomic execution: git branch per task (disabled in parallel mode to avoid races)
         can_branch = use_git_branch and self._is_git_repo(project)

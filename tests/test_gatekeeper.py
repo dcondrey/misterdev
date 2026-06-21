@@ -316,3 +316,21 @@ def test_gatekeeper_honors_configured_timeouts(monkeypatch):
     assert calls["cargo test"] == 300
     assert calls["cargo clippy"] == 300
     assert calls["cargo test --lib golden"] == 300
+
+
+def test_gatekeeper_explicit_lint_timeout(monkeypatch):
+    import my_project_orchestrator.core.gatekeeper as gk
+
+    calls = {}
+
+    def fake_run_cmd(cmd, cwd, env_activate=None, timeout=180):
+        calls[cmd] = timeout
+        return True, "ok"
+
+    monkeypatch.setattr(gk, "_run_cmd", fake_run_cmd)
+    keeper = gk.GateKeeper(
+        _make_project(), test_timeout=300, lint_timeout=240
+    )
+    keeper.run_gates({"lint_command": "clippy", "test_command": "test"})
+    assert calls["clippy"] == 240
+    assert calls["test"] == 300

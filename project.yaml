@@ -37,7 +37,6 @@ environment:
 
 build:
   max_tasks: 15
-  max_attempts_per_task: 3
   max_consecutive_failures: 3
   build_timeout: 120
   test_timeout: 180

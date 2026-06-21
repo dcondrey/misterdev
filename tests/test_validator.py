@@ -95,3 +95,25 @@ def test_run_health_check_honors_per_command_timeouts(monkeypatch):
     assert by_cmd["cargo build"] == 600
     assert by_cmd["cargo test"] == 300
     assert by_cmd["cargo clippy"] == 300  # lint reuses test_timeout
+
+
+def test_run_health_check_explicit_lint_timeout(monkeypatch):
+    import my_project_orchestrator.core.validator as v
+
+    calls = {}
+
+    def fake_run_cmd(cmd, cwd, env_activate=None, timeout=180):
+        calls[cmd] = timeout
+        return True, "ok"
+
+    monkeypatch.setattr(v, "_run_cmd", fake_run_cmd)
+    v.run_health_check(
+        "/tmp",
+        build_command="b",
+        test_command="t",
+        lint_command="lint",
+        test_timeout=300,
+        lint_timeout=240,
+    )
+    assert calls["lint"] == 240  # explicit lint_timeout, not test_timeout
+    assert calls["t"] == 300

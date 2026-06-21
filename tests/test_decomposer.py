@@ -107,3 +107,21 @@ def test_ground_task_paths_reclassifies_existing_to_modify():
         assert "Cargo.toml" not in t.files_to_create
         assert "src/existing.rs" not in t.files_to_create
         assert t.files_to_create == ["src/brand_new.rs"]
+
+
+def test_decompose_spec_honors_max_tasks_cap():
+    import json
+    from my_project_orchestrator.core.decomposer import decompose_spec
+    from my_project_orchestrator.core.assessment import ProjectAssessment
+
+    class _FakeClient:
+        def generate_code(self, prompt, system_prompt=""):
+            # Returns 10 tasks; the configured cap must trim to max_tasks.
+            return json.dumps(
+                [{"id": f"T-{i:03d}", "title": f"t{i}"} for i in range(1, 11)]
+            )
+
+    tasks = decompose_spec(
+        "spec", ProjectAssessment(), BuildMode.DEBUG, _FakeClient(), ".", max_tasks=3
+    )
+    assert len(tasks) == 3

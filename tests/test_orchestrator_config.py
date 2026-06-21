@@ -482,3 +482,118 @@ class TestMaxBuildIterationsConfig:
         )
         assert exec_calls == 2
         assert decompose_calls == 2  # baseline + one fix re-decompose
+
+
+# ---------------------------------------------------------------------------
+# Structural guard: every config knob must be wired, or this fails.
+# Catches the recurring "define a config key, then ignore it / shadow it with a
+# hardcoded constant" class of bug at CI time instead of in production.
+# ---------------------------------------------------------------------------
+
+
+def _accessed_config_keys():
+    """All string literals used as a dict key via .get()/.pop()/[...] in source.
+
+    A config knob that is honored is always read through one of these from a
+    config dict, so a key absent from this set is dead or shadowed. (Keys read
+    via a variable rather than a literal are not captured; acceptable.)
+    """
+    import ast
+    from pathlib import Path
+
+    pkg = Path(__file__).resolve().parent.parent / "my_project_orchestrator"
+    keys: set[str] = set()
+    for py in pkg.rglob("*.py"):
+        try:
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            # dict.get("key") / dict.pop("key")
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("get", "pop")
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                keys.add(node.args[0].value)
+            # get_setting(config, section, "key") -> key is the 3rd positional arg
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "get_setting"
+                and len(node.args) >= 3
+                and isinstance(node.args[2], ast.Constant)
+                and isinstance(node.args[2].value, str)
+            ):
+                keys.add(node.args[2].value)
+            # dict["key"]
+            if (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.slice, ast.Constant)
+                and isinstance(node.slice.value, str)
+            ):
+                keys.add(node.slice.value)
+    return keys
+
+
+def test_every_tuning_config_key_is_wired():
+    # The knob sections prone to orphaning. prompt_templates/tools are accessed
+    # dynamically and excluded.
+    accessed = _accessed_config_keys()
+    dead = []
+    for section in ("build", "orchestrator", "llm"):
+        for key in DEFAULT_CONFIG.get(section, {}):
+            if key not in accessed:
+                dead.append(f"{section}.{key}")
+    assert not dead, (
+        "Config keys defined in DEFAULT_CONFIG but never read from a config "
+        f"dict (dead or shadowed by a hardcoded constant): {dead}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Typed config schema: DEFAULT_CONFIG is generated from dataclasses, and
+# project.yaml keys are validated against them.
+# ---------------------------------------------------------------------------
+
+
+def test_default_config_generated_from_schema():
+    from dataclasses import asdict
+    from my_project_orchestrator.config import (
+        DEFAULT_CONFIG,
+        BuildSettings,
+        OrchestratorSettings,
+        LLMSettings,
+    )
+
+    # Each section must equal its schema's defaults — proving one source of truth.
+    assert DEFAULT_CONFIG["build"] == asdict(BuildSettings())
+    assert DEFAULT_CONFIG["orchestrator"] == asdict(OrchestratorSettings())
+    assert DEFAULT_CONFIG["llm"] == asdict(LLMSettings())
+
+
+def test_warn_unknown_keys_flags_typos_only():
+    from my_project_orchestrator.config import warn_unknown_keys
+
+    unknown = warn_unknown_keys(
+        {
+            "build": {"buildtimeout": 300, "max_tasks": 5},  # one typo, one valid
+            "orchestrator": {"enable_ab_mcts": True},  # valid
+        }
+    )
+    assert unknown == ["build.buildtimeout"]
+
+
+def test_config_manager_warns_on_unknown_yaml_key(tmp_path, caplog):
+    import logging
+    from my_project_orchestrator.config import ConfigManager
+
+    (tmp_path / "project.yaml").write_text("build:\n  buildtimeout: 300\n")
+    with caplog.at_level(logging.WARNING):
+        cfg = ConfigManager().load_project_config(tmp_path)
+    assert any("build.buildtimeout" in r.message for r in caplog.records)
+    # The typo is ignored; the real key keeps its schema default.
+    assert cfg["build"]["build_timeout"] == 120

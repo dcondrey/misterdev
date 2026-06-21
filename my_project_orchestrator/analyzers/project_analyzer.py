@@ -106,6 +106,7 @@ def analyze_project(
     parallel: bool = True,
     build_timeout: Optional[int] = None,
     test_timeout: Optional[int] = None,
+    lint_timeout: Optional[int] = None,
 ) -> ProjectAssessment:
     """Run all Phase 1 analyses and merge into a ProjectAssessment."""
     assessment = ProjectAssessment()
@@ -133,6 +134,7 @@ def analyze_project(
         env_activate=env_activate,
         build_timeout=build_timeout,
         test_timeout=test_timeout,
+        lint_timeout=lint_timeout,
     )
     assessment.structure.build_command = bc
     assessment.structure.test_command = tc

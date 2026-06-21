@@ -50,6 +50,7 @@ from my_project_orchestrator.agent_helpers import (
     ProgressReporter,
     _WorktreeProjectView,
 )
+from my_project_orchestrator.config import get_setting
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -450,8 +451,10 @@ class ProjectOrchestrator:
             test_command=project.config.get("test_command"),
             lint_command=project.config.get("lint_command"),
             env_activate=env_activate,
-            build_timeout=project.config.get("build", {}).get("build_timeout", 120),
-            test_timeout=project.config.get("build", {}).get("test_timeout", 180),
+            build_timeout=get_setting(project.config, "build", "build_timeout"),
+            test_timeout=get_setting(project.config, "build", "test_timeout"),
+            lint_timeout=get_setting(project.config, "build", "lint_timeout"),
+            parallel=get_setting(project.config, "build", "parallel_analysis"),
         )
 
         report = BuildReport(mode, project.name, assessment, start_time)
@@ -505,8 +508,10 @@ class ProjectOrchestrator:
             test_command=project.config.get("test_command"),
             lint_command=project.config.get("lint_command"),
             env_activate=env_activate,
-            build_timeout=project.config.get("build", {}).get("build_timeout", 120),
-            test_timeout=project.config.get("build", {}).get("test_timeout", 180),
+            build_timeout=get_setting(project.config, "build", "build_timeout"),
+            test_timeout=get_setting(project.config, "build", "test_timeout"),
+            lint_timeout=get_setting(project.config, "build", "lint_timeout"),
+            parallel=get_setting(project.config, "build", "parallel_analysis"),
         )
         console.print(Panel(assessment.summary(), title="Current state", expand=False))
 
@@ -665,8 +670,14 @@ class ProjectOrchestrator:
                 report.degraded_subsystems.append(f"AB-MCTS planning: {e}")
 
         # Phase 3: Decompose
+        max_tasks = get_setting(project.config, "build", "max_tasks")
         tasks = decompose_spec(
-            spec, assessment, mode, project.llm_client, str(project.path)
+            spec,
+            assessment,
+            mode,
+            project.llm_client,
+            str(project.path),
+            max_tasks=max_tasks,
         )
         tasks = topological_sort(tasks)
 
@@ -708,12 +719,12 @@ class ProjectOrchestrator:
             if flags.no_verify:
                 # No gate to converge on; preserve single-pass behavior.
                 break
-            build_cfg = project.config.get("build", {})
             gatekeeper = GateKeeper(
                 project.path,
                 env_activate=env_activate,
-                build_timeout=build_cfg.get("build_timeout", 180),
-                test_timeout=build_cfg.get("test_timeout", 180),
+                build_timeout=get_setting(project.config, "build", "build_timeout"),
+                test_timeout=get_setting(project.config, "build", "test_timeout"),
+                lint_timeout=get_setting(project.config, "build", "lint_timeout"),
             )
             commands = {
                 "build_command": assessment.structure.build_command,
@@ -767,7 +778,12 @@ class ProjectOrchestrator:
             # failed/deferred tasks, re-decompose it, and re-run the same path.
             fix_spec = self._build_fix_spec(report, issues, final_health)
             fix_tasks = decompose_spec(
-                fix_spec, assessment, mode, project.llm_client, str(project.path)
+                fix_spec,
+                assessment,
+                mode,
+                project.llm_client,
+                str(project.path),
+                max_tasks=max_tasks,
             )
             tasks = topological_sort(fix_tasks)
             report.key_decisions.append(
@@ -976,7 +992,7 @@ class ProjectOrchestrator:
             report.assessment.structure.test_command,
             orch_cfg.get("golden_command"),
         )
-        test_timeout = project.config.get("build", {}).get("test_timeout", 180)
+        test_timeout = get_setting(project.config, "build", "test_timeout")
         gate_active = (
             not flags.no_rollback
             and orch_cfg.get("integration_gate", True)

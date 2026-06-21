@@ -2022,7 +2022,7 @@ def _run_convergence_pipeline(gate_sequence, max_iterations, budget=100.0):
         def fake_exec(tasks, project, flags, report):
             counters["exec"] += 1
 
-        def fake_decompose(spec, assessment, mode, client, path):
+        def fake_decompose(spec, assessment, mode, client, path, **kwargs):
             counters["decompose"] += 1
             return [_mock_task(f"FIX-{counters['decompose']}")]
 
@@ -2085,7 +2085,7 @@ def _run_convergence_pipeline_with_cfg(gate_sequence, orchestrator_cfg):
         def fake_exec(tasks, project, flags, report):
             counters["exec"] += 1
 
-        def fake_decompose(spec, assessment, mode, client, path):
+        def fake_decompose(spec, assessment, mode, client, path, **kwargs):
             counters["decompose"] += 1
             return [_mock_task(f"FIX-{counters['decompose']}")]
 
