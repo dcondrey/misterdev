@@ -54,6 +54,11 @@ COMPLETENESS_PROMPT = """Analyze this project for completeness. Return a JSON ob
   broken (array of file path strings),
   todos (array of objects with "file", "line", "text")
 
+{health_ground}
+Treat code that builds and is covered by passing tests as IMPLEMENTED. Docs may
+describe a from-scratch plan; do NOT report already-built, tested capabilities
+as missing or incomplete. Base "missing"/"broken" on the source, not the docs.
+
 Project docs:
 {docs}
 
@@ -116,6 +121,19 @@ def analyze_project(
     claude_md = _read_file_safe(project_path / "CLAUDE.md")
     git_log = _get_git_log(project_path)
 
+    # Run the health check FIRST, using reliable config + deterministic
+    # detection (not LLM-guessed commands), so the completeness analyzer is
+    # grounded in what actually builds and passes — otherwise it reads the
+    # from-scratch docs and hallucinates that implemented features are missing.
+    bc = build_command or detect_build_command(project_path)
+    tc = test_command or detect_test_command(project_path)
+    assessment.health = run_health_check(
+        project_path, bc, tc, lint_command, env_activate=env_activate
+    )
+    assessment.structure.build_command = bc
+    assessment.structure.test_command = tc
+    health_ground = _health_ground_truth(assessment.health)
+
     def analyze_structure():
         prompt = STRUCTURE_PROMPT.format(
             file_listing=file_listing,
@@ -127,6 +145,7 @@ def analyze_project(
         prompt = COMPLETENESS_PROMPT.format(
             docs=docs,
             source_overview=source_overview,
+            health_ground=health_ground,
         )
         return _call_llm_json(llm_client, prompt, "completeness analyzer")
 
@@ -181,31 +200,13 @@ def analyze_project(
     # Phase 1d: merge remaining into assessment
     _merge_debt_risk(assessment, results.get("debt_risk", {}))
 
-    # The LLM structure analyzer often returns null for these commands, which
-    # silently disables the health check and every downstream safety gate that
-    # reads assessment.structure.test_command (integration gate, final SOTA
-    # gate, regression rollback). Populate the assessment with deterministic,
-    # filesystem-based fallbacks so an existing suite is actually run.
+    # Health already ran (before the analyzers, to ground them). Re-assert the
+    # deterministic commands in case the structure analyzer overwrote them with
+    # nulls during merge, since downstream safety gates read them.
     if not assessment.structure.test_command:
-        assessment.structure.test_command = test_command or detect_test_command(
-            project_path
-        )
+        assessment.structure.test_command = tc
     if not assessment.structure.build_command:
-        assessment.structure.build_command = build_command or detect_build_command(
-            project_path
-        )
-
-    # Run actual health check using detected or provided commands
-    bc = build_command or assessment.structure.build_command
-    tc = test_command or assessment.structure.test_command
-    lc = lint_command or assessment.structure.lint_command
-    assessment.health = run_health_check(
-        project_path,
-        bc,
-        tc,
-        lc,
-        env_activate=env_activate,
-    )
+        assessment.structure.build_command = bc
 
     logger.info(f"Assessment complete: {assessment.summary()}")
     return assessment
@@ -249,6 +250,19 @@ def detect_build_command(project_path: Path) -> Optional[str]:
     if (p / "pyproject.toml").exists() or (p / "setup.py").exists():
         return "python -m compileall -q ."
     return None
+
+
+def _health_ground_truth(health) -> str:
+    """One-line verified-state preamble to anchor the completeness analyzer."""
+    build = "passes" if health.builds else "FAILS"
+    if health.test_count:
+        passing = health.test_count - health.test_failures
+        tests = f"{passing}/{health.test_count} tests passing"
+    elif health.tests_pass:
+        tests = "test suite passes"
+    else:
+        tests = "no test results"
+    return f"VERIFIED ground truth: build {build}; {tests}."
 
 
 def _file_mentions(path: Path, needle: str) -> bool:

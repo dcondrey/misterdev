@@ -1182,3 +1182,33 @@ def test_interactive_plan_runs_pipeline_with_confirm():
         result = orch.interactive_plan("/tmp/x")
     assert result == "REPORT"
     assert mock_pipeline.call_args.kwargs.get("confirm_plan") is True
+
+
+# --- health-check test-count parsing (tests=none display bug) ----------------
+def test_parse_test_counts_pytest_and_cargo():
+    from my_project_orchestrator.core.validator import _parse_test_counts
+
+    assert _parse_test_counts("332 passed in 34.18s") == (332, 0)
+    assert _parse_test_counts("3 failed, 317 passed in 53s") == (320, 3)
+    assert _parse_test_counts("5 passed, 2 skipped") == (5, 0)
+    assert _parse_test_counts("test result: ok. 42 passed; 0 failed") == (42, 0)
+    assert _parse_test_counts("no recognizable summary") == (0, 0)
+
+
+def test_run_health_check_populates_test_count():
+    from my_project_orchestrator.core.validator import run_health_check
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "test_x.py").write_text("def test_a():\n    assert True\n", encoding="utf-8")
+        health = run_health_check(root, None, "python -m pytest -q", None)
+        assert health.test_count == 1 and health.test_failures == 0
+        assert health.tests_pass
+
+
+def test_health_ground_truth_string():
+    from my_project_orchestrator.analyzers.project_analyzer import _health_ground_truth
+    from my_project_orchestrator.core.assessment import HealthCheck
+
+    h = HealthCheck(builds=True, tests_pass=True, test_count=332, test_failures=0)
+    g = _health_ground_truth(h)
+    assert "build passes" in g and "332/332 tests passing" in g
