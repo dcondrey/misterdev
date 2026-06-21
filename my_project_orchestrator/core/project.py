@@ -55,6 +55,11 @@ class Project:
         self.env_manager = self._init_env_manager()
         self.tool_manager = ToolManager(config.get("tools", []))
         self.task_manager = TaskManager(self)
+        # Model ledger/selector are built lazily on first use: they touch the
+        # .orchestrator dir and only matter when dynamic_selection is enabled.
+        self._model_ledger = None
+        self._model_selector = None
+        self._llm_cache = None
         # Topography (symbol graph) is built lazily on first use, not here:
         # every CLI command registers all known projects, and eagerly scanning
         # each one's whole tree just to list/status is wasted work. The executor
@@ -64,6 +69,52 @@ class Project:
             self.llm_client,
             golden_paths=get_setting(config, "orchestrator", "golden_paths"),
         )
+
+    @property
+    def model_ledger(self):
+        """Persistent per-model performance store (lazy, file-backed)."""
+        if self._model_ledger is None:
+            from my_project_orchestrator.core.model_ledger import ModelLedger
+
+            self._model_ledger = ModelLedger(
+                self.path / ".orchestrator" / "model_stats.json"
+            )
+        return self._model_ledger
+
+    @property
+    def model_selector(self):
+        """Ledger-driven model selection policy (lazy)."""
+        if self._model_selector is None:
+            from my_project_orchestrator.core.model_selector import ModelSelector
+
+            self._model_selector = ModelSelector(
+                self.config, self.model_ledger, free_models=self._harvest_free_models()
+            )
+        return self._model_selector
+
+    @property
+    def llm_cache(self):
+        """Response memoization store, or None when caching is disabled."""
+        if self._llm_cache is None and get_setting(self.config, "llm", "cache"):
+            from my_project_orchestrator.core.llm_cache import LLMCache
+
+            self._llm_cache = LLMCache(self.path / ".orchestrator" / "llm_cache")
+        return self._llm_cache
+
+    def _harvest_free_models(self) -> list:
+        """Current free OpenRouter models when use_free_models is enabled."""
+        if not get_setting(self.config, "llm", "use_free_models"):
+            return []
+        import time
+
+        from my_project_orchestrator.core.free_models import FreeModelCache
+
+        cache = FreeModelCache(self.path / ".orchestrator" / "free_models.json")
+        try:
+            return cache.get(time.time())
+        except Exception as e:
+            logger.warning(f"Free-model harvest skipped: {e}")
+            return []
 
     def _init_llm_client(self) -> BaseLLMClient:
         return create_llm_client(self.config)

@@ -1,8 +1,10 @@
 """Markdown plan executor - executes tasks via LLM with Try-Test-Fix loop."""
 
 import ast
+import contextlib
 import re
 import shlex
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -500,8 +502,22 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         # edit isn't applied-then-orphaned by staging only the declared files.
         edited_files: set = set()
 
+        # The most recent attempt awaiting an outcome. Recorded as a failure at
+        # the top of the next iteration (we only loop again when an attempt
+        # failed) and at loop exit; recorded as a success at the success seams.
+        pending_attempt: Optional[dict] = None
+        _selector = getattr(project, "model_selector", None)
+        track_models = (
+            _selector is not None
+            and _selector.enabled
+            and hasattr(project.llm_client, "task_cost")
+        )
+
         for attempt in range(max_retries):
             logger.info(f"Attempt {attempt + 1}/{max_retries} for task {task.id}")
+            if pending_attempt is not None:
+                self._ledger_record(project, task, pending_attempt, success=False)
+                pending_attempt = None
 
             code_context = self._get_code_context(project, target_files, context_files)
             topo_context = project.topography.get_context_for_task(
@@ -564,25 +580,36 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                     "task_completion_instruction", context_dict
                 )
 
-            routed_model = self._resolve_model(project, task, strategy)
-            aborted = False
+            routed_model = self._select_model(
+                project, task, strategy, attempt, max_retries
+            )
             try:
                 with project.llm_client.track_task(task.id):
-                    if routed_model:
-                        logger.info(
-                            f"[{task.id}] routing to {routed_model} ({task.complexity}/{strategy})"
-                        )
-                        with project.llm_client.with_model(routed_model):
-                            llm_response, aborted = self._invoke_llm(
-                                project, prompt, system_prompt
-                            )
-                    else:
-                        llm_response, aborted = self._invoke_llm(
-                            project, prompt, system_prompt
-                        )
+                    llm_response, aborted, pending_attempt = self._invoke_routed(
+                        project,
+                        task,
+                        prompt,
+                        system_prompt,
+                        routed_model,
+                        attempt,
+                        track_models,
+                    )
             except Exception as e:
                 msg = f"LLM generation failed: {e}"
                 logger.error(msg)
+                self._ledger_record(
+                    project,
+                    task,
+                    {
+                        "model": routed_model
+                        or getattr(project.llm_client, "model", ""),
+                        "attempt": attempt,
+                        "cost_before": 0.0,
+                        "latency": 0.0,
+                        "aborted": False,
+                    },
+                    success=False,
+                )
                 self._abort_task(project, branch_name, base_branch, snapshot)
                 return self._fail_task(project, task, msg)
 
@@ -687,6 +714,15 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                             prior_errors, attempt, task, classified
                         )
                         continue
+                    self._ledger_record(project, task, pending_attempt, success=True)
+                    self._cache_store(
+                        project,
+                        system_prompt,
+                        prompt,
+                        llm_response,
+                        pending_attempt["model"],
+                    )
+                    pending_attempt = None
                     self._record_success(task, target_files)
                     self._commit_task(
                         project,
@@ -738,6 +774,15 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                         prior_errors, attempt, task, classified
                     )
                     continue
+                self._ledger_record(project, task, pending_attempt, success=True)
+                self._cache_store(
+                    project,
+                    system_prompt,
+                    prompt,
+                    llm_response,
+                    pending_attempt["model"],
+                )
+                pending_attempt = None
                 self._record_success(task, target_files)
                 self._commit_task(
                     project,
@@ -749,6 +794,12 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                 return self._complete_task(
                     project, task, "Task completed (no tests run).", llm_response
                 )
+
+        # The final attempt fell through without succeeding; record it before
+        # escalation/failure so its model gets the failing outcome it earned.
+        if pending_attempt is not None:
+            self._ledger_record(project, task, pending_attempt, success=False)
+            pending_attempt = None
 
         # Strategy escalation: if current strategy failed, try one more attempt
         # with "surgical". Guarded by _depth so escalation can never recurse more
@@ -1030,14 +1081,41 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
     def _invoke_llm(self, project: Project, prompt: str, system_prompt: str):
         """Call the LLM, optionally streaming with early abort (config opt-in).
 
-        Returns (text, aborted). Streaming is enabled via llm.streaming=true.
+        Returns (text, aborted). Streaming is enabled via llm.streaming=true. A
+        cache hit (llm.cache=true) returns the memoized output without a model
+        call; it is still re-applied through the gates downstream.
         """
+        cache = getattr(project, "llm_cache", None)
+        if cache is not None:
+            hit = cache.get(system_prompt, prompt)
+            if hit is not None:
+                logger.info("LLM cache hit; reusing prior output (no model call).")
+                return hit, False
+        if get_setting(project.config, "llm", "use_tools") and hasattr(
+            project.llm_client, "generate_edits"
+        ):
+            # Structured edit extraction when the model supports tools; the
+            # client renders the result into the canonical fence format and
+            # falls back to plain generation for models without tool support.
+            resp = project.llm_client.generate_edits(prompt, system_prompt)
+            return resp.content, resp.finish_reason == "aborted"
         if get_setting(project.config, "llm", "streaming"):
             resp = project.llm_client.generate_stream(
                 prompt, system_prompt, abort_check=code_gen_abort_check
             )
             return resp.content, resp.finish_reason == "aborted"
         return project.llm_client.generate_code(prompt, system_prompt), False
+
+    def _cache_store(self, project, system_prompt, prompt, output, model) -> None:
+        """Memoize a gate-passing output (no-op when caching is disabled)."""
+        cache = getattr(project, "llm_cache", None)
+        if cache is not None and output:
+            try:
+                cache.put(
+                    system_prompt, prompt, output, model=model, timestamp=time.time()
+                )
+            except OSError as e:
+                logger.warning(f"Failed to write LLM cache entry: {e}")
 
     def _resolve_model(
         self, project: Project, task: Task, strategy: str
@@ -1055,6 +1133,132 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         if not tier:
             return None
         return models.get(tier) or models.get("default")
+
+    def _select_model(
+        self,
+        project: Project,
+        task: Task,
+        strategy: str,
+        attempt: int,
+        max_attempts: int,
+    ) -> Optional[str]:
+        """Resolve the model for this attempt.
+
+        Prefers the ledger-driven dynamic policy when enabled; otherwise falls
+        back to the static complexity/strategy routing. Returns None to keep the
+        client's default model.
+        """
+        selector = getattr(project, "model_selector", None)
+        if selector is not None and selector.enabled:
+            chosen = selector.select(
+                task.category, task.complexity, attempt, max_attempts
+            )
+            if chosen:
+                return chosen
+        return self._resolve_model(project, task, strategy)
+
+    def _invoke_routed(
+        self,
+        project,
+        task,
+        prompt: str,
+        system_prompt: str,
+        routed_model: Optional[str],
+        attempt: int,
+        track_models: bool,
+    ):
+        """Invoke the LLM on the routed model, degrading to the default on failure.
+
+        A routed cheap/free model can be unavailable (no provider permitted under
+        the data_collection policy) or rate-limited. Rather than fail the task,
+        record the routed model's failure (so the ledger deprioritizes it) and
+        retry the same attempt on the client's default model. Returns
+        (llm_response, aborted, pending_record).
+        """
+
+        def _cost() -> float:
+            return project.llm_client.task_cost(task.id) if track_models else 0.0
+
+        model_used = routed_model or getattr(project.llm_client, "model", "")
+        cost_before = _cost()
+        t_before = time.time()
+
+        with self._reasoning_ctx(project, task):
+            if not routed_model:
+                resp, aborted = self._invoke_llm(project, prompt, system_prompt)
+            else:
+                logger.info(
+                    f"[{task.id}] routing to {routed_model} ({task.complexity})"
+                )
+                try:
+                    with project.llm_client.with_model(routed_model):
+                        resp, aborted = self._invoke_llm(project, prompt, system_prompt)
+                except Exception as routed_err:
+                    logger.warning(
+                        f"[{task.id}] routed model {routed_model} failed "
+                        f"({routed_err}); falling back to the default model."
+                    )
+                    self._ledger_record(
+                        project,
+                        task,
+                        {
+                            "model": routed_model,
+                            "attempt": attempt,
+                            "cost_before": cost_before,
+                            "latency": time.time() - t_before,
+                            "aborted": False,
+                        },
+                        success=False,
+                    )
+                    model_used = getattr(project.llm_client, "model", "")
+                    cost_before = _cost()
+                    t_before = time.time()
+                    resp, aborted = self._invoke_llm(project, prompt, system_prompt)
+
+        pending = {
+            "model": model_used,
+            "attempt": attempt,
+            "cost_before": cost_before,
+            "latency": time.time() - t_before,
+            "aborted": aborted,
+        }
+        return resp, aborted, pending
+
+    def _reasoning_ctx(self, project, task):
+        """Context manager requesting reasoning effort scaled to task complexity.
+
+        Effort comes from the llm.reasoning_effort map (by complexity); the
+        client only acts on it for models that support a reasoning budget. A
+        no-op when no effort is configured or the client lacks the hook.
+        """
+        mapping = get_setting(project.config, "llm", "reasoning_effort") or {}
+        effort = mapping.get(getattr(task, "complexity", None))
+        hook = getattr(project.llm_client, "with_reasoning_effort", None)
+        if effort and hook is not None:
+            return hook(effort)
+        return contextlib.nullcontext()
+
+    def _ledger_record(
+        self, project, task, pending: Optional[dict], *, success: bool
+    ) -> None:
+        """Record one attempt's outcome to the model ledger (no-op when off)."""
+        selector = getattr(project, "model_selector", None)
+        if pending is None or selector is None or not selector.enabled:
+            return
+        task_cost_fn = getattr(project.llm_client, "task_cost", None)
+        if task_cost_fn is None:
+            return
+        cost = max(0.0, task_cost_fn(task.id) - pending["cost_before"])
+        project.model_ledger.record(
+            pending["model"],
+            task.category,
+            task.complexity,
+            success=success,
+            first_try=pending["attempt"] == 0,
+            aborted=pending["aborted"],
+            cost=cost,
+            latency=pending["latency"],
+        )
 
     def _build_error_context(
         self,

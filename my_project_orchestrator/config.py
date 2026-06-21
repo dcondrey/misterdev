@@ -25,13 +25,71 @@ class LLMSettings:
     provider: str = "openrouter"
     model: str = "anthropic/claude-sonnet-4.6"
     temperature: float = 0.1
+    # Extra sampling parameters (top_p, top_k, min_p, repetition_penalty,
+    # frequency_penalty, presence_penalty, seed, ...). Each is sent only to
+    # models whose OpenRouter supported_parameters include it, so unsupported
+    # knobs never cause a 400. temperature is filtered the same way.
+    sampling: Dict[str, Any] = field(default_factory=dict)
     api_key_env_var: str = "OPENROUTER_API_KEY"
     streaming: bool = False
+    # Extract edits via a structured function-call (apply_edits) when the model
+    # supports `tools`, instead of regex-parsing markdown fences. On by default;
+    # falls back to markdown parsing for models without tool support.
+    use_tools: bool = True
     failover: List[Dict[str, Any]] = field(default_factory=list)
     # Per-task model routing: routing maps complexity/strategy -> tier name,
-    # models maps tier name -> model id. Empty = use the default model.
+    # models maps tier name -> model id (or a list of candidate ids). Empty =
+    # use the default model.
     routing: Dict[str, Any] = field(default_factory=dict)
     models: Dict[str, Any] = field(default_factory=dict)
+    # Ledger-driven dynamic model selection. False = off (default), True = on
+    # using selection_posture, "auto" = self-activating: explore cheap/free
+    # models on easy tasks while a (category, complexity) cell is immature, then
+    # settle into conservative cheap-first per cell once it has matured. Typed
+    # Any because it accepts a bool or the string "auto".
+    # escalation is the capability ladder, cheapest tier first; each tier name
+    # resolves through `models`. The policy uses a cheaper model on early
+    # attempts and climbs to the strongest tier by the final attempt.
+    dynamic_selection: Any = "auto"
+    escalation: List[str] = field(default_factory=list)
+    # A cheaper model is trusted for a first attempt only once it has at least
+    # min_observations recorded first-try attempts and a first-try success rate
+    # at or above first_try_floor.
+    min_observations: int = 5
+    first_try_floor: float = 0.5
+    # "auto" mode treats a (category, complexity) cell as matured once it has at
+    # least this many recorded attempts, after which it stops exploring and
+    # behaves conservatively.
+    maturity_threshold: int = 12
+    # Exploration aggressiveness: "conservative" (cheap only once proven),
+    # "balanced" (explore cheap on low/medium-complexity first attempts), or
+    # "aggressive" (always try cheapest first). The final attempt is always the
+    # strongest tier regardless of posture.
+    selection_posture: str = "conservative"
+    # Per-complexity reasoning effort, sent only to models that support a
+    # reasoning budget. Default leverages reasoning where it pays off (hard
+    # tasks) without adding token cost to easy ones; a complexity absent from
+    # the map gets no reasoning. Effort values: minimal|low|medium|high|xhigh.
+    reasoning_effort: Dict[str, str] = field(
+        default_factory=lambda: {"large": "high", "medium": "medium"}
+    )
+    # Harvest OpenRouter's rotating free models into the cheapest tier. On by
+    # default for out-of-box cost savings; the quality floor (gates) plus the
+    # always-strong final attempt keep output safe. Set false to keep code off
+    # third-party free endpoints entirely.
+    use_free_models: bool = True
+    # Whether to use models/providers that train on your inputs. Off by default:
+    # OpenRouter routing is constrained to providers that do not store or train
+    # on inputs (provider data_collection="deny"), which is what makes harvesting
+    # free models safe. Set true to permit training providers (more/cheaper free
+    # models, but your code may be used for training).
+    allow_training_models: bool = False
+    # Memoize gate-passing LLM outputs keyed by the full prompt, so an identical
+    # request reuses the prior result instead of calling a model. On by default:
+    # it is content-hashed (auto-invalidates when inputs change) and every hit is
+    # re-validated through the gates, so it can only save cost, never ship stale
+    # code.
+    cache: bool = True
 
 
 @dataclass

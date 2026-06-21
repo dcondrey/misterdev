@@ -1,3 +1,4 @@
+import json
 import os
 import time
 from abc import ABC, abstractmethod
@@ -44,6 +45,81 @@ class LLMCallError(Exception):
         self.retryable = retryable
 
 
+# Substrings that mark a provider error as transient and worth retrying or
+# failing over. Shared by every provider's _call and _call_stream so the
+# retry/failover decision is identical on both paths.
+RETRYABLE_ERROR_MARKERS = (
+    "rate limit",
+    "timeout",
+    "502",
+    "503",
+    "529",
+    "overloaded",
+    "connection",
+)
+
+
+def _is_retryable_error(error: Exception) -> bool:
+    text = str(error).lower()
+    return any(marker in text for marker in RETRYABLE_ERROR_MARKERS)
+
+
+# Structured tool for edit extraction. Forcing this (when a model supports
+# `tools`) replaces brittle markdown-fence parsing: the model returns
+# well-formed JSON we render back into the canonical fence format the executor
+# already consumes, so nothing downstream changes.
+APPLY_EDITS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "apply_edits",
+        "description": (
+            "Write the complete final content of each file to create or modify "
+            "to satisfy the task."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "edits": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Project-relative file path.",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Full final content of the file.",
+                            },
+                        },
+                        "required": ["path", "content"],
+                    },
+                }
+            },
+            "required": ["edits"],
+        },
+    },
+}
+
+
+def _edits_to_markdown(edits: list) -> str:
+    """Render structured edits into the canonical ```lang:path fence format.
+
+    The executor's parser keys on the ``path`` after the colon; the language
+    token is re-derived from the path downstream, so a placeholder is fine.
+    """
+    blocks = []
+    for edit in edits:
+        if not isinstance(edit, dict):
+            continue
+        path = edit.get("path")
+        content = edit.get("content", "")
+        if path:
+            blocks.append(f"```text:{path}\n{content}\n```")
+    return "\n\n".join(blocks)
+
+
 def code_gen_abort_check(accumulated: str) -> bool:
     """Heuristic: True when a code-gen stream is clearly going wrong.
 
@@ -85,19 +161,7 @@ class BaseLLMClient(ABC):
 
         This is the primary public interface. Subclasses implement _call().
         """
-        if self.cumulative_usage.estimated_cost >= self._budget:
-            raise BudgetExceededError(
-                f"Budget of ${self._budget:.2f} exceeded "
-                f"(spent ${self.cumulative_usage.estimated_cost:.2f})"
-            )
-        if self.task_cost_exceeded(getattr(self, "_current_task", None)):
-            task_id = getattr(self, "_current_task", None)
-            cap = self.effective_task_cap(task_id)
-            raise BudgetExceededError(
-                f"Per-task budget of ${cap:.2f} exceeded "
-                f"for task {task_id!r} "
-                f"(spent ${self.task_cost(task_id):.2f})"
-            )
+        self._enforce_budget()
 
         max_retries = 3
         base_delay = 1.0
@@ -128,6 +192,15 @@ class BaseLLMClient(ABC):
         """
         return self.generate(prompt, system_prompt).content
 
+    def generate_edits(self, prompt: str, system_prompt: str = "") -> LLMResponse:
+        """Generate file edits, preferring a structured tool call when supported.
+
+        The base implementation just calls :meth:`generate` (markdown edits);
+        clients that support function-calling override to force the apply_edits
+        tool and return content rendered into the canonical fence format.
+        """
+        return self.generate(prompt, system_prompt)
+
     def health_check(self) -> Tuple[bool, str]:
         """Verify the configured model actually resolves before a real run.
 
@@ -156,6 +229,40 @@ class BaseLLMClient(ABC):
         finally:
             self.model = original
 
+    @contextmanager
+    def with_reasoning_effort(self, effort: Optional[str]):
+        """Temporarily request a reasoning effort for the enclosed call(s).
+
+        Honored only by clients/models that support a reasoning budget; ignored
+        elsewhere. ``None`` is a no-op.
+        """
+        original = getattr(self, "_reasoning_effort", None)
+        self._reasoning_effort = effort
+        try:
+            yield
+        finally:
+            self._reasoning_effort = original
+
+    def _enforce_budget(self) -> None:
+        """Raise BudgetExceededError if the global or per-task cap is spent.
+
+        Shared by generate() and generate_stream() so both paths honor the
+        same budget gates before issuing a call.
+        """
+        if self.cumulative_usage.estimated_cost >= self._budget:
+            raise BudgetExceededError(
+                f"Budget of ${self._budget:.2f} exceeded "
+                f"(spent ${self.cumulative_usage.estimated_cost:.2f})"
+            )
+        if self.task_cost_exceeded(getattr(self, "_current_task", None)):
+            task_id = getattr(self, "_current_task", None)
+            cap = self.effective_task_cap(task_id)
+            raise BudgetExceededError(
+                f"Per-task budget of ${cap:.2f} exceeded "
+                f"for task {task_id!r} "
+                f"(spent ${self.task_cost(task_id):.2f})"
+            )
+
     @abstractmethod
     def _call(self, prompt: str, system_prompt: str) -> LLMResponse:
         """Execute a single LLM API call. Subclasses implement this."""
@@ -167,26 +274,65 @@ class BaseLLMClient(ABC):
 
         Returns finish_reason="aborted" with the partial content when the check
         trips, so a caller can retry with a stricter prompt instead of waiting
-        for a full bad response.
+        for a full bad response. Usage is captured from the provider stream when
+        available (and estimated otherwise) so streaming honors the same budget
+        accounting as generate().
         """
+        self._enforce_budget()
+
         chunks: list[str] = []
-        for chunk in self._call_stream(prompt, system_prompt):
-            chunks.append(chunk)
-            if abort_check is not None and abort_check("".join(chunks)):
-                logger.warning("Aborting LLM stream: bad output pattern detected")
-                return LLMResponse(
-                    content="".join(chunks),
-                    model=getattr(self, "model", ""),
-                    finish_reason="aborted",
-                )
+        usage: Optional[LLMUsage] = None
+        finish_reason = "stop"
+        stream = self._call_stream(prompt, system_prompt)
+        try:
+            while True:
+                chunks.append(next(stream))
+                if abort_check is not None and abort_check("".join(chunks)):
+                    logger.warning("Aborting LLM stream: bad output pattern detected")
+                    stream.close()
+                    finish_reason = "aborted"
+                    break
+        except StopIteration as stop:
+            usage = stop.value
+
+        content = "".join(chunks)
+        if usage is None:
+            usage = self._estimate_usage(prompt, system_prompt, content)
+        self._track_usage(usage)
         return LLMResponse(
-            content="".join(chunks),
+            content=content,
+            usage=usage,
             model=getattr(self, "model", ""),
-            finish_reason="stop",
+            finish_reason=finish_reason,
         )
 
     def _call_stream(self, prompt: str, system_prompt: str):
         raise NotImplementedError("streaming not supported by this client")
+        yield  # pragma: no cover - marks this a generator for callers
+
+    def _estimate_usage(
+        self, prompt: str, system_prompt: str, content: str
+    ) -> LLMUsage:
+        """Approximate usage when a stream yields no API usage data.
+
+        Used on early abort (the stream is abandoned before its usage chunk)
+        or with providers that omit usage. Tokens are estimated at ~4 chars
+        each; cost defers to the provider's _estimate_cost.
+        """
+        prompt_tokens = (len(prompt) + len(system_prompt)) // 4
+        completion_tokens = len(content) // 4
+        return LLMUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+            estimated_cost=self._estimate_cost(prompt_tokens, completion_tokens),
+        )
+
+    def _estimate_cost(
+        self, prompt_tokens: int, completion_tokens: int, *args
+    ) -> float:
+        """Dollar cost for a token count. Overridden per provider."""
+        return 0.0
 
     @contextmanager
     def track_task(self, task_id: str):
@@ -290,6 +436,17 @@ class OpenRouterLLMClient(BaseLLMClient):
 
         self.model = get_section_setting("llm", llm_config, "model")
         self.temperature = get_section_setting("llm", llm_config, "temperature")
+        self.sampling = dict(get_section_setting("llm", llm_config, "sampling") or {})
+        # Off by default -> deny providers that train on inputs.
+        self.data_collection = (
+            "allow"
+            if get_section_setting("llm", llm_config, "allow_training_models")
+            else "deny"
+        )
+
+        from my_project_orchestrator.core.model_catalog import ModelCatalog
+
+        self._catalog = ModelCatalog()
 
         from openai import OpenAI
 
@@ -297,6 +454,80 @@ class OpenRouterLLMClient(BaseLLMClient):
             base_url="https://openrouter.ai/api/v1",
             api_key=self.api_key,
         )
+
+    def _sampling_kwargs(self) -> dict:
+        """Sampling params for the active model, filtered by what it supports.
+
+        temperature plus any configured ``llm.sampling`` knobs (top_p, top_k,
+        min_p, repetition_penalty, ...) are emitted only when the model's
+        OpenRouter ``supported_parameters`` include them, so an unsupported knob
+        never 400s the request. Unknown model (catalog miss/offline) falls back
+        to the prior behavior: temperature only.
+        """
+        candidates = {"temperature": self.temperature, **self.sampling}
+        profile = self._catalog.profile(self.model)
+        if profile is None:
+            return {"temperature": self.temperature}
+        return {k: v for k, v in candidates.items() if profile.supports(k)}
+
+    def _supports_tools(self) -> bool:
+        profile = self._catalog.profile(self.model)
+        return profile is not None and profile.supports("tools")
+
+    def _supports_reasoning(self) -> bool:
+        profile = self._catalog.profile(self.model)
+        return profile is not None and profile.supports_reasoning
+
+    @staticmethod
+    def _extract_tool_edits(choice) -> list:
+        """Pull the apply_edits arguments out of a tool-call response.
+
+        Tolerates malformed/empty arguments by returning [] (the executor then
+        sees no edits and retries, exactly as with an empty markdown response).
+        """
+        edits = []
+        for call in getattr(choice.message, "tool_calls", None) or []:
+            fn = getattr(call, "function", None)
+            if fn is None or fn.name != "apply_edits":
+                continue
+            try:
+                args = json.loads(fn.arguments or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(args, dict) and isinstance(args.get("edits"), list):
+                edits.extend(args["edits"])
+        return edits
+
+    def generate_edits(self, prompt: str, system_prompt: str = "") -> LLMResponse:
+        """Force the apply_edits tool when the active model supports it.
+
+        Reuses generate()'s budget/retry/usage machinery via an internal flag;
+        falls back to plain markdown generation for models without tool support.
+        """
+        if not self._supports_tools():
+            return self.generate(prompt, system_prompt)
+        self._edit_tool_mode = True
+        try:
+            return self.generate(prompt, system_prompt)
+        finally:
+            self._edit_tool_mode = False
+
+    def _extra_body(self) -> dict:
+        """OpenRouter provider routing prefs.
+
+        ``data_collection="deny"`` confines routing to providers that do not
+        store or train on inputs — enforced server-side for every call, which is
+        what makes harvesting free models safe. A free model with no compliant
+        provider simply errors and the executor escalates to the next tier.
+
+        Also carries a reasoning-effort budget when one is requested for the
+        call and the active model supports it.
+        """
+        body = {"provider": {"data_collection": self.data_collection}}
+        effort = getattr(self, "_reasoning_effort", None)
+        if effort and self._supports_reasoning():
+            body["reasoning"] = {"effort": effort}
+        return body
 
     def _call(self, prompt: str, system_prompt: str) -> LLMResponse:
         logger.info(f"Calling OpenRouter model: {self.model}")
@@ -306,10 +537,22 @@ class OpenRouterLLMClient(BaseLLMClient):
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
 
+            tool_kwargs = {}
+            if getattr(self, "_edit_tool_mode", False):
+                tool_kwargs = {
+                    "tools": [APPLY_EDITS_TOOL],
+                    "tool_choice": {
+                        "type": "function",
+                        "function": {"name": "apply_edits"},
+                    },
+                }
+
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                temperature=self.temperature,
+                extra_body=self._extra_body(),
+                **self._sampling_kwargs(),
+                **tool_kwargs,
             )
 
             choice = response.choices[0]
@@ -324,44 +567,58 @@ class OpenRouterLLMClient(BaseLLMClient):
                     usage.prompt_tokens, usage.completion_tokens
                 )
 
+            content = choice.message.content or ""
+            if tool_kwargs:
+                # Render the structured tool call back into the canonical fence
+                # format the executor's parser consumes.
+                content = _edits_to_markdown(self._extract_tool_edits(choice))
+
             return LLMResponse(
-                content=choice.message.content or "",
+                content=content,
                 usage=usage,
                 model=self.model,
                 finish_reason=choice.finish_reason or "",
             )
 
         except Exception as e:
-            error_str = str(e)
-            retryable = any(
-                s in error_str.lower()
-                for s in [
-                    "rate limit",
-                    "timeout",
-                    "502",
-                    "503",
-                    "529",
-                    "overloaded",
-                    "connection",
-                ]
-            )
-            raise LLMCallError(f"OpenRouter API error: {e}", retryable=retryable) from e
+            raise LLMCallError(
+                f"OpenRouter API error: {e}", retryable=_is_retryable_error(e)
+            ) from e
 
     def _call_stream(self, prompt: str, system_prompt: str):
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        stream = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=self.temperature,
-            stream=True,
-        )
+        try:
+            stream = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                stream=True,
+                stream_options={"include_usage": True},
+                extra_body=self._extra_body(),
+                **self._sampling_kwargs(),
+            )
+        except Exception as e:
+            raise LLMCallError(
+                f"OpenRouter API error: {e}", retryable=_is_retryable_error(e)
+            ) from e
+
+        usage = LLMUsage()
         for chunk in stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+            if chunk.choices:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+            usage_data = getattr(chunk, "usage", None)
+            if usage_data:
+                usage.prompt_tokens = usage_data.prompt_tokens or 0
+                usage.completion_tokens = usage_data.completion_tokens or 0
+                usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
+                usage.estimated_cost = self._estimate_cost(
+                    usage.prompt_tokens, usage.completion_tokens
+                )
+        return usage
 
     def _estimate_cost(self, prompt_tokens: int, completion_tokens: int) -> float:
         costs = self.COST_PER_1M.get(self.model, {"input": 3.0, "output": 15.0})
@@ -458,18 +715,9 @@ class AnthropicLLMClient(BaseLLMClient):
             )
 
         except Exception as e:
-            error_str = str(e)
-            retryable = any(
-                s in error_str.lower()
-                for s in [
-                    "rate limit",
-                    "overloaded",
-                    "529",
-                    "timeout",
-                    "connection",
-                ]
-            )
-            raise LLMCallError(f"Anthropic API error: {e}", retryable=retryable) from e
+            raise LLMCallError(
+                f"Anthropic API error: {e}", retryable=_is_retryable_error(e)
+            ) from e
 
     def _call_stream(self, prompt: str, system_prompt: str):
         kwargs = {
@@ -480,10 +728,35 @@ class AnthropicLLMClient(BaseLLMClient):
         }
         if system_prompt:
             kwargs["system"] = system_prompt
-        with self.client.messages.stream(**kwargs) as stream:
+        try:
+            stream_cm = self.client.messages.stream(**kwargs)
+        except Exception as e:
+            raise LLMCallError(
+                f"Anthropic API error: {e}", retryable=_is_retryable_error(e)
+            ) from e
+
+        with stream_cm as stream:
             for text in stream.text_stream:
                 if text:
                     yield text
+            final = stream.get_final_message()
+
+        usage_data = final.usage
+        cache_creation = getattr(usage_data, "cache_creation_input_tokens", 0) or 0
+        cache_read = getattr(usage_data, "cache_read_input_tokens", 0) or 0
+        return LLMUsage(
+            prompt_tokens=usage_data.input_tokens,
+            completion_tokens=usage_data.output_tokens,
+            total_tokens=usage_data.input_tokens + usage_data.output_tokens,
+            cache_creation_tokens=cache_creation,
+            cache_read_tokens=cache_read,
+            estimated_cost=self._estimate_cost(
+                usage_data.input_tokens,
+                usage_data.output_tokens,
+                cache_creation,
+                cache_read,
+            ),
+        )
 
     def _estimate_cost(
         self,
@@ -547,6 +820,27 @@ class FailoverLLMClient(BaseLLMClient):
                     raise
                 logger.warning(
                     f"Provider {client.__class__.__name__} failed ({e}); trying next provider..."
+                )
+        raise last_error or LLMCallError("All LLM providers failed", retryable=False)
+
+    def _call_stream(self, prompt: str, system_prompt: str):
+        clients = [self.primary] + self.failover_clients
+        last_error: Optional[LLMCallError] = None
+        for i, client in enumerate(clients):
+            try:
+                usage = yield from client._call_stream(prompt, system_prompt)
+                if i > 0:
+                    logger.info(
+                        f"Failover stream via {client.__class__.__name__} ({client.model})."
+                    )
+                return usage
+            except LLMCallError as e:
+                last_error = e
+                if not e.retryable:
+                    raise
+                logger.warning(
+                    f"Provider {client.__class__.__name__} stream failed ({e}); "
+                    "trying next provider..."
                 )
         raise last_error or LLMCallError("All LLM providers failed", retryable=False)
 

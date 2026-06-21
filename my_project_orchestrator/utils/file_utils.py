@@ -6,6 +6,28 @@ from pathlib import Path
 from typing import List
 
 
+def ensure_artifact_dir(directory: Path) -> Path:
+    """Create an orchestrator artifact dir that git ignores.
+
+    Runtime artifacts (ledger, response cache, free-model list, reports) live
+    under ``.orchestrator/`` and must never dirty the user's working tree. The
+    dir self-ignores via a ``.gitignore`` containing ``*`` — the same trick
+    ``.pytest_cache`` uses — so users get clean behavior with zero setup.
+    """
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    # Place the guard at the .orchestrator root (parent of per-feature subdirs
+    # like llm_cache/, or alongside files written directly into .orchestrator).
+    root = directory.parent if directory.parent.name == ".orchestrator" else directory
+    gitignore = root / ".gitignore"
+    if not gitignore.exists():
+        try:
+            gitignore.write_text("*\n", encoding="utf-8")
+        except OSError:
+            pass
+    return directory
+
+
 def is_golden_path(file_path: str, patterns) -> bool:
     """True if a project-relative path is part of the golden (protected) suite.
 
