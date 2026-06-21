@@ -309,6 +309,48 @@ def test_commit_task_does_not_sweep_unrelated_untracked():
         assert "?? user_unrelated.txt" in status
 
 
+def test_commit_task_empty_file_list_does_not_sweep():
+    """With no files, commit must be empty -- never fall back to git add -A,
+    which would sweep unrelated untracked work (the rideshare data-loss path)."""
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+
+    class _P:
+        env_manager = None
+
+    class _T:
+        id = "T-2"
+        title = "no edits"
+        description = "d"
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _git(td, "init")
+        _git(td, "config", "user.email", "t@t.t")
+        _git(td, "config", "user.name", "t")
+        (td / "seed.txt").write_text("x")
+        _git(td, "add", "-A")
+        _git(td, "commit", "-m", "init")
+        (td / "user_untracked.txt").write_text("uncommitted user work")
+
+        proj = _P()
+        proj.path = td
+        MarkdownPlanExecutor()._commit_task(proj, None, None, _T(), [])
+
+        committed = subprocess.run(
+            ["git", "show", "--name-only", "--format=", "HEAD"],
+            cwd=td,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert "user_untracked.txt" not in committed  # not swept
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=td, capture_output=True, text=True
+        ).stdout
+        assert "?? user_untracked.txt" in status  # still safely untracked
+
+
 # --- probe generation f-string bug (found via live build) --------------------
 
 
@@ -1036,6 +1078,12 @@ def test_integration_gate_reverts_regressing_task():
         executor = MarkdownPlanExecutor()
         orch = ProjectOrchestrator()
         task = SimpleNamespace(id="T-bad")
+        branch_before = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
 
         # Sanity: suite is red at HEAD before the gate runs.
         ok_before, _ = executor._run_command(
@@ -1049,6 +1097,23 @@ def test_integration_gate_reverts_regressing_task():
         assert reverted == ["T-bad"]
         ok_after, _ = executor._run_command(project, "python -m pytest -q", timeout=120)
         assert ok_after  # tree restored to green
+
+        # HEAD must remain attached to the branch (not detached by bisect), or
+        # subsequent waves would branch from / merge into a detached head.
+        attached = subprocess.run(
+            ["git", "symbolic-ref", "-q", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        )
+        assert attached.returncode == 0, "HEAD left detached after gate"
+        branch_after = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert branch_after == branch_before
 
 
 def test_integration_gate_noop_when_suite_stays_green():
@@ -1124,7 +1189,9 @@ def test_choose_goal_number_text_and_quit():
         goal, mode = orch._choose_goal(recs)
     assert goal == "Fix imports" and mode == BuildMode.DEBUG
 
-    with patch("my_project_orchestrator.agent.Prompt.ask", return_value="make it faster"):
+    with patch(
+        "my_project_orchestrator.agent.Prompt.ask", return_value="make it faster"
+    ):
         goal, mode = orch._choose_goal(recs)
     assert goal == "make it faster"
 
@@ -1148,7 +1215,10 @@ def test_interactive_plan_cancels_when_no_goal():
 
     with (
         patch.object(orch, "_get_or_register", return_value=project),
-        patch("my_project_orchestrator.agent.analyze_project", return_value=ProjectAssessment()),
+        patch(
+            "my_project_orchestrator.agent.analyze_project",
+            return_value=ProjectAssessment(),
+        ),
         patch("my_project_orchestrator.agent.recommend_work", return_value=[]),
         patch.object(orch, "_choose_goal", return_value=(None, None)),
         patch.object(orch, "_run_pipeline") as mock_pipeline,
@@ -1174,9 +1244,14 @@ def test_interactive_plan_runs_pipeline_with_confirm():
 
     with (
         patch.object(orch, "_get_or_register", return_value=project),
-        patch("my_project_orchestrator.agent.analyze_project", return_value=ProjectAssessment()),
+        patch(
+            "my_project_orchestrator.agent.analyze_project",
+            return_value=ProjectAssessment(),
+        ),
         patch("my_project_orchestrator.agent.recommend_work", return_value=[]),
-        patch.object(orch, "_choose_goal", return_value=("Fix imports", BuildMode.DEBUG)),
+        patch.object(
+            orch, "_choose_goal", return_value=("Fix imports", BuildMode.DEBUG)
+        ),
         patch.object(orch, "_run_pipeline", return_value="REPORT") as mock_pipeline,
     ):
         result = orch.interactive_plan("/tmp/x")
@@ -1197,9 +1272,12 @@ def test_parse_test_counts_pytest_and_cargo():
 
 def test_run_health_check_populates_test_count():
     from my_project_orchestrator.core.validator import run_health_check
+
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        (root / "test_x.py").write_text("def test_a():\n    assert True\n", encoding="utf-8")
+        (root / "test_x.py").write_text(
+            "def test_a():\n    assert True\n", encoding="utf-8"
+        )
         health = run_health_check(root, None, "python -m pytest -q", None)
         assert health.test_count == 1 and health.test_failures == 0
         assert health.tests_pass
@@ -1219,10 +1297,20 @@ def test_task_hash_reflects_content_for_idless_llm_tasks():
     from types import SimpleNamespace
     from my_project_orchestrator.core.progress import compute_task_hash
 
-    a = SimpleNamespace(id="T-001", title="Add scan tests", description="cover scan",
-                        files_to_create=["tests/test_scan.py"], files_to_modify=[])
-    b = SimpleNamespace(id="T-001", title="Add build tests", description="cover build",
-                        files_to_create=["tests/test_build.py"], files_to_modify=[])
+    a = SimpleNamespace(
+        id="T-001",
+        title="Add scan tests",
+        description="cover scan",
+        files_to_create=["tests/test_scan.py"],
+        files_to_modify=[],
+    )
+    b = SimpleNamespace(
+        id="T-001",
+        title="Add build tests",
+        description="cover build",
+        files_to_create=["tests/test_build.py"],
+        files_to_modify=[],
+    )
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         # Same reused id, different content -> different hash.
@@ -1239,8 +1327,13 @@ def test_needs_rerun_skips_stale_idmatch_without_hash():
         # Simulate a prior build that completed T-001 WITHOUT recording a hash
         # (the old stale-progress state from the broken self-build).
         pt.mark_completed("T-001")
-        new_task = SimpleNamespace(id="T-001", title="fresh", description="new plan",
-                                   files_to_create=["x.py"], files_to_modify=[])
+        new_task = SimpleNamespace(
+            id="T-001",
+            title="fresh",
+            description="new plan",
+            files_to_create=["x.py"],
+            files_to_modify=[],
+        )
         # A freshly decomposed T-001 must NOT be skipped against stale progress.
         assert pt.needs_rerun("T-001", compute_task_hash(new_task, root))
         # After completing it WITH its hash, an identical resume is skipped.
