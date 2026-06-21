@@ -1075,3 +1075,110 @@ def test_integration_gate_noop_when_suite_stays_green():
             project, executor, "python -m pytest -q", [task], timeout=120
         )
         assert reverted == []
+
+
+# --- interactive planner: advisor + goal selection --------------------------
+def test_recommend_work_parses_and_normalizes():
+    from my_project_orchestrator.core.advisor import recommend_work, Recommendation
+    from my_project_orchestrator.core.assessment import ProjectAssessment
+
+    class _LLM:
+        def generate_code(self, prompt, system_prompt=""):
+            return (
+                'Here you go: [{"title": "Fix the import gate", '
+                '"rationale": "suite is red", "work_type": "debug"}, '
+                '{"title": "Polish docs", "rationale": "thin", '
+                '"work_type": "bogus"}]'
+            )
+
+    recs = recommend_work(ProjectAssessment(), _LLM())
+    assert [r.title for r in recs] == ["Fix the import gate", "Polish docs"]
+    assert recs[0].work_type == "debug"
+    assert recs[1].work_type == "complete"  # invalid type normalized
+
+
+def test_recommend_work_bad_json_returns_empty():
+    from my_project_orchestrator.core.advisor import recommend_work
+    from my_project_orchestrator.core.assessment import ProjectAssessment
+
+    class _LLM:
+        def generate_code(self, prompt, system_prompt=""):
+            return "no json here"
+
+    assert recommend_work(ProjectAssessment(), _LLM()) == []
+
+
+def test_choose_goal_number_text_and_quit():
+    from unittest.mock import patch
+    from my_project_orchestrator.agent import ProjectOrchestrator
+    from my_project_orchestrator.core.advisor import Recommendation
+    from my_project_orchestrator.core.modes import BuildMode
+
+    orch = ProjectOrchestrator()
+    recs = [
+        Recommendation("Fix imports", "red suite", "debug"),
+        Recommendation("Add feature X", "users want it", "feature"),
+    ]
+
+    with patch("my_project_orchestrator.agent.Prompt.ask", return_value="1"):
+        goal, mode = orch._choose_goal(recs)
+    assert goal == "Fix imports" and mode == BuildMode.DEBUG
+
+    with patch("my_project_orchestrator.agent.Prompt.ask", return_value="make it faster"):
+        goal, mode = orch._choose_goal(recs)
+    assert goal == "make it faster"
+
+    with patch("my_project_orchestrator.agent.Prompt.ask", return_value="q"):
+        goal, mode = orch._choose_goal(recs)
+    assert goal is None
+
+
+def test_interactive_plan_cancels_when_no_goal():
+    from unittest.mock import patch, MagicMock
+    from my_project_orchestrator.agent import ProjectOrchestrator
+    from my_project_orchestrator.core.assessment import ProjectAssessment
+
+    orch = ProjectOrchestrator()
+    project = MagicMock()
+    project.name = "p"
+    project.path = Path("/tmp/x")
+    project.env_manager = None
+    project.config = {}
+    project.llm_client.health_check.return_value = (True, "model")
+
+    with (
+        patch.object(orch, "_get_or_register", return_value=project),
+        patch("my_project_orchestrator.agent.analyze_project", return_value=ProjectAssessment()),
+        patch("my_project_orchestrator.agent.recommend_work", return_value=[]),
+        patch.object(orch, "_choose_goal", return_value=(None, None)),
+        patch.object(orch, "_run_pipeline") as mock_pipeline,
+    ):
+        result = orch.interactive_plan("/tmp/x")
+    assert "Cancelled" in result
+    mock_pipeline.assert_not_called()
+
+
+def test_interactive_plan_runs_pipeline_with_confirm():
+    from unittest.mock import patch, MagicMock
+    from my_project_orchestrator.agent import ProjectOrchestrator
+    from my_project_orchestrator.core.assessment import ProjectAssessment
+    from my_project_orchestrator.core.modes import BuildMode
+
+    orch = ProjectOrchestrator()
+    project = MagicMock()
+    project.name = "p"
+    project.path = Path("/tmp/x")
+    project.env_manager = None
+    project.config = {}
+    project.llm_client.health_check.return_value = (True, "model")
+
+    with (
+        patch.object(orch, "_get_or_register", return_value=project),
+        patch("my_project_orchestrator.agent.analyze_project", return_value=ProjectAssessment()),
+        patch("my_project_orchestrator.agent.recommend_work", return_value=[]),
+        patch.object(orch, "_choose_goal", return_value=("Fix imports", BuildMode.DEBUG)),
+        patch.object(orch, "_run_pipeline", return_value="REPORT") as mock_pipeline,
+    ):
+        result = orch.interactive_plan("/tmp/x")
+    assert result == "REPORT"
+    assert mock_pipeline.call_args.kwargs.get("confirm_plan") is True

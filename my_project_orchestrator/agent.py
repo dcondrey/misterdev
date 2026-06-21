@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
 from rich.prompt import Prompt
 
 from my_project_orchestrator.core.registry import ProjectRegistry
@@ -39,6 +41,7 @@ from my_project_orchestrator.core.report import BuildReport
 from my_project_orchestrator.core.project import Project
 from my_project_orchestrator.core.models import Task
 from my_project_orchestrator.analyzers.project_analyzer import analyze_project
+from my_project_orchestrator.core.advisor import recommend_work
 from my_project_orchestrator.task_executors.markdown_plan_executor import (
     MarkdownPlanExecutor,
 )
@@ -411,6 +414,122 @@ class ProjectOrchestrator:
         report = BuildReport(mode, project.name, assessment, start_time)
         report.health_before = assessment.health.model_copy()
 
+        return self._run_pipeline(
+            project, prompt, mode, flags, assessment, env_activate, report
+        )
+
+    def interactive_plan(self, project_path: str | Path, args: str = "") -> str:
+        """Analyze the project, recommend work, and compose a plan with the user.
+
+        The entry point for a plain `project-orchestrator` invocation: instead
+        of a predefined devplan, it reads the live project state, proposes
+        ranked work items, lets the user choose (or type their own goal), then
+        composes and confirms the plan before executing.
+        """
+        project = self._get_or_register(project_path)
+        if not project:
+            return "Error: could not load project"
+
+        _, flags = parse_flags(args.split() if args else [])
+        start_time = datetime.now(timezone.utc)
+        project.llm_client._budget = flags.budget
+
+        ok, detail = project.llm_client.health_check()
+        if not ok:
+            console.print(f"[red]Model preflight failed:[/] {detail}")
+            return f"Error: {detail}. Set a valid model in config before building."
+
+        env_activate = None
+        if project.env_manager:
+            project.env_manager.setup()
+            env_activate = project.env_manager.activate_command()
+
+        console.print(f"[bold]Analyzing[/] {project.name} ...")
+        assessment = analyze_project(
+            project.path,
+            project.llm_client,
+            build_command=project.config.get("build_command"),
+            test_command=project.config.get("test_command"),
+            lint_command=project.config.get("lint_command"),
+            env_activate=env_activate,
+        )
+        console.print(Panel(assessment.summary(), title="Current state", expand=False))
+
+        recs = recommend_work(assessment, project.llm_client)
+        goal, mode = self._choose_goal(recs)
+        if goal is None:
+            return "Cancelled: no work selected."
+
+        report = BuildReport(mode, project.name, assessment, start_time)
+        report.health_before = assessment.health.model_copy()
+        return self._run_pipeline(
+            project,
+            goal,
+            mode,
+            flags,
+            assessment,
+            env_activate,
+            report,
+            confirm_plan=True,
+        )
+
+    def _choose_goal(self, recs: list) -> tuple[Optional[str], BuildMode]:
+        """Present recommendations and return the chosen (goal, mode).
+
+        Returns (None, _) if the user quits. A free-text goal resolves its own
+        mode; a picked recommendation carries the advisor's work_type.
+        """
+        if recs:
+            console.print("\n[bold]Recommended work:[/]")
+            for i, r in enumerate(recs, 1):
+                console.print(
+                    f"  [cyan]{i}[/]. {r.title} [dim]({r.work_type}) — {r.rationale}[/]"
+                )
+        console.print("\nEnter a number to pick, type your own goal, or 'q' to quit.")
+        choice = Prompt.ask("Goal").strip()
+        if not choice or choice.lower() in ("q", "quit"):
+            return None, BuildMode.SMART
+        if choice.isdigit() and recs:
+            idx = int(choice) - 1
+            if 0 <= idx < len(recs):
+                r = recs[idx]
+                return r.title, self._WORK_TYPE_MODES.get(r.work_type, BuildMode.SMART)
+            console.print("[yellow]Out of range; treating input as a goal.[/]")
+        return choice, resolve_mode(choice, Path("."))
+
+    _WORK_TYPE_MODES = {
+        "debug": BuildMode.DEBUG,
+        "complete": BuildMode.COMPLETE,
+        "feature": BuildMode.SMART,
+        "refactor": BuildMode.SMART,
+        "test": BuildMode.SMART,
+        "docs": BuildMode.SMART,
+    }
+
+    def _confirm(self, question: str) -> bool:
+        """Ask a yes/no question; defaults to no."""
+        return Prompt.ask(f"{question} [y/N]", default="n").strip().lower() in (
+            "y",
+            "yes",
+        )
+
+    def _run_pipeline(
+        self,
+        project: Project,
+        prompt: str,
+        mode: BuildMode,
+        flags: BuildFlags,
+        assessment: ProjectAssessment,
+        env_activate: Optional[str],
+        report: BuildReport,
+        confirm_plan: bool = False,
+    ) -> str:
+        """Phases 1.5-6: probes, spec, decompose, (confirm), execute, validate.
+
+        Shared by build() and interactive_plan(). When confirm_plan is set, the
+        composed plan is shown and the user is asked to approve it before any
+        task executes.
+        """
         # Sovereign Phase 1.5: Empirical Probes (only for SMART/CREATE modes)
         verified_facts = ""
         if mode in (BuildMode.SMART, BuildMode.CREATE):
@@ -448,6 +567,11 @@ class ProjectOrchestrator:
 
         if flags.dry_run:
             return format_plan(tasks, mode)
+
+        if confirm_plan:
+            console.print(Markdown(format_plan(tasks, mode)))
+            if not self._confirm(f"Proceed with these {len(tasks)} tasks?"):
+                return "Cancelled: plan not approved."
 
         # Phase 4: Execution
         self._execute_tasks(tasks, project, flags, report)
