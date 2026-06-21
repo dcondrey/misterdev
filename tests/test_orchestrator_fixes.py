@@ -1499,3 +1499,97 @@ def test_executor_execute_commits_real_and_out_of_scope_files(monkeypatch):
             ).stdout.strip()
             == ""
         )
+
+
+# --- working-tree safety: dirty guard + formatter-spillover cleanup ----------
+def test_working_tree_dirty_detects_changes_and_ignores_gitignored():
+    from my_project_orchestrator.agent import ProjectOrchestrator
+    from types import SimpleNamespace
+
+    orch = ProjectOrchestrator()
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "t@t.t")
+        _git(repo, "config", "user.name", "t")
+        (repo / ".gitignore").write_text(".orchestrator/\n")
+        (repo / "seed.py").write_text("X = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "init")
+        project = SimpleNamespace(path=repo)
+        assert orch._working_tree_dirty(project) == ""  # clean
+
+        # gitignored runtime cache must NOT count as dirty
+        (repo / ".orchestrator").mkdir()
+        (repo / ".orchestrator" / "progress.json").write_text("{}")
+        assert orch._working_tree_dirty(project) == ""
+
+        # a real uncommitted change is reported
+        (repo / "seed.py").write_text("X = 2\n")
+        assert "seed.py" in orch._working_tree_dirty(project)
+
+
+def test_build_aborts_on_dirty_tree():
+    from unittest.mock import MagicMock, patch
+    from my_project_orchestrator.agent import ProjectOrchestrator
+
+    orch = ProjectOrchestrator()
+    project = MagicMock()
+    project.path = Path("/tmp/x")
+    with (
+        patch.object(orch, "_get_or_register", return_value=project),
+        patch.object(orch, "_working_tree_dirty", return_value="3 file(s), e.g. a.py"),
+    ):
+        result = orch.build("/tmp/x", "do a thing")
+    assert "Error" in result and "uncommitted" in result
+    # The model health check must NOT have run -- we aborted before it.
+    project.llm_client.health_check.assert_not_called()
+
+
+def test_commit_task_discards_formatter_spillover():
+    """A project-wide formatter dirties files outside the task; those must not
+    be carried across the branch switch and left as a permanently dirty tree."""
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+
+    class _P:
+        env_manager = None
+
+    class _T:
+        id = "T-9"
+        title = "scoped task"
+        description = "d"
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "t@t.t")
+        _git(repo, "config", "user.name", "t")
+        (repo / "other.py").write_text("X=1\n")
+        (repo / "task_file.py").write_text("OLD=1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "init")
+        base = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo, capture_output=True, text=True,
+        ).stdout.strip()
+
+        ex = MarkdownPlanExecutor()
+        proj = _P()
+        proj.path = repo
+        # Simulate a task branch where the task edited task_file.py AND a
+        # project-wide formatter reformatted the unrelated other.py.
+        ex._git(proj, "git checkout -b task/T-9")
+        (repo / "task_file.py").write_text("NEW = 1\n")
+        (repo / "other.py").write_text("X = 1  # reformatted spillover\n")
+
+        ex._commit_task(proj, "task/T-9", base, _T(), ["task_file.py"])
+
+        # Back on base, merged, and CLEAN -- spillover to other.py was dropped.
+        assert subprocess.run(
+            ["git", "status", "--porcelain"], cwd=repo,
+            capture_output=True, text=True,
+        ).stdout.strip() == ""
+        assert (repo / "task_file.py").read_text() == "NEW = 1\n"  # task change kept
+        assert (repo / "other.py").read_text() == "X=1\n"  # spillover reverted

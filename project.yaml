@@ -24,7 +24,7 @@ tools:
     type: "git"
   - name: "Python Formatter"
     type: "formatter"
-    command: "uv run ruff format ."
+    command: "uv run ruff format {path}"
   - name: "Python Test Runner"
     type: "test_runner"
     command: "uv run pytest tests/ -x -q"

@@ -1,4 +1,5 @@
 import concurrent.futures
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -385,6 +386,19 @@ class ProjectOrchestrator:
         logger.info(f"Build started: mode={mode.value}, flags={flags}")
         start_time = datetime.now(timezone.utc)
 
+        # Refuse to run on a dirty working tree: branch-per-task execution
+        # carries and can sweep/revert uncommitted changes, so a second writer
+        # (or the user's own in-progress work) would be corrupted. Override with
+        # --allow-dirty. Skipped for dry-run (read-only).
+        if not flags.dry_run and not flags.allow_dirty:
+            dirty = self._working_tree_dirty(project)
+            if dirty:
+                logger.error("Refusing to build on a dirty working tree.")
+                return (
+                    f"Error: working tree has uncommitted changes ({dirty}). "
+                    "Commit or stash them first, or pass --allow-dirty to override."
+                )
+
         # Propagate budget to LLM client
         project.llm_client._budget = flags.budget
 
@@ -433,6 +447,15 @@ class ProjectOrchestrator:
         _, flags = parse_flags(args.split() if args else [])
         start_time = datetime.now(timezone.utc)
         project.llm_client._budget = flags.budget
+
+        if not flags.allow_dirty:
+            dirty = self._working_tree_dirty(project)
+            if dirty:
+                console.print(
+                    f"[red]Working tree has uncommitted changes ({dirty}).[/] "
+                    "Commit or stash first, or pass --allow-dirty."
+                )
+                return f"Error: dirty working tree ({dirty})."
 
         ok, detail = project.llm_client.health_check()
         if not ok:
@@ -512,6 +535,31 @@ class ProjectOrchestrator:
             "y",
             "yes",
         )
+
+    def _working_tree_dirty(self, project: Project) -> str:
+        """Return a short summary if the git working tree has uncommitted changes.
+
+        Returns "" when clean or not a git repo. `git status --porcelain`
+        already excludes ignored paths, so the orchestrator's own `.orchestrator/`
+        cache (gitignored) never counts as dirty.
+        """
+        if not (Path(project.path) / ".git").exists():
+            return ""
+        try:
+            proc = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=project.path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (subprocess.SubprocessError, OSError) as e:
+            logger.warning(f"Could not check working tree status: {e}")
+            return ""
+        lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+        if not lines:
+            return ""
+        return f"{len(lines)} file(s), e.g. {lines[0][3:].strip()}"
 
     def _run_pipeline(
         self,

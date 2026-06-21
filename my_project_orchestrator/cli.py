@@ -126,6 +126,11 @@ def main():
     build_parser.add_argument(
         "--focus", type=str, help="Restrict work to specific area"
     )
+    build_parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Allow building on a working tree with uncommitted changes",
+    )
 
     args = parser.parse_args()
 
@@ -203,6 +208,8 @@ def main():
             build_args.append("--parallel")
         if args.no_rollback:
             build_args.append("--no-rollback")
+        if args.allow_dirty:
+            build_args.append("--allow-dirty")
         if args.focus:
             build_args.extend(["--focus", args.focus])
 

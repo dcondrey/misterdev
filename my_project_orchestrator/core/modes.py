@@ -32,6 +32,7 @@ class BuildFlags:
         interactive: bool = False,
         parallel: bool = False,
         no_rollback: bool = False,
+        allow_dirty: bool = False,
     ):
         self.budget = budget
         self.commit = commit
@@ -42,6 +43,7 @@ class BuildFlags:
         self.interactive = interactive
         self.parallel = parallel
         self.no_rollback = no_rollback
+        self.allow_dirty = allow_dirty
 
     def __repr__(self) -> str:
         return (
@@ -80,6 +82,9 @@ def parse_flags(args: list[str]) -> tuple[list[str], BuildFlags]:
             i += 1
         elif arg == "--no-rollback":
             flags.no_rollback = True
+            i += 1
+        elif arg == "--allow-dirty":
+            flags.allow_dirty = True
             i += 1
         elif arg == "--focus" and i + 1 < len(args):
             flags.focus = args[i + 1]
@@ -130,8 +135,20 @@ def resolve_mode(prompt: str, project_path: Path) -> BuildMode:
 def _project_has_code(project_path: Path) -> bool:
     """Check if a project directory contains source code files."""
     code_extensions = {
-        ".py", ".js", ".ts", ".rs", ".go", ".java", ".c", ".cpp",
-        ".rb", ".php", ".swift", ".kt", ".scala", ".zig",
+        ".py",
+        ".js",
+        ".ts",
+        ".rs",
+        ".go",
+        ".java",
+        ".c",
+        ".cpp",
+        ".rb",
+        ".php",
+        ".swift",
+        ".kt",
+        ".scala",
+        ".zig",
     }
     for item in project_path.rglob("*"):
         if item.suffix in code_extensions and not _is_venv_or_vendor(item):
@@ -142,7 +159,15 @@ def _project_has_code(project_path: Path) -> bool:
 def _is_venv_or_vendor(path: Path) -> bool:
     """Exclude virtual environments and vendor directories."""
     exclude_dirs = {
-        "venv", ".venv", "env", "node_modules", "vendor",
-        "__pycache__", ".git", "target", "build", "dist",
+        "venv",
+        ".venv",
+        "env",
+        "node_modules",
+        "vendor",
+        "__pycache__",
+        ".git",
+        "target",
+        "build",
+        "dist",
     }
     return any(part in exclude_dirs for part in path.parts)

@@ -480,6 +480,11 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         self._git(project, f"git commit -m {shlex.quote(msg)} --allow-empty")
 
         if branch_name and base_branch:
+            # Drop tracked spillover before switching branches: a project-wide
+            # formatter (e.g. `ruff format .`) reformats files outside the task,
+            # which aren't committed and would otherwise be carried across the
+            # checkout and accumulate as a permanently dirty tree.
+            self._git(project, "git checkout -- .")
             self._git(project, f"git checkout {shlex.quote(base_branch)}")
             ok, output = self._git(
                 project,
