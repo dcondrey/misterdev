@@ -1354,3 +1354,148 @@ def test_ephemeral_script_name_with_slash_does_not_crash():
                 "print('hi')", name="probe_CLI Runner / Invocation Mechanism Probe"
             )
             assert ok and "hi" in out
+
+
+# --- LLM-identifier sanitization (root of the whole crash class) -------------
+def test_safe_ref_slug_neutralizes_path_and_ref_chars():
+    from my_project_orchestrator.utils.file_utils import safe_ref_slug
+
+    assert (
+        safe_ref_slug("CLI Runner / Invocation Probe") == "CLI_Runner_Invocation_Probe"
+    )
+    assert safe_ref_slug("T 001") == "T_001"
+    assert safe_ref_slug("feat:auth~bug") == "feat_auth_bug"
+    assert safe_ref_slug("T-001") == "T-001"  # already-clean ids untouched
+    assert safe_ref_slug("...", fallback="x") == "x"
+    assert safe_ref_slug("../escape") == "escape"
+
+
+def test_decompose_sanitizes_task_ids_and_deps():
+    from my_project_orchestrator.core.decomposer import decompose_spec
+    from my_project_orchestrator.core.assessment import ProjectAssessment
+    from my_project_orchestrator.core.modes import BuildMode
+
+    class _LLM:
+        def generate_code(self, prompt, system_prompt=""):
+            return (
+                '[{"id": "T 1", "title": "a", "dependencies": []},'
+                ' {"id": "T/2", "title": "b", "dependencies": ["T 1"]}]'
+            )
+
+    tasks = decompose_spec("spec", ProjectAssessment(), BuildMode.SMART, _LLM(), ".")
+    ids = [t.id for t in tasks]
+    assert ids == ["T_1", "T_2"]  # branch-safe
+    # Dependency ref sanitized with the SAME function so it still resolves.
+    assert tasks[1].dependencies == ["T_1"]
+
+
+# --- offline executor end-to-end (first real coverage of execute()) ----------
+def _fake_project(repo: Path, monkeypatch, edit_response: str):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    from my_project_orchestrator.config import DEFAULT_CONFIG
+    from my_project_orchestrator.core.project import Project
+    from tests.test_llm_client import FakeLLMClient
+    from my_project_orchestrator.llm.client import LLMResponse, LLMUsage
+
+    cfg = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy
+    cfg["name"] = "fixture"
+    cfg["build_command"] = "true"  # always-passing per-task build check
+    cfg.pop("test_command", None)
+    project = Project(repo, cfg)
+    fake = FakeLLMClient(
+        responses=[LLMResponse(content=edit_response, usage=LLMUsage())] * 4
+    )
+    project.llm_client = fake
+    return project
+
+
+def test_executor_execute_commits_real_and_out_of_scope_files(monkeypatch):
+    """End-to-end: a real LLM-edit response is applied, BOTH the declared file
+    and an out-of-scope-but-in-root file are committed, and the commit is
+    findable by the integration gate. No live API, no git detach, no orphans."""
+    from types import SimpleNamespace
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "t@t.t")
+        _git(repo, "config", "user.name", "t")
+        (repo / "seed.py").write_text("X = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "init")
+        branch_before = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        edit = (
+            "Here are the edits:\n"
+            "```python:tests/test_new.py\n"
+            "def test_ok():\n    assert True\n"
+            "```\n\n"
+            "```python:helper_extra.py\n"
+            "Y = 2\n"
+            "```\n"
+        )
+        project = _fake_project(repo, monkeypatch, edit)
+        task = SimpleNamespace(
+            id="T-x",
+            title="add a test",
+            description="add a test",
+            acceptance_criteria="",
+            files_to_modify=[],
+            files_to_create=["tests/test_new.py"],
+            context_files=[],
+            dependencies=[],
+            complexity="small",
+            category="test",
+            processor_data={"sota_strategy": "surgical"},
+            execution_history=[],
+        )
+
+        result = MarkdownPlanExecutor().execute(task, project)
+
+        assert result.status == "completed"
+        # Both files written and committed (out-of-scope one not orphaned).
+        # HEAD is the --no-ff merge commit, so assert via the tracked set.
+        assert (repo / "tests/test_new.py").exists()
+        assert (repo / "helper_extra.py").exists()
+        tracked = subprocess.run(
+            ["git", "ls-files"], cwd=repo, capture_output=True, text=True
+        ).stdout
+        assert "tests/test_new.py" in tracked
+        assert "helper_extra.py" in tracked
+        # The integration gate must be able to find this task's commit.
+        sha = MarkdownPlanExecutor().find_task_commit(project, "T-x")
+        assert sha
+        # HEAD back on the base branch (merged), attached, clean tree.
+        attached = subprocess.run(
+            ["git", "symbolic-ref", "-q", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        )
+        assert attached.returncode == 0
+        assert (
+            subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            == branch_before
+        )
+        assert (
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            == ""
+        )

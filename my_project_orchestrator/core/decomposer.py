@@ -9,6 +9,7 @@ from collections import deque
 from typing import Optional
 
 from my_project_orchestrator.core.models import Task
+from my_project_orchestrator.utils.file_utils import safe_ref_slug
 from my_project_orchestrator.core.assessment import ProjectAssessment
 from my_project_orchestrator.core.modes import BuildMode
 from my_project_orchestrator.llm.client import BaseLLMClient
@@ -122,9 +123,17 @@ def decompose_spec(
         test_count=h.test_count,
         test_failures=h.test_failures,
         lint_clean="yes" if h.lint_clean else "no",
-        existing_features=", ".join(fi.name for fi in f.existing) if f.existing else "none",
-        incomplete_features=", ".join(f"{fi.name} ({fi.complexity})" for fi in f.incomplete) if f.incomplete else "none",
-        missing_features=", ".join(f"{fi.name} ({fi.complexity})" for fi in f.missing) if f.missing else "none",
+        existing_features=", ".join(fi.name for fi in f.existing)
+        if f.existing
+        else "none",
+        incomplete_features=", ".join(
+            f"{fi.name} ({fi.complexity})" for fi in f.incomplete
+        )
+        if f.incomplete
+        else "none",
+        missing_features=", ".join(f"{fi.name} ({fi.complexity})" for fi in f.missing)
+        if f.missing
+        else "none",
         broken_items=", ".join(f.broken) if f.broken else "none",
         stub_items=", ".join(f.stubs) if f.stubs else "none",
         purpose=c.purpose or "unknown",
@@ -137,7 +146,9 @@ def decompose_spec(
     )
 
     logger.info("Decomposing spec into tasks via LLM...")
-    response = llm_client.generate_code(prompt, "You are a precise task decomposer. Return only valid JSON.")
+    response = llm_client.generate_code(
+        prompt, "You are a precise task decomposer. Return only valid JSON."
+    )
 
     tasks = _parse_tasks(response, project_ref)
 
@@ -171,7 +182,7 @@ def _parse_tasks(response: str, project_ref: str) -> list[Task]:
         end = text.rfind("]")
         if start >= 0 and end > start:
             try:
-                raw_tasks = json.loads(text[start:end + 1])
+                raw_tasks = json.loads(text[start : end + 1])
             except json.JSONDecodeError:
                 logger.error("Failed to parse LLM response as JSON")
                 return []
@@ -180,17 +191,32 @@ def _parse_tasks(response: str, project_ref: str) -> list[Task]:
             return []
 
     tasks = []
-    for raw in raw_tasks:
+    seen_ids: set[str] = set()
+    for i, raw in enumerate(raw_tasks):
         try:
+            # Sanitize the LLM-supplied id (it becomes a git branch name, commit
+            # grep key, progress/contract dict key) and dependency refs with the
+            # SAME function so cross-references stay consistent. Drop duplicates
+            # so they don't collapse in dependency maps.
+            tid = safe_ref_slug(raw.get("id") or "", fallback=f"T-{i + 1:03d}")
+            if tid in seen_ids:
+                logger.warning(f"Skipping duplicate task id {tid!r}")
+                continue
+            seen_ids.add(tid)
+            deps = [
+                slug
+                for d in raw.get("dependencies", [])
+                if (slug := safe_ref_slug(d, fallback=""))
+            ]
             task = Task(
-                id=raw["id"],
+                id=tid,
                 title=raw.get("title", ""),
                 description=raw.get("description", ""),
                 acceptance_criteria=raw.get("acceptance_criteria", ""),
                 files_to_create=raw.get("files_to_create", []),
                 files_to_modify=raw.get("files_to_modify", []),
                 context_files=raw.get("context_files", []),
-                dependencies=raw.get("dependencies", []),
+                dependencies=deps,
                 complexity=raw.get("complexity", "medium"),
                 category=raw.get("category", "feature"),
                 type="markdown_planner",
@@ -217,7 +243,9 @@ def _add_implicit_dependencies(tasks: list[Task]) -> None:
             creator_id = creates_map.get(f)
             if creator_id and creator_id != t.id and creator_id not in t.dependencies:
                 t.dependencies.append(creator_id)
-                logger.info(f"Implicit dependency: {t.id} depends on {creator_id} (file {f})")
+                logger.info(
+                    f"Implicit dependency: {t.id} depends on {creator_id} (file {f})"
+                )
 
 
 def topological_sort(tasks: list[Task]) -> list[Task]:

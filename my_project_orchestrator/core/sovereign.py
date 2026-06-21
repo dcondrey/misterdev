@@ -7,7 +7,6 @@ Inspired by June 2026 arXiv research:
 """
 
 import json
-import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 from my_project_orchestrator.logging_setup import setup_logger
 from my_project_orchestrator.llm.client import BaseLLMClient
+from my_project_orchestrator.utils.file_utils import safe_ref_slug
 
 logger = setup_logger(__name__)
 
@@ -41,7 +41,7 @@ class EphemeralCodeManager:
         # Sanitize the (LLM-supplied) name: a '/' or other path char would turn
         # the filename into a non-existent subdir and raise on write, crashing
         # the whole build from this best-effort probe step.
-        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)[:60] or "temp"
+        safe = safe_ref_slug(name, fallback="temp")
         script_path = self.ephemeral_dir / f"{safe}_{uuid.uuid4().hex[:4]}.py"
         logger.info(f"Executing ephemeral logic: {script_path.name}")
         try:
@@ -195,7 +195,7 @@ class ToolSynthesizer:
         response = llm_client.generate_code(prompt, "You are a senior tools engineer.")
 
         code = _extract_code_block(response)
-        tool_path = self.tools_dir / f"{name}.py"
+        tool_path = self.tools_dir / f"{safe_ref_slug(name, fallback='tool')}.py"
         tool_path.write_text(code, encoding="utf-8")
         logger.info(f"Tool {name} saved to {tool_path}")
         return str(tool_path)
