@@ -95,3 +95,33 @@ def test_selector_merges_free_into_cheapest_tier():
         # wins the aggressive first attempt via the +inf UCB score.
         assert "vendor/free:free" in sel._tier_models("cheap")
         assert sel.select("feature", "small", 0, 3) == "vendor/free:free"
+
+
+def test_http_fetch_memoizes_per_url(monkeypatch):
+    import my_project_orchestrator.core.free_models as fm
+
+    fm._FETCH_CACHE.clear()
+    calls = []
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"data": [{"id": "m"}]}'
+
+    def fake_urlopen(req, timeout=10):
+        calls.append(req.full_url)
+        return FakeResp()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    try:
+        first = fm._http_fetch("https://example/models")
+        second = fm._http_fetch("https://example/models")
+        assert first == second == [{"id": "m"}]
+        assert len(calls) == 1  # second call served from the per-process memo
+    finally:
+        fm._FETCH_CACHE.clear()

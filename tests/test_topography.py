@@ -2,8 +2,51 @@ import tempfile
 from pathlib import Path
 
 from my_project_orchestrator.core.topography import (
-    SymbolNode, SymbolGraph, TopographyEngine, _get_ts_parsers,
+    SymbolNode,
+    SymbolGraph,
+    TopographyEngine,
 )
+
+
+def test_get_context_for_task_uses_ranker_over_cap():
+    with tempfile.TemporaryDirectory() as td:
+        engine = TopographyEngine(Path(td), llm_client=None)
+        engine._initialized = True  # skip filesystem build; inject symbols
+        for i in range(5):
+            engine.graph.symbols[f"f.py:fn{i}"] = SymbolNode(
+                f"fn{i}", "f.py", "function", i, i, f"def fn{i}(): pass"
+            )
+
+        class StubRanker:
+            def __init__(self):
+                self.seen = None
+
+            def top_k(self, query, candidates, k):
+                self.seen = (query, set(candidates), k)
+                return ["f.py:fn3", "f.py:fn1"]
+
+        ranker = StubRanker()
+        out = engine.get_context_for_task(
+            "do fn3 things", ["f.py"], max_symbols=2, ranker=ranker
+        )
+        # All 5 candidates offered to the ranker; only its picks rendered.
+        assert ranker.seen[2] == 2
+        assert len(ranker.seen[1]) == 5
+        assert "fn3" in out and "fn1" in out
+        assert "fn0" not in out
+
+
+def test_get_context_for_task_no_ranker_keeps_arbitrary_slice():
+    with tempfile.TemporaryDirectory() as td:
+        engine = TopographyEngine(Path(td), llm_client=None)
+        engine._initialized = True
+        for i in range(5):
+            engine.graph.symbols[f"f.py:fn{i}"] = SymbolNode(
+                f"fn{i}", "f.py", "function", i, i, f"def fn{i}(): pass"
+            )
+        out = engine.get_context_for_task("q", ["f.py"], max_symbols=2)
+        # Without a ranker, behavior is unchanged (a slice; omission note shown).
+        assert "more symbols omitted" in out
 
 
 def test_symbol_node_init():
@@ -78,7 +121,9 @@ def test_topography_get_context_with_symbols():
     with tempfile.TemporaryDirectory() as td:
         engine = TopographyEngine(Path(td), None)
         engine._initialized = True
-        node = SymbolNode("validate", "src/lib.py", "function", 1, 10, "def validate(): pass")
+        node = SymbolNode(
+            "validate", "src/lib.py", "function", 1, 10, "def validate(): pass"
+        )
         engine.graph.symbols["src/lib.py:validate"] = node
         ctx = engine.get_context_for_task("check validation", ["src/lib.py"])
         assert "validate" in ctx
@@ -90,7 +135,9 @@ def test_topography_max_symbols_cap():
         engine = TopographyEngine(Path(td), None)
         engine._initialized = True
         for i in range(40):
-            node = SymbolNode(f"fn_{i}", "big.py", "function", i, i+1, f"def fn_{i}(): pass")
+            node = SymbolNode(
+                f"fn_{i}", "big.py", "function", i, i + 1, f"def fn_{i}(): pass"
+            )
             engine.graph.symbols[f"big.py:fn_{i}"] = node
         ctx = engine.get_context_for_task("query", ["big.py"], max_symbols=5)
         assert "omitted" in ctx

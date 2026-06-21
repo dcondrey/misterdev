@@ -60,6 +60,8 @@ class Project:
         self._model_ledger = None
         self._model_selector = None
         self._llm_cache = None
+        self._semantic_ranker = None
+        self._ranker_built = False
         # Topography (symbol graph) is built lazily on first use, not here:
         # every CLI command registers all known projects, and eagerly scanning
         # each one's whole tree just to list/status is wasted work. The executor
@@ -91,6 +93,36 @@ class Project:
                 self.config, self.model_ledger, free_models=self._harvest_free_models()
             )
         return self._model_selector
+
+    @property
+    def semantic_ranker(self):
+        """Embedding-based context ranker, or None when unavailable/disabled.
+
+        Built at most once (discovery hits the network); a None result is
+        remembered so topography falls back to arbitrary order without retrying.
+        """
+        if not self._ranker_built:
+            self._ranker_built = True
+            if get_setting(self.config, "llm", "semantic_retrieval"):
+                from my_project_orchestrator.core.embeddings import (
+                    EmbeddingCache,
+                    SemanticRanker,
+                )
+                from my_project_orchestrator.llm.client import create_embedding_client
+
+                weight = get_setting(self.config, "llm", "lexical_weight")
+                embedder = create_embedding_client(self.config)
+                cache = (
+                    EmbeddingCache(
+                        self.path / ".orchestrator" / "embeddings.json", embedder.model
+                    )
+                    if embedder is not None
+                    else None
+                )
+                # Always build a ranker: with no embedder it ranks lexically,
+                # which still beats the arbitrary-order slice.
+                self._semantic_ranker = SemanticRanker(embedder, cache, weight)
+        return self._semantic_ranker
 
     @property
     def llm_cache(self):

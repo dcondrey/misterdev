@@ -521,7 +521,9 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
 
             code_context = self._get_code_context(project, target_files, context_files)
             topo_context = project.topography.get_context_for_task(
-                task.description, target_files
+                task.description,
+                target_files,
+                ranker=getattr(project, "semantic_ranker", None),
             )
             scratchpad_context = self.scratchpad.format_context(
                 files=target_files + context_files,
@@ -1201,13 +1203,9 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                     self._ledger_record(
                         project,
                         task,
-                        {
-                            "model": routed_model,
-                            "attempt": attempt,
-                            "cost_before": cost_before,
-                            "latency": time.time() - t_before,
-                            "aborted": False,
-                        },
+                        self._pending(
+                            routed_model, attempt, cost_before, t_before, False
+                        ),
                         success=False,
                     )
                     model_used = getattr(project.llm_client, "model", "")
@@ -1215,14 +1213,19 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                     t_before = time.time()
                     resp, aborted = self._invoke_llm(project, prompt, system_prompt)
 
-        pending = {
-            "model": model_used,
+        pending = self._pending(model_used, attempt, cost_before, t_before, aborted)
+        return resp, aborted, pending
+
+    @staticmethod
+    def _pending(model, attempt, cost_before, t_before, aborted) -> dict:
+        """Build a per-attempt ledger record (latency measured from t_before)."""
+        return {
+            "model": model,
             "attempt": attempt,
             "cost_before": cost_before,
             "latency": time.time() - t_before,
             "aborted": aborted,
         }
-        return resp, aborted, pending
 
     def _reasoning_ctx(self, project, task):
         """Context manager requesting reasoning effort scaled to task complexity.

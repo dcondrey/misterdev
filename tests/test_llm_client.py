@@ -400,6 +400,38 @@ def test_no_reasoning_when_effort_unset(monkeypatch):
     assert "reasoning" not in captured["extra_body"]
 
 
+def test_embedding_client_embeds_in_order_and_denies_training(monkeypatch):
+    from my_project_orchestrator.llm.client import OpenRouterEmbeddingClient
+
+    captured = {}
+
+    class FakeEmbeddings:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            # Returned out of index order to verify the client sorts them.
+            return types.SimpleNamespace(
+                data=[
+                    types.SimpleNamespace(index=1, embedding=[0.1, 0.2]),
+                    types.SimpleNamespace(index=0, embedding=[0.3, 0.4]),
+                ]
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.embeddings = FakeEmbeddings()
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    monkeypatch.setattr("openai.OpenAI", FakeOpenAI)
+    client = OpenRouterEmbeddingClient(
+        {"llm": {"provider": "openrouter"}, "build": {"budget": 10.0}}, "free/q"
+    )
+    vecs = client.embed(["t0", "t1"])
+    assert vecs == [[0.3, 0.4], [0.1, 0.2]]  # reordered to input order by index
+    assert captured["model"] == "free/q"
+    assert captured["extra_body"] == {"provider": {"data_collection": "deny"}}
+    assert "dimensions" not in captured  # default 0 -> omitted
+
+
 def test_edits_to_markdown_and_extraction():
     from my_project_orchestrator.llm.client import _edits_to_markdown
 

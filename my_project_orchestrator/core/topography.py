@@ -329,9 +329,14 @@ class TopographyEngine:
         self._initialized = True
 
     def get_context_for_task(
-        self, query: str, related_files: List[str], max_symbols: int = 30
+        self, query: str, related_files: List[str], max_symbols: int = 30, ranker=None
     ) -> str:
-        """Retrieves functional neighborhood and semantic context. Triggers lazy init."""
+        """Retrieves functional neighborhood and semantic context. Triggers lazy init.
+
+        When more candidate symbols are found than fit (``max_symbols``) and a
+        semantic ``ranker`` is supplied, the kept symbols are the ones most
+        relevant to ``query`` rather than an arbitrary slice.
+        """
         self.initialize()
 
         context_symbols: Set[str] = set()
@@ -345,8 +350,17 @@ class TopographyEngine:
         if not context_symbols:
             return ""
 
-        # Cap to avoid blowing LLM context
-        symbol_list = list(context_symbols)[:max_symbols]
+        # Cap to avoid blowing LLM context, keeping the most task-relevant
+        # symbols when a semantic ranker is available.
+        if ranker is not None and len(context_symbols) > max_symbols:
+            candidates = {
+                key: self.graph.symbols[key].content
+                for key in context_symbols
+                if key in self.graph.symbols
+            }
+            symbol_list = ranker.top_k(query, candidates, max_symbols)
+        else:
+            symbol_list = list(context_symbols)[:max_symbols]
 
         output = "## Topological Context\n"
         by_file: Dict[str, List[SymbolNode]] = {}

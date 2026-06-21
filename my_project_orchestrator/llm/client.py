@@ -4,7 +4,7 @@ import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from my_project_orchestrator.config import get_section_setting, get_setting
 from my_project_orchestrator.logging_setup import setup_logger
@@ -62,6 +62,13 @@ RETRYABLE_ERROR_MARKERS = (
 def _is_retryable_error(error: Exception) -> bool:
     text = str(error).lower()
     return any(marker in text for marker in RETRYABLE_ERROR_MARKERS)
+
+
+def _api_error(provider: str, error: Exception) -> "LLMCallError":
+    """Wrap a provider exception as an LLMCallError with retryability classified."""
+    return LLMCallError(
+        f"{provider} API error: {error}", retryable=_is_retryable_error(error)
+    )
 
 
 # Structured tool for edit extraction. Forcing this (when a model supports
@@ -408,6 +415,28 @@ class BaseLLMClient(ABC):
         return self.task_cost(task_id) >= cap
 
 
+def _openrouter_sdk(llm_config: dict):
+    """Build an OpenAI SDK client pointed at OpenRouter. Returns (client, api_key).
+
+    Shared by the chat and embedding clients so the base URL, env-var lookup,
+    and missing-key error live in one place.
+    """
+    env_var = get_section_setting("llm", llm_config, "api_key_env_var")
+    api_key = os.environ.get(env_var)
+    if not api_key:
+        raise ValueError(f"API key environment variable '{env_var}' not set.")
+    from openai import OpenAI
+
+    return OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key), api_key
+
+
+def _deny_unless_training_allowed(llm_config: dict) -> str:
+    """OpenRouter data_collection policy: deny unless training is opted in."""
+    if get_section_setting("llm", llm_config, "allow_training_models"):
+        return "allow"
+    return "deny"
+
+
 class OpenRouterLLMClient(BaseLLMClient):
     """LLM client using OpenRouter API (OpenAI-compatible)."""
 
@@ -428,32 +457,15 @@ class OpenRouterLLMClient(BaseLLMClient):
     def __init__(self, config: dict):
         super().__init__(config)
         llm_config = config.get("llm", {})
-
-        env_var_name = get_section_setting("llm", llm_config, "api_key_env_var")
-        self.api_key = os.environ.get(env_var_name)
-        if not self.api_key:
-            raise ValueError(f"API key environment variable '{env_var_name}' not set.")
-
+        self.client, self.api_key = _openrouter_sdk(llm_config)
         self.model = get_section_setting("llm", llm_config, "model")
         self.temperature = get_section_setting("llm", llm_config, "temperature")
         self.sampling = dict(get_section_setting("llm", llm_config, "sampling") or {})
-        # Off by default -> deny providers that train on inputs.
-        self.data_collection = (
-            "allow"
-            if get_section_setting("llm", llm_config, "allow_training_models")
-            else "deny"
-        )
+        self.data_collection = _deny_unless_training_allowed(llm_config)
 
         from my_project_orchestrator.core.model_catalog import ModelCatalog
 
         self._catalog = ModelCatalog()
-
-        from openai import OpenAI
-
-        self.client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=self.api_key,
-        )
 
     def _sampling_kwargs(self) -> dict:
         """Sampling params for the active model, filtered by what it supports.
@@ -581,9 +593,7 @@ class OpenRouterLLMClient(BaseLLMClient):
             )
 
         except Exception as e:
-            raise LLMCallError(
-                f"OpenRouter API error: {e}", retryable=_is_retryable_error(e)
-            ) from e
+            raise _api_error("OpenRouter", e) from e
 
     def _call_stream(self, prompt: str, system_prompt: str):
         messages = []
@@ -600,9 +610,7 @@ class OpenRouterLLMClient(BaseLLMClient):
                 **self._sampling_kwargs(),
             )
         except Exception as e:
-            raise LLMCallError(
-                f"OpenRouter API error: {e}", retryable=_is_retryable_error(e)
-            ) from e
+            raise _api_error("OpenRouter", e) from e
 
         usage = LLMUsage()
         for chunk in stream:
@@ -715,9 +723,7 @@ class AnthropicLLMClient(BaseLLMClient):
             )
 
         except Exception as e:
-            raise LLMCallError(
-                f"Anthropic API error: {e}", retryable=_is_retryable_error(e)
-            ) from e
+            raise _api_error("Anthropic", e) from e
 
     def _call_stream(self, prompt: str, system_prompt: str):
         kwargs = {
@@ -731,9 +737,7 @@ class AnthropicLLMClient(BaseLLMClient):
         try:
             stream_cm = self.client.messages.stream(**kwargs)
         except Exception as e:
-            raise LLMCallError(
-                f"Anthropic API error: {e}", retryable=_is_retryable_error(e)
-            ) from e
+            raise _api_error("Anthropic", e) from e
 
         with stream_cm as stream:
             for text in stream.text_stream:
@@ -845,6 +849,30 @@ class FailoverLLMClient(BaseLLMClient):
         raise last_error or LLMCallError("All LLM providers failed", retryable=False)
 
 
+class OpenRouterEmbeddingClient:
+    """Embedding client over OpenRouter's OpenAI-compatible embeddings endpoint."""
+
+    def __init__(self, config: dict, model: str):
+        llm_config = config.get("llm", {})
+        self.client, self.api_key = _openrouter_sdk(llm_config)
+        self.model = model
+        self.dimensions = get_section_setting("llm", llm_config, "embedding_dimensions")
+        self.data_collection = _deny_unless_training_allowed(llm_config)
+
+    def embed(self, texts: List[str]) -> List[List[float]]:
+        """Return one vector per input text, in input order."""
+        kwargs = {
+            "model": self.model,
+            "input": texts,
+            "extra_body": {"provider": {"data_collection": self.data_collection}},
+        }
+        if self.dimensions:
+            kwargs["dimensions"] = self.dimensions
+        response = self.client.embeddings.create(**kwargs)
+        ordered = sorted(response.data, key=lambda d: d.index)
+        return [list(d.embedding) for d in ordered]
+
+
 def _create_single_client(config: dict) -> BaseLLMClient:
     provider = get_setting(config, "llm", "provider")
     if provider == "openrouter":
@@ -860,3 +888,28 @@ def create_llm_client(config: dict) -> BaseLLMClient:
     if get_setting(config, "llm", "failover"):
         return FailoverLLMClient(config)
     return _create_single_client(config)
+
+
+def create_embedding_client(config: dict):
+    """Build an embedding client, or None when embeddings are unavailable.
+
+    Auto-picks the cheapest (free-preferred) embedding model when
+    llm.embedding_model is unset. Returns None for non-OpenRouter providers or
+    on any setup failure, so semantic retrieval simply stays off instead of
+    breaking a build.
+    """
+    if get_setting(config, "llm", "provider") != "openrouter":
+        return None
+    from my_project_orchestrator.core.embeddings import pick_embedding_model
+
+    model = pick_embedding_model(
+        get_setting(config, "llm", "embedding_model"),
+        prefer=get_setting(config, "llm", "embedding_prefer"),
+    )
+    if not model:
+        return None
+    try:
+        return OpenRouterEmbeddingClient(config, model)
+    except Exception as e:
+        logger.warning(f"Embedding client unavailable: {e}")
+        return None

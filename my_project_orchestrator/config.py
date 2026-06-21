@@ -78,6 +78,25 @@ class LLMSettings:
     # always-strong final attempt keep output safe. Set false to keep code off
     # third-party free endpoints entirely.
     use_free_models: bool = True
+    # Semantic context retrieval: rank candidate code symbols by embedding
+    # similarity to the task and keep the most relevant when they exceed the
+    # context cap, instead of truncating in arbitrary order. On by default and
+    # self-regulating (only embeds when selection is actually needed); degrades
+    # to arbitrary order if no embedding model is reachable.
+    semantic_retrieval: bool = True
+    # Empty = auto-pick the cheapest (free-preferred) embedding model from
+    # OpenRouter's embeddings catalog, like free-model harvesting; set an id to
+    # pin one. Ranking is forgiving, so cheapest is a fine default.
+    embedding_model: str = ""
+    # Id substrings preferred when auto-selecting among equally-priced embedding
+    # models; defaults to code-aware models since we rank code.
+    embedding_prefer: List[str] = field(default_factory=lambda: ["code"])
+    # Output dimensionality; 0 leaves the model default (param omitted).
+    embedding_dimensions: int = 0
+    # Weight of the lexical identifier-overlap signal vs dense cosine when
+    # ranking context (0 = pure dense, 1 = pure lexical). Lexical also drives
+    # ranking on its own when no embedding model is reachable.
+    lexical_weight: float = 0.3
     # Whether to use models/providers that train on your inputs. Off by default:
     # OpenRouter routing is constrained to providers that do not store or train
     # on inputs (provider data_collection="deny"), which is what makes harvesting

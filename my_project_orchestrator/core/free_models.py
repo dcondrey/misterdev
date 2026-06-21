@@ -13,7 +13,7 @@ the quality floor enforced by the validation gates.
 
 import json
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from my_project_orchestrator.logging_setup import setup_logger
 
@@ -22,17 +22,29 @@ logger = setup_logger(__name__)
 _MODELS_URL = "https://openrouter.ai/api/v1/models"
 _DAY_SECONDS = 24 * 3600
 
+# Per-process cache of fetched list endpoints, keyed by URL. Free-model
+# harvesting, the model catalog, and each failover client's catalog all hit the
+# same /models endpoint; this collapses those into one network round-trip per
+# URL per run. Successful results only (failures re-raise without caching).
+_FETCH_CACHE: Dict[str, list] = {}
 
-def _http_fetch() -> list:
-    """Fetch the raw OpenRouter model list (network boundary)."""
+
+def _http_fetch(url: str = _MODELS_URL) -> list:
+    """Fetch and return the ``data`` array from an OpenRouter list endpoint.
+
+    Shared by free-model harvesting, the model catalog, and embedding-model
+    discovery — the network boundary lives in exactly one place.
+    """
+    if url in _FETCH_CACHE:
+        return _FETCH_CACHE[url]
     import urllib.request
 
-    req = urllib.request.Request(
-        _MODELS_URL, headers={"User-Agent": "project-orchestrator"}
-    )
+    req = urllib.request.Request(url, headers={"User-Agent": "project-orchestrator"})
     with urllib.request.urlopen(req, timeout=10) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
-    return payload.get("data", []) if isinstance(payload, dict) else []
+    data = payload.get("data", []) if isinstance(payload, dict) else []
+    _FETCH_CACHE[url] = data
+    return data
 
 
 def _is_free(model: dict) -> bool:
