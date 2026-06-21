@@ -68,6 +68,9 @@ DEFAULT_CONFIG = {
         # command to run them as a blocking gate. Empty/None = feature off.
         "golden_paths": [],
         "golden_command": None,
+        # AB-MCTS spec refinement fires several serial LLM calls before any work;
+        # off by default (marginal value, large latency/cost).
+        "enable_ab_mcts": False,
     },
     "build_command": None,
     "test_command": None,

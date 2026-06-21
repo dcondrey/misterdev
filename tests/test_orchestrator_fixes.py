@@ -2216,3 +2216,50 @@ def test_check_golden_config_warns_on_half_configuration(caplog):
         )
         _check_golden_config({"orchestrator": {}})
     assert not caplog.records
+
+
+def test_apply_budget_ceiling_takes_tighter_cap():
+    from my_project_orchestrator.agent import _apply_budget_ceiling
+
+    class _C:
+        pass
+
+    c = _C()
+    c._budget = 20.0
+    _apply_budget_ceiling(c, 100.0)  # config cap tighter than CLI default
+    assert c._budget == 20.0
+
+    c._budget = 100.0
+    _apply_budget_ceiling(c, 5.0)  # CLI flag tighter than config
+    assert c._budget == 5.0
+
+    c._budget = object()  # non-numeric (test double) -> use flag
+    _apply_budget_ceiling(c, 7.0)
+    assert c._budget == 7.0
+
+
+def test_warn_if_baseline_broken_records_only_on_failure():
+    from datetime import datetime, timezone
+    from my_project_orchestrator.agent import _warn_if_baseline_broken
+    from my_project_orchestrator.core.assessment import ProjectAssessment, HealthCheck
+    from my_project_orchestrator.core.modes import BuildMode
+    from my_project_orchestrator.core.report import BuildReport
+
+    def _report(builds):
+        a = ProjectAssessment()
+        a.health = HealthCheck(builds=builds, build_output="error: mismatched types")
+        r = BuildReport(BuildMode.COMPLETE, "p", a, datetime.now(timezone.utc))
+        _warn_if_baseline_broken(a, r)
+        return r
+
+    failed = _report(False)
+    assert any("baseline build was failing" in d for d in failed.key_decisions)
+
+    ok = _report(True)
+    assert not any("baseline build" in d for d in ok.key_decisions)
+
+
+def test_enable_ab_mcts_default_off():
+    from my_project_orchestrator.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["orchestrator"]["enable_ab_mcts"] is False

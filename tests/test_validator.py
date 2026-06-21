@@ -69,3 +69,29 @@ def test_tokenize():
 def test_tokenize_empty():
     assert _tokenize("") == set()
     assert _tokenize("   ") == set()
+
+
+def test_run_health_check_honors_per_command_timeouts(monkeypatch):
+    # build_timeout/test_timeout must override the shared default per command,
+    # so a slow compiler isn't falsely reported as a build failure.
+    import my_project_orchestrator.core.validator as v
+
+    calls = []
+
+    def fake_run_cmd(cmd, cwd, env_activate=None, timeout=180):
+        calls.append((cmd, timeout))
+        return True, "ok"
+
+    monkeypatch.setattr(v, "_run_cmd", fake_run_cmd)
+    v.run_health_check(
+        "/tmp",
+        build_command="cargo build",
+        test_command="cargo test",
+        lint_command="cargo clippy",
+        build_timeout=600,
+        test_timeout=300,
+    )
+    by_cmd = dict(calls)
+    assert by_cmd["cargo build"] == 600
+    assert by_cmd["cargo test"] == 300
+    assert by_cmd["cargo clippy"] == 300  # lint reuses test_timeout

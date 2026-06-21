@@ -14,11 +14,7 @@ from typing import Optional
 
 from my_project_orchestrator.core.assessment import (
     FeatureInfo,
-    FeatureInventory,
-    HealthCheck,
     ProjectAssessment,
-    ProjectContext,
-    ProjectStructure,
 )
 from my_project_orchestrator.core.validator import run_health_check
 from my_project_orchestrator.llm.client import BaseLLMClient
@@ -108,6 +104,8 @@ def analyze_project(
     lint_command: Optional[str] = None,
     env_activate: Optional[str] = None,
     parallel: bool = True,
+    build_timeout: Optional[int] = None,
+    test_timeout: Optional[int] = None,
 ) -> ProjectAssessment:
     """Run all Phase 1 analyses and merge into a ProjectAssessment."""
     assessment = ProjectAssessment()
@@ -128,7 +126,13 @@ def analyze_project(
     bc = build_command or detect_build_command(project_path)
     tc = test_command or detect_test_command(project_path)
     assessment.health = run_health_check(
-        project_path, bc, tc, lint_command, env_activate=env_activate
+        project_path,
+        bc,
+        tc,
+        lint_command,
+        env_activate=env_activate,
+        build_timeout=build_timeout,
+        test_timeout=test_timeout,
     )
     assessment.structure.build_command = bc
     assessment.structure.test_command = tc
@@ -290,7 +294,7 @@ def _call_llm_json(llm_client: BaseLLMClient, prompt: str, role: str) -> dict:
         text = response.strip()
         if text.startswith("```"):
             lines = text.split("\n")
-            lines = [l for l in lines if not l.strip().startswith("```")]
+            lines = [ln for ln in lines if not ln.strip().startswith("```")]
             text = "\n".join(lines)
         return json.loads(text)
     except json.JSONDecodeError:

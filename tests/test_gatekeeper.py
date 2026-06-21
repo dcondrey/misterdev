@@ -289,3 +289,30 @@ def test_golden_failure_blocks_even_when_visible_tests_pass():
     )
     assert not success
     assert any("G3.5" in i for i in issues)
+
+
+def test_gatekeeper_honors_configured_timeouts(monkeypatch):
+    # The gate runs on every wave/iteration; its build/test timeouts must come
+    # from config so a slow compiler isn't falsely failed.
+    import my_project_orchestrator.core.gatekeeper as gk
+
+    calls = {}
+
+    def fake_run_cmd(cmd, cwd, env_activate=None, timeout=180):
+        calls[cmd] = timeout
+        return True, "ok"
+
+    monkeypatch.setattr(gk, "_run_cmd", fake_run_cmd)
+    keeper = gk.GateKeeper(_make_project(), build_timeout=600, test_timeout=300)
+    keeper.run_gates(
+        {
+            "build_command": "cargo build",
+            "test_command": "cargo test",
+            "lint_command": "cargo clippy",
+            "golden_command": "cargo test --lib golden",
+        }
+    )
+    assert calls["cargo build"] == 600
+    assert calls["cargo test"] == 300
+    assert calls["cargo clippy"] == 300
+    assert calls["cargo test --lib golden"] == 300

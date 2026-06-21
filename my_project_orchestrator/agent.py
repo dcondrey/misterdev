@@ -75,6 +75,44 @@ def _combine_commands(*cmds: Optional[str]) -> Optional[str]:
     return " && ".join(f"({c})" for c in present)
 
 
+def _apply_budget_ceiling(client, flag_budget: float) -> None:
+    """Set the client budget to the tighter of its config budget and the flag.
+
+    The project.yaml budget is already on the client; both it and the --budget
+    flag are ceilings, so the minimum wins and a config cap is never silently
+    overridden by the CLI default. Falls back to the flag when the current
+    budget isn't numeric (e.g. a test double).
+    """
+    current = getattr(client, "_budget", None)
+    if isinstance(current, (int, float)):
+        client._budget = min(current, flag_budget)
+    else:
+        client._budget = flag_budget
+
+
+def _warn_if_baseline_broken(assessment, report) -> None:
+    """Loudly surface a failing baseline build before any work begins.
+
+    A red baseline silently disables the integration gate (it needs a green
+    baseline to detect regressions), so the run would execute largely ungated.
+    Make that visible and record it rather than letting it pass quietly.
+    """
+    health = assessment.health
+    if health.builds:
+        return
+    head = (health.build_output or "").strip()[:600]
+    msg = (
+        "Baseline build FAILS — the integration gate disables itself without a "
+        "green baseline, so this run will be largely ungated. Fix the build first "
+        "(consider debug mode). Build error:\n" + (head or "(no output captured)")
+    )
+    logger.error(msg)
+    console.print(f"[red]Baseline build is failing.[/] {head[:200]}")
+    report.key_decisions.append(
+        "WARNING: baseline build was failing at start; gates degraded for this run"
+    )
+
+
 def _check_golden_config(config) -> None:
     """Warn when the golden suite is half-configured (a silent integrity hole).
 
@@ -389,7 +427,7 @@ class ProjectOrchestrator:
                 )
 
         # Propagate budget to LLM client
-        project.llm_client._budget = flags.budget
+        _apply_budget_ceiling(project.llm_client, flags.budget)
 
         # Preflight: fail fast on a retired/misrouted model id before spending
         # the analysis phase on calls that would 404 mid-run.
@@ -412,10 +450,13 @@ class ProjectOrchestrator:
             test_command=project.config.get("test_command"),
             lint_command=project.config.get("lint_command"),
             env_activate=env_activate,
+            build_timeout=project.config.get("build", {}).get("build_timeout", 120),
+            test_timeout=project.config.get("build", {}).get("test_timeout", 180),
         )
 
         report = BuildReport(mode, project.name, assessment, start_time)
         report.health_before = assessment.health.model_copy()
+        _warn_if_baseline_broken(assessment, report)
 
         return self._run_pipeline(
             project, prompt, mode, flags, assessment, env_activate, report
@@ -435,7 +476,7 @@ class ProjectOrchestrator:
 
         _, flags = parse_flags(args.split() if args else [])
         start_time = datetime.now(timezone.utc)
-        project.llm_client._budget = flags.budget
+        _apply_budget_ceiling(project.llm_client, flags.budget)
 
         if not flags.allow_dirty:
             dirty = self._working_tree_dirty(project)
@@ -464,6 +505,8 @@ class ProjectOrchestrator:
             test_command=project.config.get("test_command"),
             lint_command=project.config.get("lint_command"),
             env_activate=env_activate,
+            build_timeout=project.config.get("build", {}).get("build_timeout", 120),
+            test_timeout=project.config.get("build", {}).get("test_timeout", 180),
         )
         console.print(Panel(assessment.summary(), title="Current state", expand=False))
 
@@ -474,6 +517,7 @@ class ProjectOrchestrator:
 
         report = BuildReport(mode, project.name, assessment, start_time)
         report.health_before = assessment.health.model_copy()
+        _warn_if_baseline_broken(assessment, report)
         return self._run_pipeline(
             project,
             goal,
@@ -609,12 +653,16 @@ class ProjectOrchestrator:
             logger.warning(f"Lesson injection failed (non-fatal): {e}")
             report.degraded_subsystems.append(f"Lesson injection: {e}")
 
-        try:
-            planner = ABMCTSPlanner(project.llm_client)
-            spec = planner.branch_and_evaluate(spec, assessment.summary())
-        except Exception as e:
-            logger.warning(f"AB-MCTS planning failed (non-fatal): {e}")
-            report.degraded_subsystems.append(f"AB-MCTS planning: {e}")
+        # AB-MCTS branch-and-evaluate is off by default: it fires several serial
+        # LLM calls before any work begins (observed ~30 min on one build) for
+        # marginal spec refinement. Opt in with orchestrator.enable_ab_mcts.
+        if project.config.get("orchestrator", {}).get("enable_ab_mcts", False):
+            try:
+                planner = ABMCTSPlanner(project.llm_client)
+                spec = planner.branch_and_evaluate(spec, assessment.summary())
+            except Exception as e:
+                logger.warning(f"AB-MCTS planning failed (non-fatal): {e}")
+                report.degraded_subsystems.append(f"AB-MCTS planning: {e}")
 
         # Phase 3: Decompose
         tasks = decompose_spec(
@@ -660,7 +708,13 @@ class ProjectOrchestrator:
             if flags.no_verify:
                 # No gate to converge on; preserve single-pass behavior.
                 break
-            gatekeeper = GateKeeper(project.path, env_activate=env_activate)
+            build_cfg = project.config.get("build", {})
+            gatekeeper = GateKeeper(
+                project.path,
+                env_activate=env_activate,
+                build_timeout=build_cfg.get("build_timeout", 180),
+                test_timeout=build_cfg.get("test_timeout", 180),
+            )
             commands = {
                 "build_command": assessment.structure.build_command,
                 "test_command": assessment.structure.test_command,

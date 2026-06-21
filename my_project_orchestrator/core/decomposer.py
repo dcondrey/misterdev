@@ -5,7 +5,7 @@ Uses topological sort to determine execution order.
 """
 
 from collections import deque
-from typing import Optional
+from pathlib import Path
 
 from my_project_orchestrator.core.models import Task
 from my_project_orchestrator.llm.responses import extract_json_array
@@ -75,7 +75,7 @@ session (1-20 files) and have a concrete "done" condition.
 {mode}
 
 ## Rules
-- Max {max_tasks} tasks. Prioritize: must-fix > must-complete > should-add.
+{existing_guidance}- Max {max_tasks} tasks. Prioritize: must-fix > must-complete > should-add.
 - Order: infrastructure > core types > core logic > features > integration > tests > fixes > cleanup.
 - Each task's files_to_modify must not overlap with another task's files_to_create unless a dependency is declared.
 - For DEBUG mode: order by build-blocking > test-blocking > runtime errors > warnings.
@@ -111,7 +111,21 @@ def decompose_spec(
     f = assessment.features
     c = assessment.context
 
+    # CREATE is greenfield (files_to_create is expected); every other mode acts
+    # on an existing tree, where recreating existing files clobbers real code.
+    existing_guidance = (
+        ""
+        if mode == BuildMode.CREATE
+        else (
+            "- This is an EXISTING project, not a greenfield build. Use "
+            "files_to_create ONLY for files that genuinely do not exist yet; for "
+            "any file that already exists use files_to_modify. NEVER emit tasks "
+            "that recreate existing files, modules, build config, or scaffolding.\n"
+        )
+    )
+
     prompt = DECOMPOSE_PROMPT.format(
+        existing_guidance=existing_guidance,
         project_type=s.project_type,
         languages=", ".join(s.languages) if s.languages else "unknown",
         frameworks=", ".join(s.frameworks) if s.frameworks else "none",
@@ -152,6 +166,13 @@ def decompose_spec(
 
     tasks = _parse_tasks(response, project_ref)
 
+    # Ground the plan in the real tree before anything else: a file that already
+    # exists is a modification, not a creation. Without this, COMPLETE mode on an
+    # existing project emits "create" tasks for files that exist and the executor
+    # clobbers real code (observed: a 30-task from-scratch rebuild of a mature
+    # repo). Run before dependency detection so reclassified files participate.
+    _ground_task_paths(tasks, project_ref)
+
     # Detect implicit dependencies from file overlaps
     _add_implicit_dependencies(tasks)
 
@@ -170,7 +191,7 @@ def _parse_tasks(response: str, project_ref: str) -> list[Task]:
     # Strip markdown fences
     if "```" in text:
         lines = text.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
+        lines = [ln for ln in lines if not ln.strip().startswith("```")]
         text = "\n".join(lines).strip()
 
     raw_tasks = extract_json_array(text, default=None)
@@ -217,6 +238,29 @@ def _parse_tasks(response: str, project_ref: str) -> list[Task]:
             logger.warning(f"Skipping malformed task: {e}")
 
     return tasks
+
+
+def _ground_task_paths(tasks: list[Task], project_ref: str) -> None:
+    """Reclassify create->modify for files that already exist on disk.
+
+    The decomposing LLM, especially in COMPLETE mode on an existing project,
+    routinely lists existing files under files_to_create. Acting on that would
+    recreate (and clobber) real code. A path that already exists is a
+    modification; only genuinely absent paths stay creations.
+    """
+    root = Path(project_ref)
+    for t in tasks:
+        still_create: list[str] = []
+        for f in t.files_to_create:
+            if f and (root / f).exists():
+                if f not in t.files_to_modify:
+                    t.files_to_modify.append(f)
+                logger.warning(
+                    f"Task {t.id}: '{f}' already exists; treating as modify, not create."
+                )
+            else:
+                still_create.append(f)
+        t.files_to_create = still_create
 
 
 def _add_implicit_dependencies(tasks: list[Task]) -> None:

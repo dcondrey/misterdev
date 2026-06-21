@@ -80,3 +80,30 @@ def test_format_plan():
     plan = format_plan(tasks, BuildMode.COMPLETE)
     assert "T-1" in plan
     assert "complete" in plan.lower()
+
+
+def test_ground_task_paths_reclassifies_existing_to_modify():
+    import tempfile
+    from pathlib import Path
+    from my_project_orchestrator.core.decomposer import _ground_task_paths
+    from my_project_orchestrator.core.models import Task
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
+        (root / "src").mkdir()
+        (root / "src" / "existing.rs").write_text("// real code\n", encoding="utf-8")
+        t = Task(
+            id="T-1",
+            description="d",
+            project_ref=td,
+            files_to_create=["Cargo.toml", "src/existing.rs", "src/brand_new.rs"],
+            files_to_modify=[],
+        )
+        _ground_task_paths([t], td)
+        # Existing files reclassified to modify; genuinely new file stays create.
+        assert "Cargo.toml" in t.files_to_modify
+        assert "src/existing.rs" in t.files_to_modify
+        assert "Cargo.toml" not in t.files_to_create
+        assert "src/existing.rs" not in t.files_to_create
+        assert t.files_to_create == ["src/brand_new.rs"]

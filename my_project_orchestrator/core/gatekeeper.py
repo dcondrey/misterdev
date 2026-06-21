@@ -89,9 +89,19 @@ class GateKeeper:
       G9: Diff hygiene (no debug artifacts in staged changes)
     """
 
-    def __init__(self, project_path: Path, env_activate: Optional[str] = None):
-        self.project_path = project_path
+    def __init__(
+        self,
+        project_path: Path,
+        env_activate: Optional[str] = None,
+        build_timeout: int = 180,
+        test_timeout: int = 180,
+    ):
+        self.project_path = Path(project_path)
         self.env_activate = env_activate
+        # Honor the project's configured timeouts so a slow compiler isn't
+        # falsely failed by the gate the way the analyzer once was.
+        self.build_timeout = build_timeout
+        self.test_timeout = test_timeout
 
     def run_gates(
         self, commands: Dict[str, Optional[str]]
@@ -104,7 +114,10 @@ class GateKeeper:
         build_cmd = commands.get("build_command")
         if build_cmd:
             success, output = _run_cmd(
-                build_cmd, self.project_path, self.env_activate, timeout=180
+                build_cmd,
+                self.project_path,
+                self.env_activate,
+                timeout=self.build_timeout,
             )
             health.builds = success
             health.build_output = output
@@ -118,7 +131,10 @@ class GateKeeper:
         lint_cmd = commands.get("lint_command")
         if lint_cmd:
             success, output = _run_cmd(
-                lint_cmd, self.project_path, self.env_activate, timeout=120
+                lint_cmd,
+                self.project_path,
+                self.env_activate,
+                timeout=self.test_timeout,
             )
             health.lint_clean = success
             health.lint_output = output
@@ -131,7 +147,10 @@ class GateKeeper:
         test_cmd = commands.get("test_command")
         if test_cmd:
             success, output = _run_cmd(
-                test_cmd, self.project_path, self.env_activate, timeout=180
+                test_cmd,
+                self.project_path,
+                self.env_activate,
+                timeout=self.test_timeout,
             )
             health.tests_pass = success
             health.test_output = output
@@ -146,7 +165,10 @@ class GateKeeper:
         golden_cmd = commands.get("golden_command")
         if golden_cmd:
             success, output = _run_cmd(
-                golden_cmd, self.project_path, self.env_activate, timeout=180
+                golden_cmd,
+                self.project_path,
+                self.env_activate,
+                timeout=self.test_timeout,
             )
             if not success:
                 issues.append("G3.5: Golden suite failed")
@@ -160,7 +182,10 @@ class GateKeeper:
         typecheck_cmd = commands.get("typecheck_command")
         if typecheck_cmd:
             success, _output = _run_cmd(
-                typecheck_cmd, self.project_path, self.env_activate, timeout=120
+                typecheck_cmd,
+                self.project_path,
+                self.env_activate,
+                timeout=self.test_timeout,
             )
             if not success:
                 issues.append("G4: Type check failed")
