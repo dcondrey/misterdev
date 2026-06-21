@@ -773,7 +773,13 @@ class ProjectOrchestrator:
             ready = []
             still_waiting = []
             for task in remaining:
-                if progress.is_done(task.id):
+                # Skip only if this exact task (id AND content hash) already
+                # completed. Hash-aware so a freshly decomposed plan that reuses
+                # generic ids (T-001...) from a prior build is not wrongly
+                # skipped against stale progress state.
+                if not progress.needs_rerun(
+                    task.id, compute_task_hash(task, project.path)
+                ):
                     report.completed_tasks.append(task)
                     completed_ids.add(task.id)
                     continue
@@ -860,7 +866,9 @@ class ProjectOrchestrator:
                 elif result.status == "completed":
                     task.execution_history.append(result)
                     completed_ids.add(task.id)
-                    progress.mark_completed(task.id)
+                    progress.mark_completed(
+                        task.id, compute_task_hash(task, project.path)
+                    )
                     report.completed_tasks.append(task)
                     wave_completed.append(task)
                     consecutive_failures = 0

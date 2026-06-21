@@ -30,7 +30,16 @@ def compute_task_hash(task, project_path: Path) -> str:
             h.update(Path(source_ref).read_bytes())
         except OSError:
             pass
+    # Fold in the task's own spec so that LLM-decomposed tasks (which have no
+    # source_ref and reuse generic ids like T-001 across separate builds) get a
+    # hash that reflects their actual content. Without this, a fresh plan's
+    # T-001 collides with a prior build's completed T-001 and is wrongly skipped.
+    for attr in ("title", "description"):
+        h.update(str(getattr(task, attr, "")).encode())
+    for f in sorted(getattr(task, "files_to_create", [])):
+        h.update(f"create:{f}".encode())
     for f in sorted(getattr(task, "files_to_modify", [])):
+        h.update(f"modify:{f}".encode())
         fp = Path(project_path) / f
         if fp.exists():
             h.update(f"{f}:{fp.stat().st_mtime_ns}".encode())
@@ -62,11 +71,14 @@ class ProgressTracker:
                 self.hashes = {}
 
     def _save(self):
-        data = json.dumps({
-            "completed": sorted(self.completed),
-            "failed": sorted(self.failed),
-            "hashes": self.hashes,
-        }, indent=2)
+        data = json.dumps(
+            {
+                "completed": sorted(self.completed),
+                "failed": sorted(self.failed),
+                "hashes": self.hashes,
+            },
+            indent=2,
+        )
         atomic_write(self._file, data)
 
     def mark_completed(self, task_id: str, task_hash: Optional[str] = None):

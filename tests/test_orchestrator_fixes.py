@@ -1212,3 +1212,38 @@ def test_health_ground_truth_string():
     h = HealthCheck(builds=True, tests_pass=True, test_count=332, test_failures=0)
     g = _health_ground_truth(h)
     assert "build passes" in g and "332/332 tests passing" in g
+
+
+# --- stale cross-build progress no longer causes spurious skips --------------
+def test_task_hash_reflects_content_for_idless_llm_tasks():
+    from types import SimpleNamespace
+    from my_project_orchestrator.core.progress import compute_task_hash
+
+    a = SimpleNamespace(id="T-001", title="Add scan tests", description="cover scan",
+                        files_to_create=["tests/test_scan.py"], files_to_modify=[])
+    b = SimpleNamespace(id="T-001", title="Add build tests", description="cover build",
+                        files_to_create=["tests/test_build.py"], files_to_modify=[])
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        # Same reused id, different content -> different hash.
+        assert compute_task_hash(a, root) != compute_task_hash(b, root)
+
+
+def test_needs_rerun_skips_stale_idmatch_without_hash():
+    from types import SimpleNamespace
+    from my_project_orchestrator.core.progress import ProgressTracker, compute_task_hash
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        pt = ProgressTracker(root)
+        # Simulate a prior build that completed T-001 WITHOUT recording a hash
+        # (the old stale-progress state from the broken self-build).
+        pt.mark_completed("T-001")
+        new_task = SimpleNamespace(id="T-001", title="fresh", description="new plan",
+                                   files_to_create=["x.py"], files_to_modify=[])
+        # A freshly decomposed T-001 must NOT be skipped against stale progress.
+        assert pt.needs_rerun("T-001", compute_task_hash(new_task, root))
+        # After completing it WITH its hash, an identical resume is skipped.
+        h = compute_task_hash(new_task, root)
+        pt.mark_completed("T-001", h)
+        assert not pt.needs_rerun("T-001", h)
