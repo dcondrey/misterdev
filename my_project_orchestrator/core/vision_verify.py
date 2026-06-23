@@ -160,17 +160,23 @@ def _default_vlm_call(llm_client, model: Optional[str]) -> Optional[VlmCall]:
     """Build a vision call from the project's LLM client, or None if unusable.
 
     Sends a multimodal message (text + a base64 PNG image) and returns the
-    model's text. Kept tolerant of client shape so an absent/limited client
-    degrades to SKIP rather than raising. No network is touched until the
+    model's text. Prefers the client's first-class ``chat_multimodal`` method;
+    falls back to driving the raw OpenAI-compatible ``.client`` SDK directly for
+    clients that predate it. Kept tolerant of client shape so an absent/limited
+    client degrades to SKIP rather than raising. No network is touched until the
     returned callable is actually invoked inside the worker thread.
     """
     if llm_client is None:
         return None
 
     def _call(prompt: str, image_b64: str) -> str:
-        # Use the raw OpenAI-compatible SDK client directly. with_model is a
-        # context manager (not a client factory), so we must not rebind through
-        # it; the explicit ``model=`` below already selects the vision model.
+        multimodal = getattr(llm_client, "chat_multimodal", None)
+        if callable(multimodal):
+            return multimodal(prompt, image_b64, model)
+        # Fallback: drive the raw OpenAI-compatible SDK client directly.
+        # with_model is a context manager (not a client factory), so we must not
+        # rebind through it; the explicit ``model=`` below selects the vision
+        # model.
         raw = getattr(llm_client, "client", None)
         if raw is None or not hasattr(raw, "chat"):
             raise RuntimeError("client does not expose a multimodal chat endpoint")

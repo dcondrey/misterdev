@@ -208,6 +208,17 @@ class BaseLLMClient(ABC):
         """
         return self.generate(prompt, system_prompt)
 
+    def chat_multimodal(
+        self, prompt: str, image_b64: str, model: Optional[str] = None
+    ) -> str:
+        """Send a text+image message and return the model's text reply.
+
+        First-class multimodal entry point used by the vision gate. The base
+        raises so providers without a multimodal path degrade cleanly (the
+        vision gate then falls back / SKIPs rather than crashing).
+        """
+        raise NotImplementedError("multimodal chat not supported by this client")
+
     def health_check(self) -> Tuple[bool, str]:
         """Verify the configured model actually resolves before a real run.
 
@@ -523,6 +534,34 @@ class OpenRouterLLMClient(BaseLLMClient):
             return self.generate(prompt, system_prompt)
         finally:
             self._edit_tool_mode = False
+
+    def chat_multimodal(
+        self, prompt: str, image_b64: str, model: Optional[str] = None
+    ) -> str:
+        """Send a text part plus a base64 PNG image and return the reply text.
+
+        Builds an OpenAI-compatible multimodal message and selects ``model`` (a
+        vision model id) when given, else the client's configured model. Provider
+        routing prefs are reused so a multimodal call honors the same
+        data_collection policy as every other request.
+        """
+        resp = self.client.chat.completions.create(
+            model=model or self.model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                        },
+                    ],
+                }
+            ],
+            extra_body=self._extra_body(),
+        )
+        return resp.choices[0].message.content or ""
 
     def _extra_body(self) -> dict:
         """OpenRouter provider routing prefs.

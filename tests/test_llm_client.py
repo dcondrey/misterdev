@@ -161,6 +161,63 @@ def test_openrouter_api_error_wrapped(monkeypatch):
         client.generate_code("x")
 
 
+def test_openrouter_chat_multimodal_builds_image_message(monkeypatch):
+    client = _make_openrouter(monkeypatch)
+    captured = {}
+
+    class _Completions:
+        def create(self, **kw):
+            captured.update(kw)
+            return types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        message=types.SimpleNamespace(content="YES\na login form")
+                    )
+                ]
+            )
+
+    client.client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=_Completions())
+    )
+    out = client.chat_multimodal("describe", "BASE64DATA", model="vendor/vision")
+    assert out == "YES\na login form"
+    # Explicit vision model selected, not the client default.
+    assert captured["model"] == "vendor/vision"
+    parts = captured["messages"][0]["content"]
+    assert any(p.get("type") == "text" and p["text"] == "describe" for p in parts)
+    img = next(p for p in parts if p.get("type") == "image_url")
+    assert img["image_url"]["url"] == "data:image/png;base64,BASE64DATA"
+    # Provider routing prefs (data_collection) ride along on the multimodal call.
+    assert "data_collection" in captured["extra_body"]["provider"]
+
+
+def test_openrouter_chat_multimodal_defaults_to_client_model(monkeypatch):
+    client = _make_openrouter(monkeypatch, model="vendor/base")
+    captured = {}
+
+    class _Completions:
+        def create(self, **kw):
+            captured.update(kw)
+            return types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(message=types.SimpleNamespace(content=None))
+                ]
+            )
+
+    client.client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=_Completions())
+    )
+    # No model arg -> the client's configured model; None content -> "".
+    assert client.chat_multimodal("p", "IMG") == ""
+    assert captured["model"] == "vendor/base"
+
+
+def test_base_chat_multimodal_raises_not_implemented():
+    client = FakeLLMClient([LLMResponse(content="x")])
+    with pytest.raises(NotImplementedError):
+        client.chat_multimodal("p", "IMG")
+
+
 def _stream_of(tokens, usage=None):
     def fake_create(**kw):
         def gen():

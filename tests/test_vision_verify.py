@@ -279,6 +279,33 @@ def test_default_call_uses_client_multimodal(tmp_path):
     assert img["image_url"]["url"].startswith("data:image/png;base64,")
 
 
+def test_default_call_prefers_chat_multimodal(tmp_path):
+    # A client exposing the first-class chat_multimodal method is used directly;
+    # the raw .client SDK path must NOT be touched.
+    seen = {}
+
+    class _Client:
+        def __init__(self):
+            self.client = None  # would crash if the fallback path were taken
+            self.model = "base/model"
+
+        def chat_multimodal(self, prompt, image_b64, model=None):
+            seen["prompt"] = prompt
+            seen["image_b64"] = image_b64
+            seen["model"] = model
+            return "YES\nlooks right"
+
+    shot = _shot(tmp_path)
+    res = run_vision_gate(
+        tmp_path,
+        {"capture": str(shot), "assert": "ok", "model": "vendor/vision", "timeout": 10},
+        llm_client=_Client(),
+    )
+    assert res.status == GREEN
+    assert seen["model"] == "vendor/vision"  # explicit model forwarded
+    assert "PNG" not in seen["image_b64"][:8]  # base64-encoded, not raw bytes
+
+
 # --- gatekeeper integration -------------------------------------------------
 
 
