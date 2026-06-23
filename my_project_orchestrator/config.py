@@ -216,6 +216,15 @@ class OrchestratorSettings:
     # The substrate (connect/discover/call) is always available via project.mcp;
     # this flag gates only the awareness injection. Timeout-bounded throughout.
     mcp_enabled: bool = False
+    # Optional governance layer: when on, a risk classifier gates risky commands
+    # (destructive/irreversible/paid) at the command seam and an append-only
+    # audit trail is written. Off by default and additive — when off the command
+    # seam is byte-identical to today. In autonomous (non-interactive) mode a
+    # risky command is BLOCKED with an escalation record unless
+    # ``governance.auto_approve`` is set; in interactive mode it prompts. Ordinary
+    # build/test/lint commands classify as SAFE and always run. The policy spec
+    # lives under the top-level ``governance`` key.
+    governance: bool = False
 
 
 PROMPT_TEMPLATES = {
@@ -274,6 +283,12 @@ DEFAULT_CONFIG = {
     # ``min_score`` (floor, a fraction or percentage), ``timeout`` (seconds).
     # Open dict like ``runtime``, not schema-validated, so any tool/command fits.
     "mutation": {},
+    # Governance policy spec (off unless orchestrator.governance is true):
+    # ``approval_required`` (extra risky regex patterns), ``auto_approve`` (bool,
+    # let risky commands run unattended in autonomous mode), ``network``
+    # ("none"|"default", container egress control). Open dict like ``runtime``,
+    # not schema-validated, so the pattern list and knobs stay free-form.
+    "governance": {"network": "default"},
     "prompt_templates": PROMPT_TEMPLATES,
     "build": asdict(BuildSettings()),
     "orchestrator": asdict(OrchestratorSettings()),
