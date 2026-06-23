@@ -128,6 +128,10 @@ class OrchestratorSettings:
     max_consecutive_failures: int = 3
     max_workers: int = 4
     context_budget_tokens: int = 100000
+    # Target files at or below this many lines are sent in full; larger files
+    # are sent as a symbol outline plus verbatim windows of the task-relevant
+    # symbols, so context (and cost) scales with the edit, not the file size.
+    large_file_line_threshold: int = 800
     max_task_attempts: int = 3
     integration_gate: bool = True
     # "auto" keys are budget-driven (BaseLLMClient / convergence loop) so the

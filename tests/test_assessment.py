@@ -1,8 +1,32 @@
+import tempfile
+from pathlib import Path
+
 from my_project_orchestrator.core.assessment import (
     HealthCheck, FeatureInfo, FeatureInventory, ProjectStructure,
     ProjectContext, TechnicalDebt, RiskAssessment, ProjectAssessment,
 )
 from my_project_orchestrator.core.models import Task, ExecutionResult
+from my_project_orchestrator.analyzers.project_analyzer import _get_source_overview
+
+
+def test_source_overview_covers_swift_and_csharp():
+    # Previously the overview only saw py/js/ts/rs/go/java, so Swift/C# projects
+    # looked empty. It must now surface them (and a structural symbol map).
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "Engine.swift").write_text("class Engine { func start() {} }\n")
+        (td / "App.cs").write_text("public class App { public void Run() {} }\n")
+        overview = _get_source_overview(td)
+        assert "Engine.swift" in overview
+        assert "App.cs" in overview
+        # symbol map present when grammars are available
+        if "Project structure" in overview:
+            assert "class Engine" in overview and "class App" in overview
+
+
+def test_source_overview_empty_project():
+    with tempfile.TemporaryDirectory() as td:
+        assert _get_source_overview(Path(td)) == "(no source files found)"
 
 
 def test_health_check_defaults():

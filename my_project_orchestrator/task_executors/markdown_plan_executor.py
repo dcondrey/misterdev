@@ -97,6 +97,67 @@ _LANG_MAP = {
 }
 
 
+def _relevant_line_ranges(symbols, task, n_lines: int):
+    """Line ranges to show in full for a large target file.
+
+    Picks symbols whose name appears in the task text, pads each by a few
+    lines, and always includes the file head (imports/uses). Returns merged
+    0-based inclusive ranges, or None when nothing matched so the caller can
+    fall back to sending the whole file.
+    """
+    head_lines = 30
+    margin = 3
+    text = ""
+    if task is not None:
+        text = f"{task.description or ''} {task.acceptance_criteria or ''}"
+    # Whole-token match (case-insensitive): a symbol is relevant only when its
+    # name appears as a word in the task, not as a substring — otherwise short
+    # names like "Loc" match inside unrelated words and pull in the whole file.
+    tokens = {t.lower() for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text)}
+    relevant = [
+        s for s in symbols if s.name and len(s.name) >= 3 and s.name.lower() in tokens
+    ]
+    if not relevant:
+        return None
+    ranges = [
+        (max(0, s.start_line - margin), min(n_lines - 1, s.end_line + margin))
+        for s in relevant
+    ]
+    ranges.append((0, min(head_lines - 1, n_lines - 1)))
+    return _merge_ranges(ranges)
+
+
+def _merge_ranges(ranges):
+    """Merge overlapping/adjacent (start, end) inclusive ranges, sorted."""
+    merged = []
+    for start, end in sorted(ranges):
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _window_lines(lines: List[str], ranges) -> str:
+    """Render only ``ranges`` of ``lines`` verbatim, with elision markers between.
+
+    Kept spans are emitted unchanged so SEARCH/REPLACE can anchor against them;
+    gaps become a marker that points back to the outline.
+    """
+    out = []
+    prev_end = -1
+    for start, end in ranges:
+        if start > prev_end + 1:
+            gap = start - (prev_end + 1)
+            out.append(f"... [{gap} lines elided: L{prev_end + 2}-L{start} — see outline] ...")
+        out.extend(lines[start : end + 1])
+        prev_end = end
+    if prev_end < len(lines) - 1:
+        gap = len(lines) - 1 - prev_end
+        out.append(f"... [{gap} lines elided: L{prev_end + 2}-L{len(lines)} — see outline] ...")
+    return "\n".join(out)
+
+
 def _bisect_first_failing(n: int, passes_at) -> int:
     """Binary-search [0, n) for the first index where passes_at(i) is False.
 
@@ -550,13 +611,22 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             and hasattr(project.llm_client, "task_cost")
         )
 
+        # Whole-project structural map (every file + its symbols). Computed once
+        # — it is identical across attempts — so the model edits with the entire
+        # project's shape in view, not just the target files. ContextBudget
+        # trims it first (priority 3) when space is tight.
+        topo = getattr(project, "topography", None)
+        project_outline = topo.get_project_outline() if topo is not None else ""
+
         for attempt in range(max_retries):
             logger.info(f"Attempt {attempt + 1}/{max_retries} for task {task.id}")
             if pending_attempt is not None:
                 self._ledger_record(project, task, pending_attempt, success=False)
                 pending_attempt = None
 
-            code_context = self._get_code_context(project, target_files, context_files)
+            code_context = self._get_code_context(
+                project, target_files, context_files, task=task
+            )
             topo_context = project.topography.get_context_for_task(
                 task.description,
                 target_files,
@@ -581,6 +651,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             budget.set("interface_contracts", interface_contracts, priority=2)
             budget.set("recent_changes", recent_changes, priority=2)
             budget.set("consensus_context", consensus, priority=3)
+            budget.set("project_outline", project_outline, priority=3, min_lines=0)
             allocated = budget.allocate()
 
             full_code_context = allocated["code_context"]
@@ -588,6 +659,11 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                 full_code_context += "\n\n" + allocated["topo_context"]
             if allocated["recent_changes"]:
                 full_code_context += "\n\n" + allocated["recent_changes"]
+            if allocated["project_outline"]:
+                full_code_context += (
+                    "\n\n## Project Structure (files and their symbols)\n"
+                    + allocated["project_outline"]
+                )
 
             context_dict = {
                 "project": project,
@@ -1097,17 +1173,19 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         target_files: List[str],
         context_files: List[str],
         max_lines: int = 500,
+        task: Optional[Task] = None,
     ) -> str:
         context = ""
+        topo = getattr(project, "topography", None)
+        threshold = (
+            get_setting(project.config, "orchestrator", "large_file_line_threshold")
+            or 800
+        )
         if target_files:
             context += "### Files to Modify/Create\n"
-            # Files being edited are read in full: surgical SEARCH/REPLACE needs
-            # to anchor against the exact current content anywhere in the file,
-            # not just the first window. ContextBudget (priority 1) protects
-            # this section and trims lower-priority context first.
             for file_path in target_files:
-                context += self._read_file_for_context(
-                    project.path / file_path, file_path, None
+                context += self._render_target_file(
+                    project, topo, file_path, task, threshold
                 )
         if context_files:
             context += "\n### Reference/Context Files (Read-Only)\n"
@@ -1133,6 +1211,54 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                 + f"\n... ({len(lines)} lines total, truncated)"
             )
         return f"\n# File: {rel_path}\n{content}\n"
+
+    def _render_target_file(
+        self,
+        project: Project,
+        topo,
+        file_path: str,
+        task: Optional[Task],
+        threshold: int,
+    ) -> str:
+        """Render one target file for the edit prompt.
+
+        Small files are sent in full. Large files are sent as a symbol outline
+        plus verbatim windows of the task-relevant symbols (with elision markers
+        for the rest), so the model navigates via the outline and edits the
+        relevant regions exactly while context scales with the edit, not the
+        file. SEARCH/REPLACE still applies against the full on-disk content, so
+        windowing only narrows what the model reads, never what it can change.
+        """
+        full_path = project.path / file_path
+        outline = topo.get_file_outline(file_path) if topo is not None else ""
+        header = (
+            f"\n# Outline of {file_path} (symbol: line range):\n{outline}\n"
+            if outline
+            else ""
+        )
+        if not full_path.exists():
+            return header + f"\n# File: {file_path} (Does not exist yet)\n"
+        try:
+            content = full_path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            return header + f"\n# File: {file_path} (binary or unreadable, skipped)\n"
+
+        lines = content.split("\n")
+        if topo is None or len(lines) <= threshold:
+            return header + f"\n# File: {file_path}\n{content}\n"
+
+        symbols = topo.get_file_symbols(file_path)
+        keep = _relevant_line_ranges(symbols, task, len(lines))
+        if keep is None:
+            # No symbol matched the task: never strand the model, send it all.
+            return header + f"\n# File: {file_path}\n{content}\n"
+        body = _window_lines(lines, keep)
+        return (
+            header
+            + f"\n# File: {file_path} (large file: windowed to relevant symbols; "
+            "use the outline above to locate anything not shown)\n"
+            + f"{body}\n"
+        )
 
     def _invoke_llm(self, project: Project, prompt: str, system_prompt: str):
         """Call the LLM, optionally streaming with early abort (config opt-in).

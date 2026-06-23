@@ -495,6 +495,49 @@ class SymbolGraph:
                     symbol.outgoing_calls.add(other_key)
                     self.symbols[other_key].incoming_calls.add(key)
 
+    def file_symbols(self, file_path: str) -> List[SymbolNode]:
+        """Symbols defined in one file, ordered by start line."""
+        return sorted(
+            (s for s in self.symbols.values() if s.file_path == file_path),
+            key=lambda s: s.start_line,
+        )
+
+    def file_outline(self, file_path: str) -> str:
+        """A compact table of contents for one file: each symbol with its lines.
+
+        Lets the model navigate a large file it is editing and place precise
+        SEARCH anchors without scanning the whole body line by line.
+        """
+        return "\n".join(
+            f"  L{s.start_line + 1}-{s.end_line + 1}: {s.kind} {s.name}"
+            for s in self.file_symbols(file_path)
+        )
+
+    def project_outline(
+        self, max_files: int = 300, max_syms_per_file: int = 60
+    ) -> str:
+        """A whole-project structural map: every file with its top-level symbols.
+
+        Far denser than reading file heads — it conveys the architecture (what
+        exists, where) within a small token budget so planning and editing are
+        grounded in the entire project, not a first-N-lines slice.
+        """
+        by_file: Dict[str, List[SymbolNode]] = {}
+        for s in self.symbols.values():
+            by_file.setdefault(s.file_path, []).append(s)
+        if not by_file:
+            return ""
+        out = []
+        for path in sorted(by_file)[:max_files]:
+            syms = sorted(by_file[path], key=lambda s: s.start_line)
+            shown = ", ".join(f"{s.kind} {s.name}" for s in syms[:max_syms_per_file])
+            if len(syms) > max_syms_per_file:
+                shown += f", +{len(syms) - max_syms_per_file} more"
+            out.append(f"{path}: {shown}")
+        if len(by_file) > max_files:
+            out.append(f"(... {len(by_file) - max_files} more files)")
+        return "\n".join(out)
+
 
 class TopographyEngine:
     """Topography Engine with Vector Persistence and Lazy Loading."""
@@ -513,6 +556,18 @@ class TopographyEngine:
         self.graph.build()
         logger.info(f"Symbol graph: {len(self.graph.symbols)} symbols indexed")
         self._initialized = True
+
+    def get_file_outline(self, file_path: str) -> str:
+        self.initialize()
+        return self.graph.file_outline(file_path)
+
+    def get_file_symbols(self, file_path: str):
+        self.initialize()
+        return self.graph.file_symbols(file_path)
+
+    def get_project_outline(self) -> str:
+        self.initialize()
+        return self.graph.project_outline()
 
     def get_context_for_task(
         self, query: str, related_files: List[str], max_symbols: int = 30, ranker=None

@@ -496,22 +496,47 @@ def _read_docs(project_path: Path) -> str:
     return "\n\n".join(contents) if contents else "(no docs found)"
 
 
+_OVERVIEW_CODE_EXTS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go", ".java",
+    ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh",
+    ".swift", ".cs", ".kt",
+}
+
+
 def _get_source_overview(project_path: Path, max_chars: int = 8000) -> str:
-    """Read first N chars of source files for completeness analysis."""
-    code_exts = {".py", ".js", ".ts", ".rs", ".go", ".java"}
+    """Whole-project structural map plus the heads of source files.
+
+    The symbol map (every file and its symbols, from tree-sitter) conveys the
+    architecture densely so planning is grounded in the entire project rather
+    than the first few files that fit ``max_chars`` of raw heads.
+    """
     parts = []
+    try:
+        from my_project_orchestrator.core.topography import SymbolGraph
+
+        graph = SymbolGraph(project_path)
+        graph.build()
+        outline = graph.project_outline()
+        if outline:
+            parts.append("## Project structure (files and symbols)\n" + outline)
+    except (ImportError, OSError, ValueError) as e:
+        logger.debug(f"symbol-based overview unavailable: {e}")
+
+    head = []
     total = 0
     for item in _walk_limited(project_path):
-        if item.suffix in code_exts:
+        if item.suffix in _OVERVIEW_CODE_EXTS:
             text = _read_file_safe(item, max_lines=30)
             if text:
                 rel = item.relative_to(project_path)
                 chunk = f"### {rel}\n{text}\n"
-                parts.append(chunk)
+                head.append(chunk)
                 total += len(chunk)
                 if total >= max_chars:
                     break
-    return "\n".join(parts) if parts else "(no source files found)"
+    if head:
+        parts.append("## Source heads\n" + "\n".join(head))
+    return "\n\n".join(parts) if parts else "(no source files found)"
 
 
 def _get_git_log(project_path: Path, count: int = 20) -> str:

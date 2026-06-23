@@ -62,6 +62,43 @@ def test_symbol_graph_parses_csharp():
     assert ("interface", "IDraw") in syms
 
 
+def test_file_outline_lists_symbols_with_lines():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        src = "\n".join(["// h"] + ["fn start() {}"] + ["x"] * 100 + ["fn stop() {}"])
+        (td / "engine.rs").write_text(src)
+        g = SymbolGraph(td)
+        g.build()
+        outline = g.file_outline("engine.rs")
+        if not outline:
+            return  # rust grammar unavailable
+        assert "function start" in outline
+        assert "function stop" in outline
+        assert "L2" in outline  # start is on line 2
+
+
+def test_file_outline_empty_for_unknown_file():
+    with tempfile.TemporaryDirectory() as td:
+        g = SymbolGraph(Path(td))
+        g.build()
+        assert g.file_outline("nope.rs") == ""
+
+
+def test_project_outline_maps_all_files():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "a.rs").write_text("fn one() {}\nstruct A {}\n")
+        (td / "b.rs").write_text("fn two() {}\n")
+        g = SymbolGraph(td)
+        g.build()
+        outline = g.project_outline()
+        if not outline:
+            return
+        assert "a.rs:" in outline and "b.rs:" in outline
+        assert "function one" in outline and "struct A" in outline
+        assert "function two" in outline
+
+
 def test_symbol_graph_byte_offsets_with_non_ascii():
     # Non-ASCII bytes before a symbol must not shift tree-sitter byte offsets
     # and mangle extracted names (regression: names were sliced from the str).

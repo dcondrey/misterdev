@@ -12,6 +12,9 @@ from my_project_orchestrator.task_executors.markdown_plan_executor import (
     _test_metrics,
     _extract_acceptance_command,
     _LANG_MAP,
+    _merge_ranges,
+    _window_lines,
+    _relevant_line_ranges,
 )
 from my_project_orchestrator.core.models import Task
 from my_project_orchestrator.core.scratchpad import Scratchpad
@@ -203,6 +206,15 @@ class _FakeTopography:
     ):
         return ""
 
+    def get_file_outline(self, file_path):
+        return ""
+
+    def get_file_symbols(self, file_path):
+        return []
+
+    def get_project_outline(self):
+        return ""
+
 
 class _FakeProject:
     def __init__(self, path, response, config_extra=None):
@@ -385,6 +397,124 @@ def test_surgical_edit_applies_to_large_file_end_to_end():
         o_lines, n_lines = original.splitlines(), new.splitlines()
         diffs = [i for i, (a, b) in enumerate(zip(o_lines, n_lines)) if a != b]
         assert diffs == [1500]
+
+
+def test_code_context_injects_file_outline():
+    # The model editing a large file should receive a symbol outline (table of
+    # contents) so it can navigate and anchor SEARCH blocks precisely.
+    from types import SimpleNamespace
+    from my_project_orchestrator.core.topography import TopographyEngine
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        src = "\n".join(["fn start() {}"] + ["x"] * 80 + ["fn stop() {}"])
+        (td / "engine.rs").write_text(src)
+        topo = TopographyEngine(td, llm_client=None)
+        project = SimpleNamespace(path=td, config={}, topography=topo)
+        ctx = MarkdownPlanExecutor()._get_code_context(project, ["engine.rs"], [])
+        if "function start" not in ctx:
+            return  # rust grammar unavailable in this environment
+        assert "Outline of engine.rs" in ctx
+        assert "function stop" in ctx
+        # full file body is still present for exact anchoring
+        assert ctx.count("fn start() {}") >= 1
+
+
+def test_merge_ranges_merges_overlapping_and_adjacent():
+    assert _merge_ranges([(0, 5), (3, 8), (20, 25)]) == [(0, 8), (20, 25)]
+    assert _merge_ranges([(0, 5), (6, 9)]) == [(0, 9)]  # adjacent
+    assert _merge_ranges([(10, 12), (0, 2)]) == [(0, 2), (10, 12)]  # sorted
+
+
+def test_window_lines_keeps_spans_and_marks_elisions():
+    lines = [f"L{i}" for i in range(100)]
+    out = _window_lines(lines, [(0, 2), (50, 52)])
+    assert "L0" in out and "L50" in out
+    assert "L25" not in out
+    assert "elided" in out  # gap between the two kept spans is marked
+
+
+class _Sym:
+    def __init__(self, name, start, end):
+        self.name = name
+        self.start_line = start
+        self.end_line = end
+
+
+def test_relevant_line_ranges_token_match_not_substring():
+    syms = [_Sym("SceneLocator", 400, 410), _Sym("Loc", 800, 810)]
+
+    class _T:
+        description = "Refactor the SceneLocator handler"
+        acceptance_criteria = ""
+
+    ranges = _relevant_line_ranges(syms, _T(), 1000)
+    # SceneLocator matches as a whole token; "Loc" must NOT (substring only)
+    assert any(400 <= a <= 410 or a <= 400 <= b for a, b in ranges)
+    assert not any(800 <= a for a, b in ranges)
+
+
+def test_relevant_line_ranges_none_when_no_match():
+    syms = [_Sym("Foo", 10, 20)]
+
+    class _T:
+        description = "unrelated work"
+        acceptance_criteria = ""
+
+    assert _relevant_line_ranges(syms, _T(), 100) is None
+
+
+def test_render_large_file_windows_to_relevant_symbol():
+    from types import SimpleNamespace
+    from my_project_orchestrator.core.topography import TopographyEngine
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        src = (
+            ["fn alpha() {}"]
+            + ["// filler"] * 900
+            + ["fn target_handler() {", "    let z = 1;", "}"]
+            + ["// tail"] * 50
+        )
+        (td / "big.rs").write_text("\n".join(src))
+        topo = TopographyEngine(td, llm_client=None)
+        project = SimpleNamespace(
+            path=td,
+            config={"orchestrator": {"large_file_line_threshold": 800}},
+            topography=topo,
+        )
+        task = _make_task()
+        task.description = "Fix a bug in target_handler"
+        ctx = MarkdownPlanExecutor()._get_code_context(
+            project, ["big.rs"], [], task=task
+        )
+        if "function target_handler" not in ctx:
+            return  # rust grammar unavailable
+        assert "fn target_handler() {" in ctx  # relevant body shown verbatim
+        assert "elided" in ctx  # filler elided
+        assert len(ctx) < len("\n".join(src))  # smaller than the full file
+
+
+def test_render_large_file_no_match_sends_full():
+    from types import SimpleNamespace
+    from my_project_orchestrator.core.topography import TopographyEngine
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        src = ["fn alpha() {}"] + ["// filler"] * 900
+        (td / "big.rs").write_text("\n".join(src))
+        topo = TopographyEngine(td, llm_client=None)
+        project = SimpleNamespace(
+            path=td,
+            config={"orchestrator": {"large_file_line_threshold": 800}},
+            topography=topo,
+        )
+        task = _make_task()
+        task.description = "unrelated change with no symbol names"
+        ctx = MarkdownPlanExecutor()._get_code_context(
+            project, ["big.rs"], [], task=task
+        )
+        assert "elided" not in ctx  # fell back to the full file
 
 
 def test_surgical_edit_conflict_does_not_write_partial():
