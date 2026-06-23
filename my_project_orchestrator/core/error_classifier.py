@@ -233,7 +233,9 @@ FIX_GUIDANCE = {
         "Focus on the LOGIC, not the syntax. Check the algorithm, boundary conditions, and data flow."
     ),
     ErrorCategory.LINK_ERROR: (
-        "This is a LINKER error. Check Cargo.toml dependencies, feature flags, and extern crate declarations."
+        "This is a LINKER error. Check that all referenced symbols are defined and that the "
+        "needed libraries/dependencies and feature flags are declared in the build manifest "
+        "(Cargo.toml, CMakeLists.txt, package config) and linked."
     ),
     ErrorCategory.MANIFEST: (
         "This is a MANIFEST/CONFIG error. The project manifest (Cargo.toml, pyproject.toml, "
@@ -287,6 +289,20 @@ _CSHARP_ERROR_CODES: Dict[str, str] = {
 }
 
 
+# Tie-break priority (lower rank = wins a tie). Categories that block the build
+# outright and are more fundamental come first: a syntax/manifest failure that
+# also trips a downstream type/symbol indicator is the syntax/manifest error.
+# Mirrors the order categories are declared in ``_INDICATORS``.
+_TIE_BREAK_ORDER: List[str] = [cat for cat, _ in _INDICATORS]
+
+
+def _tie_break_rank(category: str) -> int:
+    try:
+        return _TIE_BREAK_ORDER.index(category)
+    except ValueError:
+        return len(_TIE_BREAK_ORDER)
+
+
 def classify_error(error_output: str) -> str:
     """Classify build/test error output into a category.
 
@@ -315,7 +331,10 @@ def classify_error(error_output: str) -> str:
     if not scores:
         return ErrorCategory.UNKNOWN
 
-    return max(scores, key=scores.get)
+    # Highest indicator count wins; ties resolve by an explicit priority (more
+    # fundamental, build-blocking categories first) rather than relying on the
+    # implicit dict-insertion order, so the result is stable across refactors.
+    return max(scores, key=lambda c: (scores[c], -_tie_break_rank(c)))
 
 
 def classify_and_guide(error_output: str) -> Tuple[str, str]:

@@ -3,6 +3,9 @@ from my_project_orchestrator.core.error_classifier import (
     classify_and_guide,
     format_classified_error,
     ErrorCategory,
+    FIX_GUIDANCE,
+    _tie_break_rank,
+    _TIE_BREAK_ORDER,
 )
 
 
@@ -181,3 +184,36 @@ def test_rust_error_code_takes_priority():
     # E0432 should win even though "cannot find" is also present
     error = "error[E0432]: unresolved import\ncannot find function"
     assert classify_error(error) == ErrorCategory.MISSING_IMPORT
+
+
+# --- tie-break determinism --------------------------------------------------
+
+
+def test_tie_breaks_to_more_fundamental_category():
+    # One syntax indicator and one test-assertion indicator both score 1; SYNTAX
+    # outranks TEST_ASSERTION in the explicit tie-break order, so it wins.
+    error = "unexpected token\nassertion failed"
+    assert _tie_break_rank(ErrorCategory.SYNTAX) < _tie_break_rank(
+        ErrorCategory.TEST_ASSERTION
+    )
+    assert classify_error(error) == ErrorCategory.SYNTAX
+
+
+def test_tie_break_is_deterministic_across_calls():
+    error = "unexpected token\nassertion failed"
+    assert {classify_error(error) for _ in range(50)} == {ErrorCategory.SYNTAX}
+
+
+def test_tie_break_rank_unknown_category_is_last():
+    assert _tie_break_rank("not_a_real_category") == len(_TIE_BREAK_ORDER)
+
+
+def test_link_error_guidance_is_language_neutral():
+    # The guidance must not be Rust-only; it should name more than Cargo.
+    guidance = FIX_GUIDANCE[ErrorCategory.LINK_ERROR]
+    assert "CMakeLists.txt" in guidance
+
+
+def test_every_indicator_category_has_guidance():
+    for category in _TIE_BREAK_ORDER + [ErrorCategory.UNKNOWN]:
+        assert FIX_GUIDANCE.get(category, "").strip()
