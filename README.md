@@ -71,8 +71,19 @@ reports done.
   the model in the task context so it knows they exist (awareness only —
   additive, the single-shot build loop is unchanged). Daemon-threaded with hard
   timeouts so a missing SDK, an unstartable server, or a hang is simply absent,
-  never a block or an error. Install with `.[mcp]`. The agentic loop that would
-  let the model call a tool mid-build is a documented future seam.
+  never a block or an error. Install with `.[mcp]`.
+- **Optional agentic MCP tool use** (`orchestrator.mcp_tool_use`,
+  `orchestrator.mcp_max_tool_rounds`): off by default and purely additive on top
+  of the substrate above. When on (and an MCP manager with discovered tools
+  exists), a BOUNDED pre-edit loop lets the model request MCP tool calls to
+  gather information before editing. Each round the model is shown the available
+  tools and may reply with one line `CALL <server>.<tool> {json-args}` (or
+  `NO_TOOL` to stop); the call runs through the timeout-guarded, never-raising
+  `MCPManager.call_tool`, and the result is prepended to the task context. The
+  loop is hard-capped by `mcp_max_tool_rounds` (default 3) and stops as soon as
+  the model requests no tool. Any failure (no tools, model error, unparseable
+  request, tool error) degrades to "gather nothing" — when the flag is off the
+  executor path is byte-identical to today.
 - **Optional mutation-score gate** (`orchestrator.mutation_gate`, `mutation`):
   runs the project's configured mutation-testing command (tool-agnostic — mutmut,
   cosmic-ray, cargo-mutants, Stryker, ...), parses a score, and RED-blocks (G3.6)

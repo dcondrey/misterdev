@@ -15,6 +15,7 @@ import pytest
 
 import my_project_orchestrator.core.mcp as mcp_mod
 from my_project_orchestrator.core.mcp import MCPManager, MCPTool
+from my_project_orchestrator.core.mcp_gather import _parse_call, gather_context
 
 # A minimal real MCP server: two tools, stdio transport, started as a subprocess
 # by the mcp SDK's stdio_client. Written to a temp file and run via the test
@@ -245,3 +246,197 @@ def test_project_mcp_built_from_config(tmp_path, server_path):
     assert proj.mcp is not None
     assert proj.mcp is proj.mcp  # cached
     assert {t.name for t in proj.mcp.tools} >= {"echo", "add"}
+
+
+# --- bounded agentic tool-gathering loop ------------------------------------
+
+
+class _ScriptedAsk:
+    """A fake LLM: returns the next scripted reply per call, recording prompts."""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.prompts = []
+        self.calls = 0
+
+    def __call__(self, prompt: str):
+        self.prompts.append(prompt)
+        self.calls += 1
+        if self.replies:
+            return self.replies.pop(0)
+        return "NO_TOOL"
+
+
+def test_parse_call_extracts_server_tool_and_args():
+    assert _parse_call('CALL tools.add {"a": 2, "b": 40}') == (
+        "tools",
+        "add",
+        {"a": 2, "b": 40},
+    )
+
+
+def test_parse_call_no_args_is_empty_dict():
+    assert _parse_call("CALL tools.echo") == ("tools", "echo", {})
+
+
+def test_parse_call_malformed_args_degrade_to_empty():
+    assert _parse_call("CALL tools.add {not json}") == ("tools", "add", {})
+
+
+def test_parse_call_none_when_no_call_line():
+    assert _parse_call("NO_TOOL") is None
+    assert _parse_call("I don't need a tool.") is None
+    assert _parse_call("") is None
+
+
+def test_gather_calls_tool_and_captures_result(server_path):
+    # Round 1: model requests add(2, 40); round 2: model says no tool needed.
+    mgr = MCPManager([_stdio_server(server_path)])
+    ask = _ScriptedAsk(['CALL tools.add {"a": 2, "b": 40}', "NO_TOOL"])
+    out = gather_context(mgr, ask, task_description="sum two numbers", max_rounds=3)
+    assert "42" in out  # the tool result is captured into the gathered context
+    assert "tools.add" in out
+    assert ask.calls == 2  # asked twice, then stopped on NO_TOOL
+    # The second prompt must carry the gathered result back to the model.
+    assert "42" in ask.prompts[1]
+
+
+def test_gather_is_bounded_by_max_rounds(server_path):
+    # A model that requests a tool every round must stop at max_rounds.
+    mgr = MCPManager([_stdio_server(server_path)])
+    ask = _ScriptedAsk(['CALL tools.add {"a": 1, "b": 1}'] * 100)
+    gather_context(mgr, ask, max_rounds=3)
+    assert ask.calls == 3  # never exceeds the cap
+
+
+def test_gather_stops_when_no_tool_first_round(server_path):
+    mgr = MCPManager([_stdio_server(server_path)])
+    ask = _ScriptedAsk(["NO_TOOL"])
+    out = gather_context(mgr, ask, max_rounds=3)
+    assert out == ""  # nothing gathered
+    assert ask.calls == 1
+
+
+def test_gather_empty_when_no_manager():
+    ask = _ScriptedAsk(['CALL tools.add {"a": 1}'])
+    assert gather_context(None, ask, max_rounds=3) == ""
+    assert ask.calls == 0  # never asked the model
+
+
+def test_gather_empty_when_no_tools_discovered():
+    class _EmptyMgr:
+        def describe_tools(self, cap: int = 25) -> str:
+            return ""
+
+    ask = _ScriptedAsk(['CALL tools.add {"a": 1}'])
+    assert gather_context(_EmptyMgr(), ask, max_rounds=3) == ""
+    assert ask.calls == 0
+
+
+def test_gather_zero_rounds_disables(server_path):
+    mgr = MCPManager([_stdio_server(server_path)])
+    ask = _ScriptedAsk(['CALL tools.add {"a": 1}'])
+    assert gather_context(mgr, ask, max_rounds=0) == ""
+    assert ask.calls == 0
+
+
+def test_gather_tool_error_does_not_raise(monkeypatch, server_path):
+    # A tool that errors (call_tool returns None) must not raise; the loop
+    # records a no-result marker and proceeds, then stops on the next NO_TOOL.
+    mgr = MCPManager([_stdio_server(server_path)])
+    monkeypatch.setattr(mgr, "call_tool", lambda *a, **k: None)
+    ask = _ScriptedAsk(['CALL tools.add {"a": 1}', "NO_TOOL"])
+    out = gather_context(mgr, ask, max_rounds=3)
+    assert "42" not in out  # no usable result; only a no-result marker
+    assert "no result" in out
+    assert ask.calls == 2
+
+
+def test_gather_model_error_does_not_raise(server_path):
+    mgr = MCPManager([_stdio_server(server_path)])
+
+    def _boom(prompt):
+        raise RuntimeError("model down")
+
+    assert gather_context(mgr, _boom, max_rounds=3) == ""
+
+
+def test_gather_unparseable_request_stops_cleanly(server_path):
+    mgr = MCPManager([_stdio_server(server_path)])
+    ask = _ScriptedAsk(["I will edit now, no tool."])
+    assert gather_context(mgr, ask, max_rounds=3) == ""
+    assert ask.calls == 1
+
+
+def test_gather_never_hangs(monkeypatch, server_path):
+    # The single tool call is bounded by call_tool's hard timeout; a hanging tool
+    # body is abandoned and the loop returns promptly with no result.
+    def _hang(server, name, arguments):
+        time.sleep(3600)
+
+    monkeypatch.setattr(mcp_mod, "_call_tool", _hang)
+    mgr = MCPManager([_stdio_server(server_path)], call_timeout=0.3)
+    ask = _ScriptedAsk(['CALL tools.add {"a": 1, "b": 1}', "NO_TOOL"])
+    start = time.monotonic()
+    out = gather_context(mgr, ask, max_rounds=2)
+    assert time.monotonic() - start < 10  # bounded, never hangs
+    assert "no result" in out  # the timed-out call left a no-result marker
+
+
+# --- executor wiring (flag gating + byte-identical off path) ----------------
+
+
+class _FakeLLMClient:
+    def __init__(self, replies):
+        self.ask = _ScriptedAsk(replies)
+
+    def generate_code(self, prompt, system_prompt=""):
+        return self.ask(prompt)
+
+
+class _GatherProject:
+    def __init__(self, *, tool_use, mcp, llm_replies=(), max_rounds=3):
+        self.config = {
+            "orchestrator": {
+                "mcp_tool_use": tool_use,
+                "mcp_max_tool_rounds": max_rounds,
+            }
+        }
+        self.mcp = mcp
+        self.llm_client = _FakeLLMClient(llm_replies)
+
+
+def _gather_task():
+    from my_project_orchestrator.core.models import Task
+
+    return Task(id="t1", description="sum two numbers", project_ref="p")
+
+
+def test_executor_gather_off_returns_empty_and_never_asks(server_path):
+    ex = _executor()
+    proj = _GatherProject(
+        tool_use=False,
+        mcp=MCPManager([_stdio_server(server_path)]),
+        llm_replies=['CALL tools.add {"a": 2, "b": 40}'],
+    )
+    assert ex._mcp_gather(proj, _gather_task()) == ""
+    assert proj.llm_client.ask.calls == 0  # flag off => loop not entered at all
+
+
+def test_executor_gather_on_invokes_tool_and_captures_result(server_path):
+    ex = _executor()
+    proj = _GatherProject(
+        tool_use=True,
+        mcp=MCPManager([_stdio_server(server_path)]),
+        llm_replies=['CALL tools.add {"a": 2, "b": 40}', "NO_TOOL"],
+    )
+    out = ex._mcp_gather(proj, _gather_task())
+    assert "42" in out
+    assert proj.llm_client.ask.calls == 2
+
+
+def test_executor_gather_no_manager_is_empty():
+    ex = _executor()
+    proj = _GatherProject(tool_use=True, mcp=None, llm_replies=["CALL x.y"])
+    assert ex._mcp_gather(proj, _gather_task()) == ""
+    assert proj.llm_client.ask.calls == 0

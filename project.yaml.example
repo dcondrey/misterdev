@@ -105,10 +105,20 @@ environment:
 # SDK, a server that won't start, or one that hangs is simply absent — never an
 # error or a hang. mcp_enabled gates only the awareness injection: when on, the
 # discovered tools are described to the model in the task context (additive; the
-# single-shot build loop is unchanged). The agentic loop that would let the model
-# call a tool mid-build is a separate, future phase.
+# single-shot build loop is unchanged).
+#
+# mcp_tool_use (off by default) layers a BOUNDED agentic pre-edit loop on top:
+# when on (and tools were discovered), the model may request MCP tool calls to
+# gather information BEFORE editing. Each round it sees the tools and may reply
+# with one line `CALL <server>.<tool> {json-args}` (or NO_TOOL to stop); the call
+# runs via the timeout-guarded call_tool and the result is prepended to the task
+# context. mcp_max_tool_rounds (default 3) hard-caps the loop. Additive: off =>
+# the edit path is byte-identical to today; any failure degrades to gathering
+# nothing.
 # orchestrator:
 #   mcp_enabled: true
+#   mcp_tool_use: true        # enable the bounded agentic gathering loop
+#   mcp_max_tool_rounds: 3    # hard cap on gathering rounds
 # mcp:
 #   servers:
 #     - name: "docs"                  # routing key for call_tool

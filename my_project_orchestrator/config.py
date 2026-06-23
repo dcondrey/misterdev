@@ -216,6 +216,19 @@ class OrchestratorSettings:
     # The substrate (connect/discover/call) is always available via project.mcp;
     # this flag gates only the awareness injection. Timeout-bounded throughout.
     mcp_enabled: bool = False
+    # Optional agentic MCP tool use: when on (and an MCP manager with discovered
+    # tools exists), a BOUNDED pre-edit loop lets the model request MCP tool
+    # calls to gather information; results are prepended to the task context and
+    # the existing edit-generation path runs unchanged. Off by default and purely
+    # additive — when off the executor path is byte-identical to today. Each round
+    # is timeout-bounded (the tool call goes through MCPManager.call_tool); the
+    # loop is hard-capped by ``mcp_max_tool_rounds``. Implies ``mcp_enabled`` for
+    # the awareness/registry, but the gathering loop is gated by this flag alone.
+    mcp_tool_use: bool = False
+    # Hard ceiling on the agentic gathering loop's rounds (see ``mcp_tool_use``).
+    # Each round is at most one model turn plus one tool call; the loop always
+    # stops at this count even if the model keeps requesting tools.
+    mcp_max_tool_rounds: int = 3
     # Optional governance layer: when on, a risk classifier gates risky commands
     # (destructive/irreversible/paid) at the command seam and an append-only
     # audit trail is written. Off by default and additive — when off the command

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from my_project_orchestrator.core.context_budget import ContextBudget
+from my_project_orchestrator.core.mcp_gather import gather_context
 from my_project_orchestrator.core.models import Task, ExecutionResult
 from my_project_orchestrator.core.project import Project
 from my_project_orchestrator.core.scratchpad import Scratchpad
@@ -624,6 +625,12 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         topo = getattr(project, "topography", None)
         project_outline = topo.get_project_outline() if topo is not None else ""
 
+        # Optional, off-by-default agentic pre-edit gathering: when enabled and
+        # an MCP manager with tools exists, the model may request bounded MCP
+        # tool calls to gather information. The result is prepended to the task
+        # context; off → "" and the path below is byte-identical to today.
+        mcp_gathered = self._mcp_gather(project, task)
+
         for attempt in range(max_retries):
             logger.info(f"Attempt {attempt + 1}/{max_retries} for task {task.id}")
             if pending_attempt is not None:
@@ -670,6 +677,8 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                     "\n\n## Project Structure (files and their symbols)\n"
                     + allocated["project_outline"]
                 )
+            if mcp_gathered:
+                full_code_context += mcp_gathered
             full_code_context += self._mcp_awareness(project)
 
             context_dict = {
@@ -1184,6 +1193,39 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             if p.get("type") == "markdown_planner":
                 return p.get("settings", {})
         return {}
+
+    def _mcp_gather(self, project: Project, task: Task) -> str:
+        """Run the bounded agentic MCP gathering loop, or "" when off.
+
+        Additive and behind ``orchestrator.mcp_tool_use`` (off by default): when
+        the flag is off, no MCP manager is configured, or discovery found no
+        tools, this returns "" so the task context — and the entire edit path —
+        is byte-for-byte unchanged from the no-MCP build. When on, the model may
+        request up to ``orchestrator.mcp_max_tool_rounds`` bounded MCP tool calls
+        (each via the timeout-guarded, never-raising ``MCPManager.call_tool``)
+        whose results are gathered into a context block. Never raises into the
+        build; any failure degrades to whatever was gathered so far.
+        """
+        if not get_setting(project.config, "orchestrator", "mcp_tool_use"):
+            return ""
+        mcp = getattr(project, "mcp", None)
+        if mcp is None:
+            return ""
+        max_rounds = get_setting(project.config, "orchestrator", "mcp_max_tool_rounds")
+
+        def _ask(prompt: str) -> Optional[str]:
+            return project.llm_client.generate_code(prompt, "")
+
+        try:
+            return gather_context(
+                mcp,
+                _ask,
+                task_description=task.description,
+                max_rounds=max_rounds,
+            )
+        except Exception as e:  # gathering is best-effort; never sink the build
+            logger.warning(f"MCP tool-gathering skipped (error: {e}).")
+            return ""
 
     def _mcp_awareness(self, project: Project) -> str:
         """Render the available-MCP-tools section, or "" when off / no tools.
