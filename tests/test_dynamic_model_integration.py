@@ -29,6 +29,11 @@ class StubLLMClient:
     def task_cost(self, task_id):
         return self._cost.get(task_id, 0.0)
 
+    def generate(self, prompt, system_prompt=""):
+        from my_project_orchestrator.llm.client import LLMResponse
+
+        return LLMResponse(content=self.generate_code(prompt, system_prompt))
+
     def generate_code(self, prompt, system_prompt):
         self.calls += 1
         return "FRESH OUTPUT"
@@ -54,6 +59,11 @@ class RoutingStubClient:
             yield
         finally:
             self.model = prev
+
+    def generate(self, prompt, system_prompt=""):
+        from my_project_orchestrator.llm.client import LLMResponse
+
+        return LLMResponse(content=self.generate_code(prompt, system_prompt))
 
     def generate_code(self, prompt, system_prompt):
         self.calls.append(self.model)

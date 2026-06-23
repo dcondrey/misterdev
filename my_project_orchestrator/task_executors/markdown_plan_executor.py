@@ -179,6 +179,17 @@ def _bisect_first_failing(n: int, passes_at) -> int:
     return lo
 
 
+# finish_reason values that mean the model hit its output-token limit and the
+# response is incomplete. Anthropic reports "max_tokens"; OpenAI-compatible
+# providers report "length". Compared case-insensitively.
+_TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+
+def _is_truncated(finish_reason: Optional[str]) -> bool:
+    """True when ``finish_reason`` indicates the model ran out of output tokens."""
+    return bool(finish_reason) and finish_reason.lower() in _TRUNCATED_FINISH_REASONS
+
+
 def _detect_language(file_path: str) -> str:
     """Detect a source language from a file path's extension.
 
@@ -1370,7 +1381,48 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                 prompt, system_prompt, abort_check=code_gen_abort_check
             )
             return resp.content, resp.finish_reason == "aborted"
-        return project.llm_client.generate_code(prompt, system_prompt), False
+        return self._invoke_with_continuation(project, prompt, system_prompt), False
+
+    def _invoke_with_continuation(
+        self, project: Project, prompt: str, system_prompt: str
+    ) -> str:
+        """Plain-path generation that recovers a truncated response.
+
+        Uses ``generate()`` (which exposes ``finish_reason``) instead of
+        ``generate_code()``. When the response finishes normally this returns
+        ``.content`` exactly as ``generate_code`` would, so the no-truncation
+        path is byte-identical to before. When the model cuts the response off
+        at its output-token limit, it issues up to ``orchestrator.max_continuations``
+        bounded follow-up calls — each through the same client, so budget/usage
+        tracking is never bypassed — asking the model to continue where it
+        stopped, and concatenates the raw text before the edit parser sees it.
+        The loop always halts: it stops on a normal finish_reason or at the cap.
+        """
+        resp = project.llm_client.generate(prompt, system_prompt)
+        if not _is_truncated(resp.finish_reason):
+            return resp.content
+
+        max_continuations = get_setting(
+            project.config, "orchestrator", "max_continuations"
+        )
+        parts = [resp.content]
+        for _ in range(max(0, max_continuations)):
+            logger.info(
+                "Model response truncated (finish_reason="
+                f"{resp.finish_reason!r}); requesting continuation."
+            )
+            cont_prompt = (
+                f"{prompt}\n\n## Continuation\n"
+                "Your previous output was cut off. Here is what you produced so "
+                "far:\n\n" + "".join(parts) + "\n\nContinue the previous output "
+                "exactly where it stopped. Do not repeat any earlier text and do "
+                "not re-open code fences; emit only the remaining characters."
+            )
+            resp = project.llm_client.generate(cont_prompt, system_prompt)
+            parts.append(resp.content)
+            if not _is_truncated(resp.finish_reason):
+                break
+        return "".join(parts)
 
     def _cache_store(self, project, system_prompt, prompt, output, model) -> None:
         """Memoize a gate-passing output (no-op when caching is disabled)."""

@@ -238,6 +238,16 @@ class OrchestratorSettings:
     # build/test/lint commands classify as SAFE and always run. The policy spec
     # lives under the top-level ``governance`` key.
     governance: bool = False
+    # Bounded continuation-on-truncation for the plain text-generation path.
+    # When the model cuts a response off at its output-token limit (finish_reason
+    # "length"/"max_tokens") — which truncates a large NEW file's full content and
+    # fails the edit gate — issue up to this many follow-up calls asking the model
+    # to continue exactly where it stopped, concatenating the text before parsing.
+    # Activates ONLY on a truncated response, so when a response finishes normally
+    # the path is byte-identical to before. 0 disables it (never continues).
+    # Default 2: a pure-win correctness fix that costs nothing on untruncated
+    # responses and recovers files up to ~3x the single-shot output cap.
+    max_continuations: int = 2
 
 
 PROMPT_TEMPLATES = {

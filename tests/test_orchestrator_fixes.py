@@ -1762,6 +1762,13 @@ class _ScriptedLLM:
         self._budget = 100.0
         self.calls = []
 
+    def generate(self, prompt, system_prompt=""):
+        from my_project_orchestrator.llm.client import LLMResponse
+
+        return LLMResponse(
+            content=self.generate_code(prompt, system_prompt), finish_reason="stop"
+        )
+
     def generate_code(self, prompt, system_prompt=""):
         self.calls.append(prompt[:60])
         p = prompt

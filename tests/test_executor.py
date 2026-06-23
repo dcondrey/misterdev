@@ -177,8 +177,13 @@ class _FakeLLMClient:
     def track_task(self, task_id):
         yield
 
+    def generate(self, prompt, system_prompt=""):
+        from my_project_orchestrator.llm.client import LLMResponse
+
+        return LLMResponse(content=self._response, finish_reason="stop")
+
     def generate_code(self, prompt, system_prompt=""):
-        return self._response
+        return self.generate(prompt, system_prompt).content
 
 
 class _FakeTaskManager:
@@ -948,12 +953,123 @@ def test_golden_context_file_concealed_from_prompt():
         captured = {}
 
         def _cap(prompt, system_prompt=""):
-            captured["text"] = (prompt or "") + (system_prompt or "")
-            return "no code blocks here"
+            from my_project_orchestrator.llm.client import LLMResponse
 
-        proj.llm_client.generate_code = _cap
+            captured["text"] = (prompt or "") + (system_prompt or "")
+            return LLMResponse(content="no code blocks here", finish_reason="stop")
+
+        proj.llm_client.generate = _cap
         task = _make_task()
         task.context_files = ["tests/golden/secret.py"]
         task.processor_data["strategy"] = "surgical"
         MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
         assert "GOLDEN_SECRET_TOKEN" not in captured.get("text", "")
+
+
+# ----------------------------------------------------------------
+# Bounded continuation-on-truncation (plain generate path)
+# ----------------------------------------------------------------
+
+
+class _ScriptedLLMClient:
+    """Returns a scripted sequence of (content, finish_reason) per generate()."""
+
+    def __init__(self, script):
+        self._script = list(script)
+        self.calls = 0
+
+    @contextmanager
+    def track_task(self, task_id):
+        yield
+
+    def generate(self, prompt, system_prompt=""):
+        from my_project_orchestrator.llm.client import LLMResponse
+
+        self.calls += 1
+        content, finish = self._script[min(self.calls - 1, len(self._script) - 1)]
+        return LLMResponse(content=content, finish_reason=finish)
+
+    def generate_code(self, prompt, system_prompt=""):
+        return self.generate(prompt, system_prompt).content
+
+
+def _scripted_project(td, script, config_extra=None):
+    proj = _FakeProject(td, "", config_extra)
+    proj.llm_client = _ScriptedLLMClient(script)
+    return proj
+
+
+def test_truncated_response_continues_and_parses():
+    # First call truncates mid-fence ("length"); the continuation finishes the
+    # block ("stop"). The executor concatenates and the full edit applies.
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        head = "```python:new_mod.py\ndef alpha():\n    return 1\n"
+        tail = "\ndef beta():\n    return 2\n```\n"
+        proj = _scripted_project(td, [(head, "length"), (tail, "stop")])
+        task = _make_task()
+        task.processor_data["strategy"] = "surgical"
+        task.processor_data["test_command"] = "true"
+        task.files_to_create = ["new_mod.py"]
+        result = MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
+
+        assert result.status == "completed"
+        assert proj.llm_client.calls == 2
+        written = (td / "new_mod.py").read_text()
+        assert "def alpha():" in written
+        assert "def beta():" in written
+
+
+def test_untruncated_response_makes_exactly_one_call():
+    # A normal "stop" response must not trigger any continuation: exactly one
+    # model call, and the returned text is the response verbatim.
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        proj = _scripted_project(td, [("This works. Implemented and done.", "stop")])
+        e = MarkdownPlanExecutor()
+        text, aborted = e._invoke_llm(proj, "p", "s")
+        assert proj.llm_client.calls == 1
+        assert text == "This works. Implemented and done."
+        assert aborted is False
+
+
+def test_max_continuations_zero_never_continues():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        proj = _scripted_project(
+            td,
+            [("partial", "length"), ("more", "stop")],
+            config_extra={"orchestrator": {"max_continuations": 0}},
+        )
+        e = MarkdownPlanExecutor()
+        text, _ = e._invoke_llm(proj, "p", "s")
+        assert proj.llm_client.calls == 1
+        assert text == "partial"
+
+
+def test_continuation_is_bounded_by_cap():
+    # A client that always truncates must stop after 1 + max_continuations calls.
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        proj = _scripted_project(
+            td,
+            [("x", "length")],
+            config_extra={"orchestrator": {"max_continuations": 3}},
+        )
+        e = MarkdownPlanExecutor()
+        text, _ = e._invoke_llm(proj, "p", "s")
+        assert proj.llm_client.calls == 1 + 3
+        assert text == "xxxx"
+
+
+def test_is_truncated_helper():
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        _is_truncated,
+    )
+
+    assert _is_truncated("length")
+    assert _is_truncated("max_tokens")
+    assert _is_truncated("MAX_TOKENS")
+    assert not _is_truncated("stop")
+    assert not _is_truncated("")
+    assert not _is_truncated(None)
