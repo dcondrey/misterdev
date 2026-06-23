@@ -49,6 +49,10 @@ class BuildReport:
         # probes). Surfaced in the report so a silently-dead subsystem is
         # visible to the morning reader, not just buried in a log.
         self.degraded_subsystems: list[str] = []
+        # Unmet-goal gaps from the optional goal-completion check (advisory: the
+        # gates can be green while the goal is not fully met). Empty unless the
+        # check ran and returned a GAP verdict.
+        self.goal_gaps: list[str] = []
 
     def finalize(self, end_time: Optional[datetime] = None):
         self.end_time = end_time or datetime.now(timezone.utc)
@@ -68,6 +72,7 @@ class BuildReport:
             "llm_tokens": self.llm_tokens,
             "llm_cost": self.llm_cost,
             "degraded_subsystems": list(self.degraded_subsystems),
+            "goal_gaps": list(self.goal_gaps),
         }
 
     def save(self, project_path: Path) -> Optional[Path]:
@@ -151,6 +156,13 @@ class BuildReport:
             lines.append(f"\n**Degraded subsystems** (ran WITHOUT: {names}):")
             for d in self.degraded_subsystems:
                 lines.append(f"- {d}")
+        if self.goal_gaps:
+            lines.append(
+                "\n**Goal gaps** (advisory: gates passed but the goal may not be "
+                "fully met):"
+            )
+            for gap in self.goal_gaps:
+                lines.append(f"- {gap}")
         lines.append("")
         return lines
 

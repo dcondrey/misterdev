@@ -174,6 +174,15 @@ class OrchestratorSettings:
     vision_verify: bool = False
     verify_acceptance: bool = True
     llm_acceptance_judge: bool = True
+    # Optional goal-completion check: when on, an LLM judge reads the goal,
+    # acceptance criteria, and the build's cumulative diff and reports whether the
+    # work actually satisfies the goal (gates green != goal met). Off by default.
+    # ADVISORY: it records gaps into the report and logs them but does NOT fail
+    # the build, unless block_on_goal_gap is also true. Timeout-bounded; no
+    # goal/criteria/client, an unparseable verdict, or a judge error is a SKIP.
+    goal_check: bool = False
+    block_on_goal_gap: bool = False
+    goal_check_timeout: int = 60
     # Golden suite: files the model never sees and may never edit, plus a
     # blocking-gate command. Empty/None = feature off.
     golden_paths: List[str] = field(default_factory=list)

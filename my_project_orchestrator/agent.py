@@ -599,6 +599,11 @@ class ProjectOrchestrator:
         task executes.
         """
         _check_golden_config(project.config)
+        # Record the pre-build HEAD so the optional goal-completion check can diff
+        # the whole build's work (committed task commits + working tree) against
+        # it. Best-effort: None outside a git repo or on error, which the check
+        # treats as "no diff" and degrades to a summary-only judgment.
+        goal_check_base = self._capture_head(project)
         # Sovereign Phase 1.5: Empirical Probes (only for SMART/CREATE modes).
         # Best-effort: probe discovery must never crash the build, so any
         # failure here degrades to no verified facts rather than aborting.
@@ -793,6 +798,15 @@ class ProjectOrchestrator:
                 )
                 break
 
+        # Optional goal-completion check (off by default). Runs AFTER the gate
+        # loop has settled: an LLM judge reads the goal, acceptance criteria, and
+        # the cumulative diff and reports whether the goal is actually met (gates
+        # green != goal met). Advisory by default — gaps are recorded and logged
+        # but do not fail the build; it blocks only when block_on_goal_gap is set.
+        # Timeout-bounded and best-effort, so it can never hang or crash a build.
+        if get_setting(project.config, "orchestrator", "goal_check"):
+            self._run_goal_check(project, prompt, tasks, goal_check_base, report)
+
         # Phase 6: Metacognitive Audit (best-effort; never fail a finished build)
         report.finalize()
         try:
@@ -812,6 +826,112 @@ class ProjectOrchestrator:
 
         report.save(project.path)
         return report.to_markdown()
+
+    def _capture_head(self, project: Project) -> Optional[str]:
+        """Best-effort current HEAD sha, or None outside a git repo / on error."""
+        if not (project.path / ".git").exists():
+            return None
+        try:
+            proc = subprocess.run(
+                "git rev-parse HEAD",
+                shell=True,
+                cwd=project.path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception:
+            return None
+        sha = proc.stdout.strip()
+        return sha if proc.returncode == 0 and sha else None
+
+    def _cumulative_diff(self, project: Project, base: Optional[str]) -> str:
+        """Diff of the whole build's work for the goal-check judge.
+
+        When a pre-build base sha is known, diff ``base`` against the working
+        tree (committed task commits + uncommitted changes). Otherwise fall back
+        to the working-tree diff vs HEAD. Best-effort: returns "" on any error or
+        outside a git repo, which the judge treats as no diff.
+        """
+        if not (project.path / ".git").exists():
+            return ""
+        cmd = f"git diff {base}" if base else "git diff HEAD"
+        try:
+            proc = subprocess.run(
+                cmd,
+                shell=True,
+                cwd=project.path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception:
+            return ""
+        return proc.stdout if proc.returncode == 0 else ""
+
+    def _run_goal_check(
+        self,
+        project: Project,
+        prompt: str,
+        tasks: list,
+        base: Optional[str],
+        report: BuildReport,
+    ) -> None:
+        """Run the optional goal-completion check and record its verdict.
+
+        Advisory by default: a GAP verdict records gaps into the report and logs
+        them but does NOT fail the build. It blocks (marks validation failed and
+        appends a blocking issue) only when ``orchestrator.block_on_goal_gap`` is
+        true. SKIP (no goal/criteria/client, unparseable, timeout, error) is a
+        no-op. Wrapped so a judge failure can never crash a finished build.
+        """
+        from my_project_orchestrator.core.goal_check import (
+            GAP,
+            build_evidence,
+            run_goal_check,
+        )
+
+        try:
+            criteria = "\n".join(
+                f"- {t.acceptance_criteria}"
+                for t in tasks
+                if getattr(t, "acceptance_criteria", "")
+            )
+            diff = self._cumulative_diff(project, base)
+            summary = "; ".join(
+                t.title or t.description[:60] for t in report.completed_tasks
+            )
+            evidence = build_evidence(diff=diff, summary=summary)
+            timeout = get_setting(project.config, "orchestrator", "goal_check_timeout")
+            verdict = run_goal_check(
+                prompt,
+                criteria,
+                evidence,
+                llm_client=project.llm_client,
+                timeout=timeout,
+            )
+        except Exception as e:
+            logger.warning(f"Goal-completion check failed (non-fatal): {e}")
+            report.degraded_subsystems.append(f"Goal-completion check: {e}")
+            return
+
+        if verdict.status != GAP:
+            logger.info(f"Goal-completion check: {verdict.status} ({verdict.reason})")
+            return
+
+        report.goal_gaps = list(verdict.gaps)
+        logger.warning(f"Goal-completion check found {len(verdict.gaps)} gap(s):")
+        for gap in verdict.gaps:
+            logger.warning(f"  goal gap: {gap}")
+
+        if get_setting(project.config, "orchestrator", "block_on_goal_gap"):
+            report.validation_passed = False
+            self.last_build_succeeded = False
+            issue = "Goal-completion check: " + "; ".join(verdict.gaps)
+            if report.validation is not None:
+                report.validation.issues.append(issue)
+            else:
+                report.key_decisions.append(issue)
 
     def _build_fix_spec(
         self,
