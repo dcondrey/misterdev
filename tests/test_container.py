@@ -86,6 +86,55 @@ def test_wrap_command_mounts_repo_and_sets_user(monkeypatch):
     assert argv[-1] == "pytest -q"
 
 
+def test_wrap_command_no_network_when_egress_none(monkeypatch):
+    monkeypatch.setattr(container.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(container.os, "getgid", lambda: 20, raising=False)
+    eng = ContainerEngine("docker", "img", Path("/repo"), network="none")
+    argv = eng.wrap_command("pytest -q", timeout=60)
+    assert "--network" in argv
+    assert argv[argv.index("--network") + 1] == "none"
+
+
+def test_wrap_command_omits_network_flag_by_default(monkeypatch):
+    monkeypatch.setattr(container.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(container.os, "getgid", lambda: 20, raising=False)
+    # default (network=None) and explicit "default" both leave the engine default
+    for net in (None, "default"):
+        eng = ContainerEngine("docker", "img", Path("/repo"), network=net)
+        assert "--network" not in eng.wrap_command("pytest -q", timeout=60)
+
+
+def test_env_manager_passes_network_to_engine(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "my_project_orchestrator.environments.container_env.detect_engine",
+        lambda preferred=None: "docker",
+    )
+    mgr = ContainerEnvironmentManager(
+        {"type": "docker"}, tmp_path, language="python", network="none"
+    )
+    mgr.setup()
+    assert mgr.engine().network == "none"
+
+
+def test_project_wires_governance_network(tmp_path, monkeypatch):
+    from my_project_orchestrator.core import project as project_mod
+
+    monkeypatch.setattr(
+        "my_project_orchestrator.environments.container_env.detect_engine",
+        lambda preferred=None: "docker",
+    )
+    monkeypatch.setattr(project_mod.Project, "_init_llm_client", lambda self: None)
+
+    on = project_mod.Project(
+        tmp_path,
+        {"environment": {"type": "docker"}, "governance": {"network": "none"}},
+    )
+    assert on.env_manager.network == "none"
+
+    off = project_mod.Project(tmp_path, {"environment": {"type": "docker"}})
+    assert off.env_manager.network is None
+
+
 def test_engine_run_returns_ok_and_output(monkeypatch):
     class P:
         returncode = 0

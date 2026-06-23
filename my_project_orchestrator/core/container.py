@@ -119,11 +119,17 @@ class ContainerEngine:
         image: str,
         host_path: Path,
         mount_path: str = "/workspace",
+        network: Optional[str] = None,
     ):
         self.engine = engine
         self.image = image
         self.host_path = Path(host_path).resolve()
         self.mount_path = mount_path
+        # Egress control: "none" runs the container with no network (governance.
+        # network); any other value (or None) leaves the engine default, so the
+        # off path is byte-identical to before. This constrains CONTAINERIZED
+        # execution only — host execution and git stay on the host network.
+        self.network = network
 
     def is_available(self) -> bool:
         return bool(self.engine)
@@ -154,6 +160,8 @@ class ContainerEngine:
             "-w",
             self.mount_path,
         ]
+        if self.network == "none":
+            argv.extend(["--network", "none"])
         argv.extend(self._user_args())
         argv.extend([self.image, "sh", "-c", command])
         return argv

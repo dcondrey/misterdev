@@ -26,12 +26,21 @@ logger = setup_logger(__name__)
 
 
 class ContainerEnvironmentManager(BaseEnvironmentManager):
-    def __init__(self, config: dict, project_path: str | Path, language: str = ""):
+    def __init__(
+        self,
+        config: dict,
+        project_path: str | Path,
+        language: str = "",
+        network: Optional[str] = None,
+    ):
         super().__init__(config, project_path)
         self.language = language or config.get("language", "")
         self.image = config.get("image") or image_for_language(self.language)
         self.preferred_engine = config.get("engine")
         self.mount_path = config.get("mount_path", "/workspace")
+        # Container egress control from governance.network ("none" disables the
+        # container network). None leaves the engine default unchanged.
+        self.network = network
         self._engine: Optional[ContainerEngine] = None
 
     def setup(self) -> bool:
@@ -52,6 +61,7 @@ class ContainerEnvironmentManager(BaseEnvironmentManager):
             self.image,
             self.project_path,
             self.mount_path,
+            network=self.network,
         )
         return True
 

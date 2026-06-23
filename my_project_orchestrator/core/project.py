@@ -181,7 +181,12 @@ class Project:
                 ContainerEnvironmentManager,
             )
 
+            gov = self.config.get("governance") or {}
+            network = gov.get("network") if gov.get("network") == "none" else None
             return ContainerEnvironmentManager(
-                env_config, self.path, language=self.config.get("language", "")
+                env_config,
+                self.path,
+                language=self.config.get("language", ""),
+                network=network,
             )
         return None
