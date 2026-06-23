@@ -98,6 +98,24 @@ environment:
 #     model: "anthropic/claude-sonnet-4.6"  # optional vision-capable model id
 #     timeout: 60
 
+# MCP (Model Context Protocol) tool-host substrate (opt-in, off by default).
+# Requires the [mcp] extra (`pip install -e '.[mcp]'`). Connects to the stdio
+# servers below, discovers their tools (project.mcp.tools), and can call one
+# (project.mcp.call_tool). Daemon thread + hard timeout throughout; a missing
+# SDK, a server that won't start, or one that hangs is simply absent — never an
+# error or a hang. mcp_enabled gates only the awareness injection: when on, the
+# discovered tools are described to the model in the task context (additive; the
+# single-shot build loop is unchanged). The agentic loop that would let the model
+# call a tool mid-build is a separate, future phase.
+# orchestrator:
+#   mcp_enabled: true
+# mcp:
+#   servers:
+#     - name: "docs"                  # routing key for call_tool
+#       command: "my-mcp-server"      # executable launched as a stdio subprocess
+#       args: ["--root", "."]         # optional
+#       transport: "stdio"            # only stdio is supported today
+
 # Build workflow settings (6-phase autonomous builder)
 build:
   max_tasks: 30

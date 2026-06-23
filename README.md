@@ -62,6 +62,15 @@ reports done.
   satisfies a stated visual requirement (`assert`), affirm→GREEN / deny→RED.
   Daemon-threaded with a hard timeout; no config / no model / no network is a
   SKIP. Uses the project's LLM client.
+- **Optional MCP tool-host substrate** (`orchestrator.mcp_enabled`,
+  `mcp.servers`): connects to configured MCP (Model Context Protocol) servers
+  over stdio, discovers their tools (`project.mcp.tools`), and can call one
+  (`project.mcp.call_tool`). When enabled, the discovered tools are described to
+  the model in the task context so it knows they exist (awareness only —
+  additive, the single-shot build loop is unchanged). Daemon-threaded with hard
+  timeouts so a missing SDK, an unstartable server, or a hang is simply absent,
+  never a block or an error. Install with `.[mcp]`. The agentic loop that would
+  let the model call a tool mid-build is a documented future seam.
 - **Regression safety:** branch-per-task, integration gate per wave with
   `git bisect`-style revert of the culprit, test-tamper detection, dirty-tree
   guard.
@@ -85,6 +94,7 @@ uv pip install -e .                      # core
 uv pip install -e '.[local-embeddings]'  # + offline embeddings (optional)
 uv pip install -e '.[lsp]'               # + LSP semantic gate (optional)
 uv pip install -e '.[web]' && playwright install chromium  # + web verify gate
+uv pip install -e '.[mcp]'               # + MCP tool-host substrate (optional)
 ```
 
 ### Configure — `project.yaml` in the repo root
@@ -118,7 +128,8 @@ project-orchestrator                                  # interactive planning
 - **`core/`** — state machine, models, decomposition, gates, topography (symbol
   graph + syntax gate), embeddings, optional LSP gate, container substrate
   (`container.py`), runtime smoke gate (`runtime.py`), web verification gate
-  (`web_verify.py`), vision verification gate (`vision_verify.py`).
+  (`web_verify.py`), vision verification gate (`vision_verify.py`), MCP
+  tool-host substrate (`mcp.py`).
 - **`llm/`** — provider clients, failover, token budgeting, SEARCH/REPLACE
   response parsing.
 - **`task_executors/`** — the try-test-fix inner loop and edit application.
