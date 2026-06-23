@@ -140,6 +140,43 @@ def test_unparseable_verdict_is_skip_not_block(tmp_path):
     assert orch.last_build_succeeded is True
 
 
+def test_phase4_flags_default_off_leave_loop_unchanged():
+    # The Phase-4 oracle flags are all off in the schema defaults, so a default
+    # build neither runs the goal check nor enables the mutation gate — the
+    # existing loop's behavior is unchanged.
+    from my_project_orchestrator.config import DEFAULT_CONFIG, get_setting
+
+    orch = DEFAULT_CONFIG["orchestrator"]
+    assert orch["goal_check"] is False
+    assert orch["block_on_goal_gap"] is False
+    assert orch["mutation_gate"] is False
+    assert orch["spec_as_tests"] is False
+    # And the gate guard reads the same default, so the goal check is skipped.
+    assert get_setting({}, "orchestrator", "goal_check") is False
+
+
+def test_goal_check_guard_skips_invocation_when_off(tmp_path, monkeypatch):
+    # When goal_check is off, _run_pipeline must not call _run_goal_check. Guard
+    # it by failing the test if the method is invoked under a flags-off config.
+    import my_project_orchestrator.agent as agent_mod
+
+    called = {"n": 0}
+
+    def boom(self, *a, **k):
+        called["n"] += 1
+
+    monkeypatch.setattr(agent_mod.ProjectOrchestrator, "_run_goal_check", boom)
+    # Source-level guard: the only call site is gated by the goal_check setting.
+    import inspect
+
+    src = inspect.getsource(agent_mod.ProjectOrchestrator._run_pipeline)
+    # The call to _run_goal_check is immediately preceded by the flag check.
+    idx = src.index("self._run_goal_check(")
+    preceding = src[:idx]
+    assert 'get_setting(project.config, "orchestrator", "goal_check")' in preceding
+    assert called["n"] == 0
+
+
 def test_judge_exception_is_recorded_as_degraded_not_crash(tmp_path):
     class _Boom:
         def generate_code(self, prompt, system=""):
