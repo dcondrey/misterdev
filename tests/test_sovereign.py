@@ -2,11 +2,74 @@ import tempfile
 from pathlib import Path
 
 from my_project_orchestrator.core.sovereign import (
+    ABMCTSPlanner,
     EphemeralCodeManager,
+    ProbeGenerator,
     RealTimeAligner,
     StrategyOptimizer,
+    ToolSynthesizer,
     _extract_code_block,
 )
+
+
+class _FakeLLM:
+    def __init__(self, responses=None, raises=False):
+        self.responses = list(responses or [])
+        self.raises = raises
+        self.calls = 0
+
+    def generate_code(self, prompt, system_prompt=""):
+        self.calls += 1
+        if self.raises:
+            raise RuntimeError("llm down")
+        return self.responses.pop(0) if self.responses else "x"
+
+
+def test_abmcts_skips_branching_for_short_spec():
+    llm = _FakeLLM()
+    planner = ABMCTSPlanner(llm)
+    out = planner.branch_and_evaluate("short task", "ctx")
+    assert out == "short task" and llm.calls == 0  # no LLM calls
+
+
+def test_abmcts_branches_and_selects_for_long_spec():
+    long_task = "word " * 60
+    llm = _FakeLLM(responses=["path A", "path B", "path C", "WINNER"])
+    out = ABMCTSPlanner(llm).branch_and_evaluate(long_task, "ctx", branches=3)
+    assert out == "WINNER"
+    assert llm.calls == 4  # 3 branches + 1 evaluation
+
+
+def test_probe_generator_parses_and_handles_failure():
+    llm = _FakeLLM(responses=['[{"name": "p", "purpose": "x", "script": "print(1)"}]'])
+    probes = ProbeGenerator(llm).generate_probes("spec", "summary")
+    assert len(probes) == 1 and probes[0]["name"] == "p"
+    # LLM failure -> empty list, never raises
+    assert ProbeGenerator(_FakeLLM(raises=True)).generate_probes("s", "a") == []
+
+
+def test_tool_synthesizer_writes_tool_file():
+    with tempfile.TemporaryDirectory() as td:
+        llm = _FakeLLM(responses=["```python\nprint('tool')\n```"])
+        path = ToolSynthesizer(Path(td)).synthesize_tool("My Tool", "do stuff", llm)
+        assert Path(path).exists()
+        assert "print('tool')" in Path(path).read_text()
+
+
+def test_strategy_optimizer_selects_then_caches():
+    llm = _FakeLLM(responses=["surgical"])
+    opt = StrategyOptimizer()
+    first = opt.select_best_strategy("desc", "feature", "proj", llm)
+    assert first == "surgical" and llm.calls == 1
+    # second call for same category is served from cache (no new LLM call)
+    second = opt.select_best_strategy("desc2", "feature", "proj", llm)
+    assert second == "surgical" and llm.calls == 1
+
+
+def test_strategy_optimizer_invalid_falls_back_to_iterative():
+    llm = _FakeLLM(responses=["nonsense-strategy"])
+    out = StrategyOptimizer().select_best_strategy("d", "bugfix", "p", llm)
+    assert out == "iterative"
 
 
 def test_ephemeral_runs_script():
