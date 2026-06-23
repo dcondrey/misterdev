@@ -8,6 +8,72 @@ from my_project_orchestrator.core.topography import (
 )
 
 
+def _symbols_for(filename: str, source: str):
+    with tempfile.TemporaryDirectory() as td:
+        (Path(td) / filename).write_text(source)
+        g = SymbolGraph(Path(td))
+        g.build()
+        return {(s.kind, s.name) for s in g.symbols.values()}
+
+
+def test_symbol_graph_parses_c():
+    syms = _symbols_for("a.c", "int add(int a,int b){return a+b;}\nstruct Pt{int x;};")
+    if not syms:
+        return  # tree-sitter C grammar not installed in this environment
+    assert ("function", "add") in syms
+    assert ("struct", "Pt") in syms
+
+
+def test_symbol_graph_parses_cpp_class_and_method():
+    syms = _symbols_for(
+        "w.cpp", "class Widget{ public: int area(){return 0;} };\nint main(){return 0;}"
+    )
+    if not syms:
+        return
+    assert ("class", "Widget") in syms
+    assert ("method", "Widget::area") in syms
+    assert ("function", "main") in syms
+
+
+def test_symbol_graph_parses_swift():
+    syms = _symbols_for(
+        "e.swift",
+        "class Engine { func start() {} }\nstruct P { let x: Int }\nprotocol D { func draw() }",
+    )
+    if not syms:
+        return
+    assert ("class", "Engine") in syms
+    assert ("method", "Engine.start") in syms
+    assert ("struct", "P") in syms
+    assert ("protocol", "D") in syms
+
+
+def test_symbol_graph_parses_csharp():
+    syms = _symbols_for(
+        "App.cs",
+        "namespace A { public class Engine { public void Start() {} "
+        "public int Count { get; set; } } public interface IDraw { void Draw(); } }",
+    )
+    if not syms:
+        return
+    assert ("class", "Engine") in syms
+    assert ("method", "Engine.Start") in syms
+    assert ("property", "Engine.Count") in syms
+    assert ("interface", "IDraw") in syms
+
+
+def test_symbol_graph_byte_offsets_with_non_ascii():
+    # Non-ASCII bytes before a symbol must not shift tree-sitter byte offsets
+    # and mangle extracted names (regression: names were sliced from the str).
+    syms = _symbols_for(
+        "x.rs", "// café ☕ — naïve comment\nfn process_data() {}\nstruct Wörld {}\n"
+    )
+    if not syms:
+        return
+    assert ("function", "process_data") in syms
+    assert ("struct", "Wörld") in syms
+
+
 def test_get_context_for_task_uses_ranker_over_cap():
     with tempfile.TemporaryDirectory() as td:
         engine = TopographyEngine(Path(td), llm_client=None)

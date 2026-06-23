@@ -53,6 +53,67 @@ def test_classify_unknown():
     assert classify_error(error) == ErrorCategory.UNKNOWN
 
 
+# --- swift / C / C++ compiler errors ---------------------------------------
+
+
+def test_classify_swift_missing_module():
+    error = "error: no such module 'EmathyCore'\nimport EmathyCore"
+    assert classify_error(error) == ErrorCategory.MISSING_IMPORT
+
+
+def test_classify_swift_wrong_type():
+    error = "error: cannot convert value of type 'Int' to expected argument type 'String'"
+    assert classify_error(error) == ErrorCategory.WRONG_TYPE
+
+
+def test_classify_swift_missing_member():
+    error = "error: value of type 'Engine' has no member named 'staart'"
+    assert classify_error(error) == ErrorCategory.MISSING_SYMBOL
+
+
+def test_classify_clang_undeclared_identifier():
+    error = "widget.c:12:5: error: use of undeclared identifier 'gtk_widget_showw'"
+    assert classify_error(error) == ErrorCategory.MISSING_SYMBOL
+
+
+def test_classify_clang_syntax():
+    error = "main.cpp:8:10: error: expected ';' after expression"
+    assert classify_error(error) == ErrorCategory.SYNTAX
+
+
+def test_classify_apple_linker():
+    error = "Undefined symbols for architecture arm64:\n  '_emathy_start', referenced from:"
+    assert classify_error(error) == ErrorCategory.LINK_ERROR
+
+
+# --- C# / .NET (Roslyn) compiler errors ------------------------------------
+
+
+def test_classify_csharp_missing_symbol_code():
+    error = "Engine.cs(42,13): error CS0103: The name 'Staart' does not exist in the current context"
+    assert classify_error(error) == ErrorCategory.MISSING_SYMBOL
+
+
+def test_classify_csharp_missing_using_code():
+    error = "App.cs(3,7): error CS0246: The type or namespace name 'Emathy' could not be found"
+    assert classify_error(error) == ErrorCategory.MISSING_IMPORT
+
+
+def test_classify_csharp_wrong_type_code():
+    error = "Cmd.cs(8,20): error CS1503: Argument 1: cannot convert from 'int' to 'string'"
+    assert classify_error(error) == ErrorCategory.WRONG_TYPE
+
+
+def test_classify_csharp_inaccessible_code():
+    error = "Bridge.cs(5,9): error CS0122: 'Engine.Start()' is inaccessible due to its protection level"
+    assert classify_error(error) == ErrorCategory.MISSING_EXPORT
+
+
+def test_classify_csharp_keyword_without_code():
+    error = "'Engine' does not contain a definition for 'Staart'"
+    assert classify_error(error) == ErrorCategory.MISSING_SYMBOL
+
+
 def test_classify_and_guide_returns_tuple():
     category, guidance = classify_and_guide("error[E0308]: mismatched types")
     assert category == ErrorCategory.WRONG_TYPE

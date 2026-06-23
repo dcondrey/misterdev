@@ -352,6 +352,68 @@ def _run_edit_task(td, file_path, content, test_command, config_extra=None):
     return e.execute(task, proj, use_git_branch=False)
 
 
+def test_surgical_edit_applies_to_large_file_end_to_end():
+    # A SEARCH/REPLACE response must land surgically: only the anchored line
+    # changes and every other line is preserved byte-for-byte. This is the
+    # whole point of the surgical path — a large file is edited without the
+    # model reprinting it (which truncates past the output-token limit).
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        original = "\n".join(f"line {i}" for i in range(2000)) + "\n"
+        (td / "big.rs").write_text(original)
+        response = (
+            "```rust:big.rs\n"
+            "<<<<<<< SEARCH\n"
+            "line 1500\n"
+            "=======\n"
+            "line 1500 EDITED\n"
+            ">>>>>>> REPLACE\n"
+            "```\n"
+        )
+        task = _make_task()
+        task.processor_data["strategy"] = "surgical"
+        task.processor_data["test_command"] = "true"
+        task.files_to_modify = ["big.rs"]
+        proj = _FakeProject(td, response)
+        result = MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
+
+        assert result.status == "completed"
+        new = (td / "big.rs").read_text()
+        assert "line 1500 EDITED" in new
+        # every other line preserved: same line count, only one line differs
+        assert new.count("\n") == original.count("\n")
+        o_lines, n_lines = original.splitlines(), new.splitlines()
+        diffs = [i for i, (a, b) in enumerate(zip(o_lines, n_lines)) if a != b]
+        assert diffs == [1500]
+
+
+def test_surgical_edit_conflict_does_not_write_partial():
+    # If the SEARCH anchor does not match, the file on disk must be left
+    # untouched (no partial/truncated write) and the task must not complete.
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        original = "fn main() {}\n"
+        (td / "m.rs").write_text(original)
+        response = (
+            "```rust:m.rs\n"
+            "<<<<<<< SEARCH\n"
+            "this text is not in the file\n"
+            "=======\n"
+            "garbage\n"
+            ">>>>>>> REPLACE\n"
+            "```\n"
+        )
+        task = _make_task()
+        task.processor_data["strategy"] = "surgical"
+        task.processor_data["test_command"] = "true"
+        task.files_to_modify = ["m.rs"]
+        proj = _FakeProject(td, response)
+        result = MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
+
+        assert result.status != "completed"
+        assert (td / "m.rs").read_text() == original
+
+
 def test_tampering_edit_rejected_does_not_complete():
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)

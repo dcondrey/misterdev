@@ -241,6 +241,16 @@ def detect_test_command(project_path: Path) -> Optional[str]:
         return "npm test"
     if (p / "Cargo.toml").exists():
         return "cargo test"
+    if (p / "Package.swift").exists():
+        return "swift test"
+    # .NET: a solution runs every test project; a bare test csproj runs itself.
+    if any(p.glob("*.sln")) or any(p.glob("*[Tt]est*.csproj")):
+        return "dotnet test"
+    # GTK/meson tests run against a configured build dir; cmake/C++ via ctest.
+    if (p / "meson.build").exists():
+        return "meson test -C build"
+    if (p / "CMakeLists.txt").exists():
+        return "ctest --test-dir build --output-on-failure"
     return None
 
 
@@ -253,6 +263,16 @@ def detect_build_command(project_path: Path) -> Optional[str]:
         p / "package.json", key="build"
     ):
         return "npm run build"
+    if (p / "Package.swift").exists():
+        return "swift build"
+    if any(p.glob("*.sln")) or any(p.glob("*.csproj")):
+        return "dotnet build"
+    if (p / "meson.build").exists():
+        return "meson compile -C build"
+    if (p / "CMakeLists.txt").exists():
+        return "cmake --build build"
+    if (p / "Makefile").exists() or (p / "makefile").exists():
+        return "make"
     if (p / "pyproject.toml").exists() or (p / "setup.py").exists():
         return "python -m compileall -q ."
     return None

@@ -16,7 +16,11 @@ from my_project_orchestrator.core.scratchpad import Scratchpad
 from my_project_orchestrator.llm.prompt_manager import PromptManager
 from my_project_orchestrator.logging_setup import setup_logger
 from my_project_orchestrator.task_executors.base_executor import BaseTaskExecutor
-from my_project_orchestrator.llm.responses import LLMResponseParser
+from my_project_orchestrator.llm.responses import (
+    EditConflictError,
+    LLMResponseParser,
+    apply_search_replace,
+)
 from my_project_orchestrator.llm.client import code_gen_abort_check
 from my_project_orchestrator.core.validator import (
     CodeValidator,
@@ -36,6 +40,34 @@ _is_golden_path = is_golden_path
 
 logger = setup_logger(__name__)
 
+# Appended to every code-generation prompt. The model edits large files by
+# emitting only the changed regions as anchored SEARCH/REPLACE hunks instead of
+# rewriting the whole file (which truncates past the output-token limit). The
+# parser (responses.parse_search_replace_blocks) recognizes exactly this shape;
+# whole-file blocks remain valid for short new files with no markers.
+EDIT_FORMAT_INSTRUCTIONS = """
+
+## Output format (required)
+Edit existing files with anchored SEARCH/REPLACE blocks. Do NOT reprint the
+whole file. For each change, put the file path on the fence line, then one or
+more blocks:
+
+```<lang>:<path>
+<<<<<<< SEARCH
+<exact lines copied verbatim from the current file, whitespace included>
+=======
+<the replacement lines>
+>>>>>>> REPLACE
+```
+
+Rules:
+- The SEARCH text must match the current file exactly and identify exactly one
+  location; include enough surrounding lines to make it unique.
+- Use several small blocks rather than one large one.
+- To create a NEW file, use a single block with an empty SEARCH section and the
+  full file contents in the REPLACE section.
+"""
+
 # Maps file extensions to language identifiers for syntax validation and
 # contract extraction. Unknown extensions fall back to "text".
 _LANG_MAP = {
@@ -53,6 +85,11 @@ _LANG_MAP = {
     ".cpp": "cpp",
     ".hpp": "cpp",
     ".cc": "cpp",
+    ".cxx": "cpp",
+    ".hh": "cpp",
+    ".cs": "csharp",
+    ".swift": "swift",
+    ".kt": "kotlin",
     ".rb": "ruby",
     ".php": "php",
     ".sh": "shell",
@@ -581,6 +618,11 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                 prompt = prompt_manager.format_prompt(
                     "task_completion_instruction", context_dict
                 )
+            # Tool-based edit extraction returns whole-file content via a forced
+            # tool call; the SEARCH/REPLACE contract applies only to the plain
+            # text-generation path, where the parser expects anchored hunks.
+            if not get_setting(project.config, "llm", "use_tools"):
+                prompt += EDIT_FORMAT_INSTRUCTIONS
 
             routed_model = self._select_model(
                 project, task, strategy, attempt, max_retries
@@ -625,7 +667,15 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             certainty = CertaintyScorer.compute_score(llm_response)
             logger.info(f"LLM Certainty Score: {certainty:.2f}")
 
-            edits = LLMResponseParser.parse_file_edits(llm_response)
+            edits, resolve_error = self._resolve_edits(project, llm_response)
+            if resolve_error:
+                logger.warning(f"Surgical edit could not be applied: {resolve_error}")
+                error_logs = (
+                    "ERROR: a SEARCH/REPLACE edit did not apply cleanly. "
+                    f"{resolve_error} Re-read the file and emit a corrected "
+                    "SEARCH block that matches the current content verbatim."
+                )
+                continue
             edits = self._validate_edit_paths(project, task, edits)
             if not edits:
                 logger.warning("No file edits detected in LLM response.")
@@ -1051,9 +1101,13 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         context = ""
         if target_files:
             context += "### Files to Modify/Create\n"
+            # Files being edited are read in full: surgical SEARCH/REPLACE needs
+            # to anchor against the exact current content anywhere in the file,
+            # not just the first window. ContextBudget (priority 1) protects
+            # this section and trims lower-priority context first.
             for file_path in target_files:
                 context += self._read_file_for_context(
-                    project.path / file_path, file_path, max_lines
+                    project.path / file_path, file_path, None
                 )
         if context_files:
             context += "\n### Reference/Context Files (Read-Only)\n"
@@ -1064,7 +1118,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         return context
 
     def _read_file_for_context(
-        self, full_path: Path, rel_path: str, max_lines: int
+        self, full_path: Path, rel_path: str, max_lines: Optional[int]
     ) -> str:
         if not full_path.exists():
             return f"\n# File: {rel_path} (Does not exist yet)\n"
@@ -1073,7 +1127,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         except (UnicodeDecodeError, OSError):
             return f"\n# File: {rel_path} (binary or unreadable, skipped)\n"
         lines = content.splitlines()
-        if len(lines) > max_lines:
+        if max_lines is not None and len(lines) > max_lines:
             content = (
                 "\n".join(lines[:max_lines])
                 + f"\n... ({len(lines)} lines total, truncated)"
@@ -1473,6 +1527,43 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             if reason:
                 reasons.append(f"{file_path} ({reason})")
         return "; ".join(reasons) if reasons else None
+
+    def _resolve_edits(
+        self, project: Project, llm_response: str
+    ) -> Tuple[Dict[str, str], Optional[str]]:
+        """Turn the LLM response into ``{path: full_content}`` edits.
+
+        Prefers surgical SEARCH/REPLACE hunks: each is applied against the
+        current on-disk file so the model never has to reproduce a large file
+        in full (the whole-file path truncates past the output-token limit).
+        The resolved full content then flows through the same path/syntax/
+        tamper gates as before. Returns ``(edits, error)``; a non-empty error
+        means a hunk did not apply and the attempt should retry rather than
+        write a partial file. Falls back to the whole-file parser when the
+        response contains no SEARCH/REPLACE markers.
+        """
+        sr_edits = LLMResponseParser.parse_search_replace_blocks(llm_response)
+        if not sr_edits:
+            return LLMResponseParser.parse_file_edits(llm_response), None
+        by_path: Dict[str, list] = {}
+        for edit in sr_edits:
+            by_path.setdefault(edit.path, []).append(edit)
+        resolved: Dict[str, str] = {}
+        for path, hunks in by_path.items():
+            full_path = project.path / path
+            try:
+                original = (
+                    full_path.read_text(encoding="utf-8")
+                    if full_path.exists()
+                    else ""
+                )
+            except (UnicodeDecodeError, OSError) as exc:
+                return {}, f"{path}: could not read file to apply edit ({exc})"
+            try:
+                resolved[path] = apply_search_replace(original, hunks)
+            except EditConflictError as exc:
+                return {}, str(exc)
+        return resolved, None
 
     def _apply_edits(self, project: Project, edits: Dict[str, str]):
         for file_path, content in edits.items():

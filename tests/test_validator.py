@@ -1,6 +1,41 @@
 from my_project_orchestrator.core.validator import (
-    CodeValidator, CertaintyScorer, StallDetector, _tokenize,
+    CodeValidator, CertaintyScorer, StallDetector, _tokenize, _parse_test_counts,
 )
+
+
+def test_parse_test_counts_swift_xctest():
+    out = "Test Suite 'All tests' passed\nExecuted 42 tests, with 0 failures (0 unexpected)"
+    assert _parse_test_counts(out) == (42, 0)
+
+
+def test_parse_test_counts_swift_with_failures():
+    out = "Executed 10 tests, with 3 failures (0 unexpected) in 0.5 seconds"
+    assert _parse_test_counts(out) == (10, 3)
+
+
+def test_parse_test_counts_ctest():
+    out = "100% tests passed, 0 tests failed out of 17"
+    assert _parse_test_counts(out) == (17, 0)
+
+
+def test_parse_test_counts_ctest_failures():
+    out = "82% tests passed, 3 tests failed out of 17"
+    assert _parse_test_counts(out) == (17, 3)
+
+
+def test_parse_test_counts_dotnet_vstest():
+    out = "Failed:     0, Passed:    24, Skipped:     1, Total:    25, Duration: 2 s"
+    assert _parse_test_counts(out) == (25, 0)
+
+
+def test_parse_test_counts_dotnet_vstest_failures():
+    out = "Failed:     2, Passed:    23, Skipped:     0, Total:    25"
+    assert _parse_test_counts(out) == (25, 2)
+
+
+def test_parse_test_counts_dotnet_alt_format():
+    out = "Total tests: 25. Passed: 23. Failed: 2. Skipped: 0."
+    assert _parse_test_counts(out) == (25, 2)
 
 
 def test_code_validator_valid_python():

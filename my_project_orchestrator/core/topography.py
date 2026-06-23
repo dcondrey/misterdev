@@ -36,6 +36,10 @@ def _get_ts_parsers() -> Dict[str, Any]:
     grammars = {
         "python": "tree_sitter_python",
         "rust": "tree_sitter_rust",
+        "c": "tree_sitter_c",
+        "cpp": "tree_sitter_cpp",
+        "swift": "tree_sitter_swift",
+        "csharp": "tree_sitter_c_sharp",
     }
     for lang_name, module_name in grammars.items():
         try:
@@ -97,7 +101,25 @@ _EXT_TO_LANG: Dict[str, str] = {
     ".rs": "rust",
     ".ts": "typescript",
     ".tsx": "tsx",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
+    ".hpp": "cpp",
+    ".hh": "cpp",
+    ".swift": "swift",
+    ".cs": "csharp",
 }
+
+
+def _node_text(src: bytes, node: Any) -> str:
+    """Decode a node's span from the UTF-8 source bytes.
+
+    Offsets from tree-sitter are byte positions, so slicing must happen on the
+    bytes and decode after, never on the str.
+    """
+    return src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
 
 
 class SymbolGraph:
@@ -146,15 +168,23 @@ class SymbolGraph:
         logger.info(f"Symbol graph complete: {len(self.symbols)} symbols.")
 
     def _parse_file(self, file_path: Path, lang: str):
-        content = read_file(file_path)
+        # tree-sitter reports BYTE offsets; slice the UTF-8 bytes (not the str)
+        # so non-ASCII content before a symbol doesn't shift and mangle names.
+        content = read_file(file_path).encode("utf-8")
         parser = self.parsers[lang]
-        tree = parser.parse(bytes(content, "utf8"))
+        tree = parser.parse(content)
         rel_path = str(file_path.relative_to(self.project_path))
 
         if lang == "rust":
             self._traverse_rust(tree.root_node, content, rel_path)
         elif lang in ("typescript", "tsx"):
             self._traverse_typescript(tree.root_node, content, rel_path)
+        elif lang in ("c", "cpp"):
+            self._traverse_clike(tree.root_node, content, rel_path)
+        elif lang == "swift":
+            self._traverse_swift(tree.root_node, content, rel_path)
+        elif lang == "csharp":
+            self._traverse_csharp(tree.root_node, content, rel_path)
         else:
             self._traverse_python(tree.root_node, content, rel_path)
 
@@ -168,7 +198,7 @@ class SymbolGraph:
         if node.type == "function_definition":
             name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte : name_node.end_byte]
+                name = _node_text(content, name_node)
                 full_name = f"{parent_class}.{name}" if parent_class else name
                 self._add_symbol(
                     full_name,
@@ -181,7 +211,7 @@ class SymbolGraph:
         elif node.type == "class_definition":
             name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte : name_node.end_byte]
+                name = _node_text(content, name_node)
                 self._add_symbol(name, file_path, "class", node, content)
                 body_node = node.child_by_field_name("body")
                 if body_node:
@@ -200,7 +230,7 @@ class SymbolGraph:
         if node.type == "function_item":
             name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte : name_node.end_byte]
+                name = _node_text(content, name_node)
                 full_name = f"{parent}::{name}" if parent else name
                 kind = "method" if parent else "function"
                 self._add_symbol(full_name, file_path, kind, node, content)
@@ -208,25 +238,25 @@ class SymbolGraph:
         elif node.type == "struct_item":
             name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte : name_node.end_byte]
+                name = _node_text(content, name_node)
                 self._add_symbol(name, file_path, "struct", node, content)
 
         elif node.type == "enum_item":
             name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte : name_node.end_byte]
+                name = _node_text(content, name_node)
                 self._add_symbol(name, file_path, "enum", node, content)
 
         elif node.type == "trait_item":
             name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte : name_node.end_byte]
+                name = _node_text(content, name_node)
                 self._add_symbol(name, file_path, "trait", node, content)
 
         elif node.type == "impl_item":
             type_node = node.child_by_field_name("type")
             if type_node:
-                impl_name = content[type_node.start_byte : type_node.end_byte]
+                impl_name = _node_text(content, type_node)
                 body_node = node.child_by_field_name("body")
                 if body_node:
                     for child in body_node.children:
@@ -247,13 +277,13 @@ class SymbolGraph:
         if t == "function_declaration":
             name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte : name_node.end_byte]
+                name = _node_text(content, name_node)
                 self._add_symbol(name, file_path, "function", node, content)
 
         elif t in ("class_declaration", "interface_declaration"):
             name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte : name_node.end_byte]
+                name = _node_text(content, name_node)
                 self._add_symbol(name, file_path, "class", node, content)
                 body_node = node.child_by_field_name("body")
                 if body_node:
@@ -266,7 +296,7 @@ class SymbolGraph:
         elif t == "method_definition":
             name_node = node.child_by_field_name("name")
             if name_node and parent_class:
-                name = content[name_node.start_byte : name_node.end_byte]
+                name = _node_text(content, name_node)
                 self._add_symbol(
                     f"{parent_class}.{name}", file_path, "method", node, content
                 )
@@ -274,7 +304,7 @@ class SymbolGraph:
         elif t == "type_alias_declaration":
             name_node = node.child_by_field_name("name")
             if name_node:
-                name = content[name_node.start_byte : name_node.end_byte]
+                name = _node_text(content, name_node)
                 self._add_symbol(name, file_path, "class", node, content)
 
         elif t == "export_statement":
@@ -285,11 +315,167 @@ class SymbolGraph:
         for child in node.children:
             self._traverse_typescript(child, content, file_path, parent_class)
 
+    def _traverse_clike(
+        self, node: Any, content: str, file_path: str, parent: Optional[str] = None
+    ):
+        t = node.type
+        if t == "function_definition":
+            decl = node.child_by_field_name("declarator")
+            name = self._descend_identifier(decl, content) if decl else None
+            if name:
+                full = f"{parent}::{name}" if parent else name
+                self._add_symbol(
+                    full, file_path, "method" if parent else "function", node, content
+                )
+        elif t in ("struct_specifier", "class_specifier", "enum_specifier"):
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                name = _node_text(content, name_node)
+                kind = "class" if t == "class_specifier" else (
+                    "enum" if t == "enum_specifier" else "struct"
+                )
+                self._add_symbol(name, file_path, kind, node, content)
+                body = node.child_by_field_name("body")
+                if body:
+                    for child in body.children:
+                        self._traverse_clike(child, content, file_path, parent=name)
+                return
+        elif t == "type_definition":
+            name_node = self._last_child_of_type(node, "type_identifier")
+            if name_node:
+                name = _node_text(content, name_node)
+                self._add_symbol(name, file_path, "type", node, content)
+        elif t == "namespace_definition":
+            body = node.child_by_field_name("body")
+            if body:
+                for child in body.children:
+                    self._traverse_clike(child, content, file_path, parent)
+                return
+
+        for child in node.children:
+            self._traverse_clike(child, content, file_path, parent)
+
+    def _traverse_swift(
+        self, node: Any, content: str, file_path: str, parent: Optional[str] = None
+    ):
+        t = node.type
+        if t == "function_declaration":
+            name = self._first_child_text(node, content, ("simple_identifier",))
+            if name:
+                full = f"{parent}.{name}" if parent else name
+                self._add_symbol(
+                    full, file_path, "method" if parent else "function", node, content
+                )
+        elif t in ("class_declaration", "protocol_declaration"):
+            name = self._first_child_text(node, content, ("type_identifier",))
+            if name:
+                # The Swift grammar models struct as a class_declaration with a
+                # `struct` keyword child; distinguish so the kind is accurate.
+                kinds = {c.type for c in node.children}
+                kind = (
+                    "protocol" if t == "protocol_declaration"
+                    else "struct" if "struct" in kinds
+                    else "class"
+                )
+                self._add_symbol(name, file_path, kind, node, content)
+                for child in node.children:
+                    if child.type in ("class_body", "protocol_body"):
+                        for member in child.children:
+                            self._traverse_swift(
+                                member, content, file_path, parent=name
+                            )
+                return
+
+        for child in node.children:
+            self._traverse_swift(child, content, file_path, parent)
+
+    _CSHARP_TYPE_KINDS = {
+        "class_declaration": "class",
+        "struct_declaration": "struct",
+        "interface_declaration": "interface",
+        "enum_declaration": "enum",
+        "record_declaration": "record",
+    }
+
+    def _traverse_csharp(
+        self, node: Any, content: str, file_path: str, parent: Optional[str] = None
+    ):
+        t = node.type
+        if t in self._CSHARP_TYPE_KINDS:
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                name = _node_text(content, name_node)
+                self._add_symbol(
+                    name, file_path, self._CSHARP_TYPE_KINDS[t], node, content
+                )
+                body = node.child_by_field_name("body")
+                if body is None:
+                    body = self._first_child_of_type(node, "declaration_list")
+                if body:
+                    for child in body.children:
+                        self._traverse_csharp(child, content, file_path, parent=name)
+                return
+        elif t in ("method_declaration", "constructor_declaration"):
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                name = _node_text(content, name_node)
+                full = f"{parent}.{name}" if parent else name
+                self._add_symbol(
+                    full, file_path, "method" if parent else "function", node, content
+                )
+        elif t == "property_declaration":
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                name = _node_text(content, name_node)
+                full = f"{parent}.{name}" if parent else name
+                self._add_symbol(full, file_path, "property", node, content)
+
+        for child in node.children:
+            self._traverse_csharp(child, content, file_path, parent)
+
+    @staticmethod
+    def _first_child_of_type(node: Any, type_name: str) -> Any:
+        for c in node.children:
+            if c.type == type_name:
+                return c
+        return None
+
+    @staticmethod
+    def _descend_identifier(node: Any, content: str) -> Optional[str]:
+        """Breadth-first search for the first declarator identifier.
+
+        A C/C++ function name is wrapped in declarator nodes (pointer, array,
+        parenthesized); the shallowest ``identifier``/``field_identifier`` on
+        the name path is the symbol name. BFS finds it before parameter names.
+        """
+        queue = [node]
+        while queue:
+            n = queue.pop(0)
+            if n.type in ("identifier", "field_identifier"):
+                return _node_text(content, n)
+            queue.extend(n.children)
+        return None
+
+    @staticmethod
+    def _first_child_text(node: Any, content: str, types: tuple) -> Optional[str]:
+        for c in node.children:
+            if c.type in types:
+                return _node_text(content, c)
+        return None
+
+    @staticmethod
+    def _last_child_of_type(node: Any, type_name: str) -> Any:
+        found = None
+        for c in node.children:
+            if c.type == type_name:
+                found = c
+        return found
+
     def _add_symbol(
         self, name: str, file_path: str, kind: str, node: Any, content: str
     ):
         key = f"{file_path}:{name}"
-        symbol_content = content[node.start_byte : node.end_byte]
+        symbol_content = _node_text(content, node)
         self.symbols[key] = SymbolNode(
             name,
             file_path,

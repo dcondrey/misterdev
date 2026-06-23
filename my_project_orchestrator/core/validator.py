@@ -224,6 +224,25 @@ def _parse_test_counts(output: str) -> Tuple[int, int]:
     if m:
         p, f = int(m.group(1)), int(m.group(2))
         return p + f, f
+    # swift test / XCTest: "Executed N tests, with M failures"
+    m = re.search(r"Executed (\d+) tests?, with (\d+) failure", output)
+    if m:
+        total, f = int(m.group(1)), int(m.group(2))
+        return total, f
+    # ctest: "X% tests passed, M tests failed out of N"
+    m = re.search(r"tests passed,\s*(\d+) tests? failed out of (\d+)", output)
+    if m:
+        f, total = int(m.group(1)), int(m.group(2))
+        return total, f
+    # dotnet test (VSTest): "Failed: N, Passed: M, Skipped: K, Total: T"
+    fm = re.search(r"Failed:\s*(\d+)", output)
+    tm = re.search(r"Total:\s*(\d+)", output)
+    if fm and tm:
+        return int(tm.group(1)), int(fm.group(1))
+    # dotnet test (alt): "Total tests: T. Passed: M. Failed: N."
+    m = re.search(r"Total tests:\s*(\d+)\..*?Failed:\s*(\d+)", output, re.DOTALL)
+    if m:
+        return int(m.group(1)), int(m.group(2))
     return 0, 0
 
 

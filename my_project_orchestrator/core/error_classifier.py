@@ -40,16 +40,24 @@ _INDICATORS: List[Tuple[str, List[str]]] = [
         "syntax error", "SyntaxError", "unexpected token",
         "unexpected eof", "unterminated", "invalid syntax",
         "expected one of", "expected `,`", "expected `{`", "expected `;`",
+        # clang/gcc/swiftc
+        "expected ';'", "expected expression", "expected '}'",
+        "expected declaration", "extraneous", "expected identifier",
     ]),
     (ErrorCategory.MISSING_IMPORT, [
         "unresolved import", "ModuleNotFoundError", "No module named",
         "could not find crate", "use of undeclared crate",
         "cannot find module", "ImportError",
+        # swift / C / C++
+        "no such module", "cannot find interface declaration",
     ]),
     (ErrorCategory.MISSING_EXPORT, [
         "is private", "not accessible", "module is private",
         "function is private", "struct is private",
         "pub(crate)", "inaccessible",
+        # swift / C++ / C#
+        "is inaccessible due to", "marked private", "not visible",
+        "inaccessible due to its protection level",
     ]),
     (ErrorCategory.WRONG_TYPE, [
         "type mismatch", "expected type", "mismatched types",
@@ -57,6 +65,12 @@ _INDICATORS: List[Tuple[str, List[str]]] = [
         "expected struct", "expected enum", "wrong number of",
         "arguments were supplied",
         "the trait bound", "is not satisfied",
+        # swift / clang
+        "cannot convert value of type", "cannot initialize",
+        "no viable conversion", "no matching function for call",
+        "argument of type", "incompatible pointer",
+        # C# / roslyn
+        "cannot implicitly convert type", "cannot convert from",
     ]),
     (ErrorCategory.MISSING_SYMBOL, [
         "not found in this scope", "cannot find value",
@@ -64,21 +78,36 @@ _INDICATORS: List[Tuple[str, List[str]]] = [
         "no field", "no method named", "no variant",
         "NameError", "AttributeError",
         "has no member", "unknown field",
+        # swift / clang
+        "use of undeclared identifier", "use of unresolved identifier",
+        "no member named", "has no member named",
+        # C# / roslyn
+        "does not contain a definition for",
+        "does not exist in the current context",
     ]),
     (ErrorCategory.TEST_ASSERTION, [
         "assertion failed", "AssertionError", "assert_eq",
         "assert_ne", "panicked at", "test result: FAILED",
         "left:", "right:",
+        # XCTest / ctest
+        "XCTAssert", "XCTFail", "failed (", "tests failed out of",
     ]),
     (ErrorCategory.LINK_ERROR, [
         "linker", "undefined reference", "unresolved external",
         "link error", "multiple definition", "duplicate symbol",
+        # apple ld / clang
+        "undefined symbols for architecture", "symbol(s) not found",
+        "ld: ", "linker command failed",
     ]),
     (ErrorCategory.MANIFEST, [
         "failed to parse manifest", "could not find `cargo.toml`",
         "missing either a `[package]`", "virtual manifest",
         "invalid toml", "expected value", "duplicate key",
         "error parsing pyproject.toml", "invalid package.json",
+        # swiftpm / meson / cmake
+        "could not find package.swift", "manifest parse error",
+        "neither directory contains a build file", "cmake error",
+        "does not appear to contain cmakelists.txt",
     ]),
     (ErrorCategory.FILE_NOT_FOUND, [
         "no such file or directory", "file not found",
@@ -150,15 +179,37 @@ _RUST_ERROR_CODES: Dict[str, str] = {
 }
 
 
+# C# / Roslyn compiler error codes -> category (authoritative)
+_CSHARP_ERROR_CODES: Dict[str, str] = {
+    "CS0103": ErrorCategory.MISSING_SYMBOL,  # name does not exist in context
+    "CS0117": ErrorCategory.MISSING_SYMBOL,  # type has no definition for member
+    "CS1061": ErrorCategory.MISSING_SYMBOL,  # no definition / extension method
+    "CS0246": ErrorCategory.MISSING_IMPORT,  # type/namespace not found (using?)
+    "CS0234": ErrorCategory.MISSING_IMPORT,  # namespace member does not exist
+    "CS0029": ErrorCategory.WRONG_TYPE,      # cannot implicitly convert
+    "CS1503": ErrorCategory.WRONG_TYPE,      # argument cannot convert from
+    "CS0019": ErrorCategory.WRONG_TYPE,      # operator cannot be applied
+    "CS1002": ErrorCategory.SYNTAX,          # ; expected
+    "CS1513": ErrorCategory.SYNTAX,          # } expected
+    "CS1519": ErrorCategory.SYNTAX,          # invalid token
+    "CS0122": ErrorCategory.MISSING_EXPORT,  # inaccessible protection level
+}
+
+
 def classify_error(error_output: str) -> str:
     """Classify build/test error output into a category.
 
-    Checks Rust error codes first (exact match), then falls back to
-    keyword scoring for other languages and test output.
+    Checks structured compiler error codes first (Rust, then C#/Roslyn) for an
+    exact, authoritative match, then falls back to keyword scoring for other
+    languages and test output.
     """
     # Fast path: Rust structured error codes
     for code, category in _RUST_ERROR_CODES.items():
         if f"error[{code}]" in error_output:
+            return category
+    # Fast path: C#/Roslyn error codes (e.g. "error CS0103:")
+    for code, category in _CSHARP_ERROR_CODES.items():
+        if f"{code}:" in error_output:
             return category
 
     lower = error_output.lower()
