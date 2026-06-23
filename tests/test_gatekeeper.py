@@ -298,7 +298,7 @@ def test_gatekeeper_honors_configured_timeouts(monkeypatch):
 
     calls = {}
 
-    def fake_run_cmd(cmd, cwd, env_activate=None, timeout=180):
+    def fake_run_cmd(cmd, cwd, env_activate=None, timeout=180, runner=None):
         calls[cmd] = timeout
         return True, "ok"
 
@@ -323,7 +323,7 @@ def test_gatekeeper_explicit_lint_timeout(monkeypatch):
 
     calls = {}
 
-    def fake_run_cmd(cmd, cwd, env_activate=None, timeout=180):
+    def fake_run_cmd(cmd, cwd, env_activate=None, timeout=180, runner=None):
         calls[cmd] = timeout
         return True, "ok"
 

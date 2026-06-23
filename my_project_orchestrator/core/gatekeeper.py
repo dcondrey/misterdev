@@ -1,10 +1,13 @@
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Dict, Tuple
+from typing import Callable, List, Optional, Dict, Tuple, TYPE_CHECKING
 
 from my_project_orchestrator.logging_setup import setup_logger
 from my_project_orchestrator.core.assessment import HealthCheck
 from my_project_orchestrator.core.validator import _run_cmd
+
+if TYPE_CHECKING:
+    from my_project_orchestrator.core.container import ContainerEngine
 
 logger = setup_logger(__name__)
 
@@ -99,9 +102,14 @@ class GateKeeper:
         lsp_diagnostics: bool = False,
         lsp_language: Optional[str] = None,
         lsp_timeout: int = 30,
+        container: Optional["ContainerEngine"] = None,
     ):
         self.project_path = Path(project_path)
         self.env_activate = env_activate
+        # Optional container engine: when present and usable, gate commands
+        # (build/lint/test/golden/typecheck) run inside it instead of locally.
+        # Git stays host-side (never routed here). None -> run locally as before.
+        self.container = container if container and container.is_available() else None
         # Honor the project's configured timeouts so a slow compiler or linter
         # isn't falsely failed by the gate the way the analyzer once was.
         self.build_timeout = build_timeout
@@ -110,6 +118,12 @@ class GateKeeper:
         self.lsp_diagnostics = lsp_diagnostics
         self.lsp_language = lsp_language
         self.lsp_timeout = lsp_timeout
+
+    @property
+    def _runner(self) -> Optional[Callable[[str, int], Tuple[bool, str]]]:
+        """The command runner for gate commands: the container's ``run`` when a
+        usable engine is attached, else ``None`` (local execution)."""
+        return self.container.run if self.container else None
 
     def run_gates(
         self, commands: Dict[str, Optional[str]]
@@ -126,6 +140,7 @@ class GateKeeper:
                 self.project_path,
                 self.env_activate,
                 timeout=self.build_timeout,
+                runner=self._runner,
             )
             health.builds = success
             health.build_output = output
@@ -143,6 +158,7 @@ class GateKeeper:
                 self.project_path,
                 self.env_activate,
                 timeout=self.lint_timeout,
+                runner=self._runner,
             )
             health.lint_clean = success
             health.lint_output = output
@@ -159,6 +175,7 @@ class GateKeeper:
                 self.project_path,
                 self.env_activate,
                 timeout=self.test_timeout,
+                runner=self._runner,
             )
             health.tests_pass = success
             health.test_output = output
@@ -177,6 +194,7 @@ class GateKeeper:
                 self.project_path,
                 self.env_activate,
                 timeout=self.test_timeout,
+                runner=self._runner,
             )
             if not success:
                 issues.append("G3.5: Golden suite failed")
@@ -194,6 +212,7 @@ class GateKeeper:
                 self.project_path,
                 self.env_activate,
                 timeout=self.test_timeout,
+                runner=self._runner,
             )
             if not success:
                 issues.append("G4: Type check failed")

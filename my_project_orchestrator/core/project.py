@@ -156,4 +156,12 @@ class Project:
         env_type = env_config.get("type")
         if env_type == "venv":
             return VenvEnvironmentManager(env_config, self.path)
+        if env_type in ("docker", "container"):
+            from my_project_orchestrator.environments.container_env import (
+                ContainerEnvironmentManager,
+            )
+
+            return ContainerEnvironmentManager(
+                env_config, self.path, language=self.config.get("language", "")
+            )
         return None

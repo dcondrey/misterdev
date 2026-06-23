@@ -1,7 +1,7 @@
 import ast
 import re
 import subprocess
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from pathlib import Path
 
 from my_project_orchestrator.core.assessment import HealthCheck
@@ -58,7 +58,13 @@ def _run_cmd(
     cwd: Path,
     env_activate: Optional[str] = None,
     timeout: int = 180,
+    runner: Optional[Callable[[str, int], Tuple[bool, str]]] = None,
 ) -> Tuple[bool, str]:
+    # When a runner is supplied (e.g. a container engine), the command executes
+    # through it instead of the local subprocess. Activation prefixes are
+    # host-venv concepts, so they are only applied to local execution.
+    if runner is not None:
+        return runner(cmd, timeout)
     if env_activate:
         cmd = f"{env_activate} && {cmd}"
     try:

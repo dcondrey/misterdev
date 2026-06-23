@@ -712,6 +712,7 @@ class ProjectOrchestrator:
                 ),
                 lsp_language=project.config.get("language"),
                 lsp_timeout=get_setting(project.config, "orchestrator", "lsp_timeout"),
+                container=self._container_engine(project),
             )
             commands = {
                 "build_command": assessment.structure.build_command,
@@ -1449,6 +1450,22 @@ class ProjectOrchestrator:
         if project.env_manager:
             project.env_manager.setup()
             return project.env_manager.activate_command()
+        return None
+
+    def _container_engine(self, project: Project):
+        """Return the project's container engine if a container environment is
+        configured and an engine is available, else None (gates run locally).
+
+        ``_setup_env`` has already called ``setup()``, so the engine is
+        detected by the time gates run.
+        """
+        from my_project_orchestrator.environments.container_env import (
+            ContainerEnvironmentManager,
+        )
+
+        env = project.env_manager
+        if isinstance(env, ContainerEnvironmentManager):
+            return env.engine()
         return None
 
     def _analyze(self, project: Project, env_activate: Optional[str]):
