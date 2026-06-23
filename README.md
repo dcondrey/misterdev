@@ -37,8 +37,18 @@ reports done.
 - **Tree-sitter syntax gate** catches real syntax errors before the expensive
   build, understanding strings/comments (a brace in a literal never false-fails).
 - **Gate sequence** G1 build → G2 lint → G3 tests → G3.5 golden suite →
-  G4 typecheck → **G4.5 optional LSP semantic diagnostics** → G5 banned-marker →
-  G6 secrets → G9 diff hygiene. Build/test/golden/typecheck failures block.
+  G4 typecheck → **G4.5 optional LSP semantic diagnostics** →
+  **G4.6 optional runtime smoke** → G5 banned-marker → G6 secrets → G9 diff
+  hygiene. Build/test/golden/typecheck failures block.
+- **Optional container substrate** (`environment.type: docker`): gate commands
+  run inside a throwaway, uid-mapped OCI container against the bind-mounted repo
+  so the toolchain is pinned and reproducible. Rootless-first engine detection
+  (podman → docker → nerdctl → colima); falls back to local execution when no
+  engine is reachable. Git stays host-side.
+- **Optional runtime smoke gate** (`runtime.smoke`): launches the built
+  artifact, waits for a readiness signal, sends a probe, and asserts the
+  expected response — a cheap end-to-end liveness check. Daemon-threaded with a
+  hard timeout so it can never block; missing config or timeout is a SKIP.
 - **Regression safety:** branch-per-task, integration gate per wave with
   `git bisect`-style revert of the culprit, test-tamper detection, dirty-tree
   guard.
@@ -92,7 +102,8 @@ project-orchestrator                                  # interactive planning
 
 ## Architecture
 - **`core/`** — state machine, models, decomposition, gates, topography (symbol
-  graph + syntax gate), embeddings, optional LSP gate.
+  graph + syntax gate), embeddings, optional LSP gate, container substrate
+  (`container.py`), runtime smoke gate (`runtime.py`).
 - **`llm/`** — provider clients, failover, token budgeting, SEARCH/REPLACE
   response parsing.
 - **`task_executors/`** — the try-test-fix inner loop and edit application.

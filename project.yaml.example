@@ -36,6 +36,32 @@ environment:
     - "python -m venv {root_dir}"
     - "pip install pytest black"
 
+# Container environment (opt-in). type: docker|container runs gate commands
+# (build/lint/test/golden) inside a throwaway OCI container against the
+# bind-mounted repo, so the toolchain is pinned and reproducible. Detection
+# prefers rootless engines (podman) then docker/nerdctl/colima; if no engine is
+# reachable, gates run locally exactly as today (never hard-fails). Git stays
+# host-side. Image is auto-detected from `language` if `image` is omitted.
+# environment:
+#   type: "docker"
+#   image: "python:3.12-slim"   # optional; else auto from language
+#   engine: "podman"            # optional; else rootless-first auto-detect
+
+# Runtime smoke gate (opt-in, off by default). Set orchestrator.runtime_smoke
+# true and describe how to launch/probe the built artifact. Runs in a daemon
+# thread with a hard timeout so it can never block the build; missing config or
+# a timeout is a SKIP (not a failure). RED (non-zero exit or missing `expect`)
+# blocks the build.
+# orchestrator:
+#   runtime_smoke: true
+# runtime:
+#   smoke:
+#     launch: "./target/debug/myapp --serve"
+#     ready: "listening on"      # optional readiness substring in output
+#     probe: "ping"              # optional text piped to stdin once ready
+#     expect: "pong"             # substring asserted in output -> GREEN
+#     timeout: 30
+
 # Build workflow settings (6-phase autonomous builder)
 build:
   max_tasks: 30
