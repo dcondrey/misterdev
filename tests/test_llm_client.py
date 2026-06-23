@@ -18,7 +18,71 @@ from my_project_orchestrator.llm.client import (
     OpenRouterLLMClient,
     OpenRouterEmbeddingClient,
     AnthropicLLMClient,
+    _is_retryable_error,
+    _error_status_code,
 )
+
+
+class _StatusError(Exception):
+    def __init__(self, message, status_code=None):
+        super().__init__(message)
+        if status_code is not None:
+            self.status_code = status_code
+
+
+class RateLimitError(Exception):
+    """Mimics an SDK exception class recognized by name (matched by class name)."""
+
+
+def test_status_code_extracted_from_attribute():
+    assert _error_status_code(_StatusError("nope", status_code=429)) == 429
+
+
+def test_status_code_from_nested_response():
+    err = Exception("x")
+    err.response = types.SimpleNamespace(status_code=503)
+    assert _error_status_code(err) == 503
+
+
+def test_status_code_none_when_absent():
+    assert _error_status_code(RuntimeError("just a message")) is None
+
+
+def test_retryable_transient_status_codes():
+    for code in (408, 429, 500, 502, 503, 504, 529):
+        assert _is_retryable_error(_StatusError("boom", status_code=code)), code
+
+
+def test_hard_4xx_not_retryable_even_with_retryable_text():
+    # A 400 whose message coincidentally says "503" must NOT be retried: the
+    # structured status code is authoritative over the substring fallback.
+    err = _StatusError("upstream returned 503 earlier", status_code=400)
+    assert not _is_retryable_error(err)
+
+
+def test_401_and_404_not_retryable():
+    assert not _is_retryable_error(_StatusError("unauthorized", status_code=401))
+    assert not _is_retryable_error(_StatusError("not found", status_code=404))
+
+
+def test_retryable_by_exception_class_name():
+    assert _is_retryable_error(RateLimitError("no text markers here"))
+
+
+def test_retryable_substring_fallback():
+    assert _is_retryable_error(RuntimeError("503 upstream"))
+    assert _is_retryable_error(RuntimeError("Too Many Requests"))
+    assert _is_retryable_error(RuntimeError("connection reset"))
+
+
+def test_non_retryable_plain_error():
+    assert not _is_retryable_error(RuntimeError("invalid request: bad field"))
+
+
+def test_bool_attribute_not_read_as_status_code():
+    err = Exception("x")
+    err.status_code = True
+    assert _error_status_code(err) is None
 
 
 def _make_anthropic(monkeypatch, model="claude-sonnet-4-6"):
