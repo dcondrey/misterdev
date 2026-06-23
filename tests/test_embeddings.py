@@ -41,6 +41,32 @@ def test_ranker_orders_by_relevance():
     assert set(top) == {"y", "z"}
 
 
+def test_local_embedding_client_reranks_end_to_end():
+    # End-to-end, no network: the real LocalEmbeddingClient (fastembed model
+    # mocked) drives SemanticRanker, which must reorder candidates by dense
+    # similarity to the query.
+    import types
+
+    from my_project_orchestrator.llm.client import LocalEmbeddingClient
+
+    vectors = {
+        "parse the auth token": [1.0, 0.0],
+        "tokenize the input string": [0.9, 0.1],  # near the query
+        "render the html page": [0.0, 1.0],  # far from the query
+    }
+    client = LocalEmbeddingClient({"llm": {}})
+    client._embedder = types.SimpleNamespace(
+        embed=lambda texts: [vectors[t] for t in texts]
+    )
+    ranker = SemanticRanker(client, lexical_weight=0.0)  # pure dense
+    candidates = {
+        "near": "tokenize the input string",
+        "far": "render the html page",
+    }
+    top = ranker.top_k("parse the auth token", candidates, 1)
+    assert top == ["near"]
+
+
 def test_ranker_returns_all_when_k_exceeds_candidates():
     embedder = FakeEmbedder()
     ranker = SemanticRanker(embedder)
