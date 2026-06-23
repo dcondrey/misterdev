@@ -41,6 +41,10 @@ class ContainerEnvironmentManager(BaseEnvironmentManager):
         # Container egress control from governance.network ("none" disables the
         # container network). None leaves the engine default unchanged.
         self.network = network
+        # Optional resource caps for the throwaway container; unset -> no flag.
+        self.memory = config.get("memory")
+        self.cpus = config.get("cpus")
+        self.pids_limit = config.get("pids_limit")
         self._engine: Optional[ContainerEngine] = None
 
     def setup(self) -> bool:
@@ -62,6 +66,9 @@ class ContainerEnvironmentManager(BaseEnvironmentManager):
             self.project_path,
             self.mount_path,
             network=self.network,
+            memory=self.memory,
+            cpus=self.cpus,
+            pids_limit=self.pids_limit,
         )
         return True
 

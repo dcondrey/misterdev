@@ -107,6 +107,48 @@ def test_wrap_command_omits_network_flag_by_default(monkeypatch):
         assert "--network" not in eng.wrap_command("pytest -q", timeout=60)
 
 
+def test_wrap_command_omits_resource_flags_by_default(monkeypatch):
+    monkeypatch.setattr(container.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(container.os, "getgid", lambda: 20, raising=False)
+    # Unconfigured: argv must be byte-identical to the pre-hardening output.
+    eng = ContainerEngine("docker", "img", Path("/repo"))
+    argv = eng.wrap_command("pytest -q", timeout=60)
+    assert "--memory" not in argv
+    assert "--cpus" not in argv
+    assert "--pids-limit" not in argv
+
+
+def test_wrap_command_emits_resource_limits_when_set(monkeypatch):
+    monkeypatch.setattr(container.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(container.os, "getgid", lambda: 20, raising=False)
+    eng = ContainerEngine(
+        "docker", "img", Path("/repo"), memory="512m", cpus="1.5", pids_limit=2048
+    )
+    argv = eng.wrap_command("pytest -q", timeout=60)
+    assert argv[argv.index("--memory") + 1] == "512m"
+    assert argv[argv.index("--cpus") + 1] == "1.5"
+    assert argv[argv.index("--pids-limit") + 1] == "2048"
+    # Limits precede the image/command, not after.
+    assert argv.index("--memory") < argv.index("img")
+
+
+def test_env_manager_passes_resource_limits_to_engine(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "my_project_orchestrator.environments.container_env.detect_engine",
+        lambda preferred=None: "docker",
+    )
+    mgr = ContainerEnvironmentManager(
+        {"type": "docker", "memory": "256m", "cpus": "2", "pids_limit": 512},
+        tmp_path,
+        language="python",
+    )
+    mgr.setup()
+    eng = mgr.engine()
+    assert eng.memory == "256m"
+    assert eng.cpus == "2"
+    assert eng.pids_limit == 512
+
+
 def test_env_manager_passes_network_to_engine(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "my_project_orchestrator.environments.container_env.detect_engine",

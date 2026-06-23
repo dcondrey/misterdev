@@ -46,6 +46,9 @@ environment:
 #   type: "docker"
 #   image: "python:3.12-slim"   # optional; else auto from language
 #   engine: "podman"            # optional; else rootless-first auto-detect
+#   memory: "512m"              # optional; cap container memory (docker --memory)
+#   cpus: "1.5"                 # optional; cap container CPUs (docker --cpus)
+#   pids_limit: 2048            # optional; cap process count (fork-bomb guard)
 
 # Runtime smoke gate (opt-in, off by default). Set orchestrator.runtime_smoke
 # true and describe how to launch/probe the built artifact. Runs in a daemon

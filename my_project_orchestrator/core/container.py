@@ -120,6 +120,9 @@ class ContainerEngine:
         host_path: Path,
         mount_path: str = "/workspace",
         network: Optional[str] = None,
+        memory: Optional[str] = None,
+        cpus: Optional[str] = None,
+        pids_limit: Optional[int] = None,
     ):
         self.engine = engine
         self.image = image
@@ -130,6 +133,13 @@ class ContainerEngine:
         # off path is byte-identical to before. This constrains CONTAINERIZED
         # execution only — host execution and git stay on the host network.
         self.network = network
+        # Optional resource caps (environment.memory / .cpus / .pids_limit). Each
+        # is emitted only when set, so an unconfigured engine produces the exact
+        # same argv as before. They bound a runaway gate (fork bomb, memory hog)
+        # in the throwaway container without affecting host execution.
+        self.memory = memory
+        self.cpus = cpus
+        self.pids_limit = pids_limit
 
     def is_available(self) -> bool:
         return bool(self.engine)
@@ -162,6 +172,12 @@ class ContainerEngine:
         ]
         if self.network == "none":
             argv.extend(["--network", "none"])
+        if self.memory:
+            argv.extend(["--memory", str(self.memory)])
+        if self.cpus:
+            argv.extend(["--cpus", str(self.cpus)])
+        if self.pids_limit:
+            argv.extend(["--pids-limit", str(self.pids_limit)])
         argv.extend(self._user_args())
         argv.extend([self.image, "sh", "-c", command])
         return argv
