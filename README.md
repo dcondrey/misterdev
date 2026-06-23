@@ -151,7 +151,9 @@ project-orchestrator                                  # interactive planning
   (`container.py`), runtime smoke gate (`runtime.py`), web verification gate
   (`web_verify.py`), vision verification gate (`vision_verify.py`), mutation-score
   gate (`mutation_gate.py`), goal-completion check (`goal_check.py`), spec-as-tests
-  generator (`spec_tests.py`, deferred), MCP tool-host substrate (`mcp.py`).
+  generator (`spec_tests.py`, deferred), MCP tool-host substrate (`mcp.py`),
+  governance layer (`governance.py`, risk classifier + approval gate) and
+  append-only audit trail (`audit.py`).
 - **`llm/`** — provider clients, failover, token budgeting, SEARCH/REPLACE
   response parsing.
 - **`task_executors/`** — the try-test-fix inner loop and edit application.
@@ -166,6 +168,22 @@ project-orchestrator                                  # interactive planning
 - **Branch-per-task** with revert-on-failure; **dirty-tree guard** refuses to
   run over uncommitted work.
 - `--interactive` confirms each task; `--dry-run` plans without executing.
+- **Governance layer** (opt-in, `orchestrator.governance: true`): a precise risk
+  classifier gates executor commands that are destructive/irreversible/paid
+  (`rm -rf`, `git push --force`, `DROP TABLE`, `kubectl delete`, `terraform
+  destroy`, cloud `delete`, `docker system prune`, deploy/publish, pipe-to-shell)
+  while ordinary build/test/lint commands run untouched. In autonomous mode a
+  risky command is **blocked** with an escalation record unless
+  `governance.auto_approve` is set. **Off by default — the command path is
+  byte-identical to today when off.** Extra patterns via
+  `governance.approval_required`.
+- **Append-only audit trail** at `.orchestrator/audit.jsonl` (on by default,
+  gitignored): one structured JSONL line per command run + exit, edit, and gate
+  decision. Never raises into the build — an unwritable path degrades to a no-op.
+- **Container egress control** (`governance.network: none`): runs gate commands
+  with `--network none`. *Honest limit:* this constrains **containerized**
+  execution only (`environment.type: docker`); host execution and git keep their
+  normal network.
 
 ---
 

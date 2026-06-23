@@ -151,6 +151,26 @@ environment:
 # orchestrator:
 #   spec_as_tests: true   # staged but DEFERRED; logs a notice, generates nothing
 
+# Governance layer (opt-in, off by default). A precise risk classifier gates
+# executor commands that are destructive/irreversible/paid (rm -rf, git push
+# --force, DROP TABLE, kubectl delete, terraform destroy, aws/gcloud/az delete,
+# docker rmi / system prune, deploy/publish, curl|sh) while ordinary build/test/
+# lint commands run untouched. When ON in autonomous mode a risky command is
+# BLOCKED and an escalation is recorded unless auto_approve is set; OFF (default)
+# leaves the command path byte-identical to today. Interactive prompting is a
+# deferred seam (autonomous runs block rather than hang on stdin). An append-only
+# audit trail is written to .orchestrator/audit.jsonl regardless (on by default,
+# gitignored; never breaks a build).
+# orchestrator:
+#   governance: true
+# governance:
+#   auto_approve: false           # true => risky commands run unattended
+#   approval_required:            # extra risky regex patterns (matched case-insensitively)
+#     - "\\bhelm\\s+delete\\b"
+#   network: "none"               # container egress: "none" runs gate commands with
+#                                 # --network none. CONTAINER-ONLY (environment.type:
+#                                 # docker); host execution and git keep their network.
+
 # Build workflow settings (6-phase autonomous builder)
 build:
   max_tasks: 30
