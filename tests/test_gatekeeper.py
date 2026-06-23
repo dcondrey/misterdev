@@ -332,3 +332,54 @@ def test_gatekeeper_explicit_lint_timeout(monkeypatch):
     keeper.run_gates({"lint_command": "clippy", "test_command": "test"})
     assert calls["clippy"] == 240
     assert calls["test"] == 300
+
+
+def test_run_gates_surfaces_banned_and_secrets():
+    # Non-git repo: scans all files. A banned marker and a planted secret must
+    # surface as G5/G6 issues through the full gate run.
+    root = _make_project(
+        {
+            "src/a.py": "x = 1  # FIXME broken\n",
+            "src/conf.py": 'API_KEY = "sk-deadbeefdeadbeefdeadbeef"\n',
+        }
+    )
+    gk = GateKeeper(root)
+    success, issues, _ = gk.run_gates({})
+    assert not success
+    assert any("G5" in i for i in issues)
+    assert any("G6" in i for i in issues)
+
+
+def test_lsp_gate_blocks_on_errors(monkeypatch):
+    import my_project_orchestrator.core.lsp as lspmod
+
+    monkeypatch.setattr(
+        lspmod, "find_source_files", lambda root, lang, cap=40: ["a.py"]
+    )
+    monkeypatch.setattr(
+        lspmod,
+        "collect_diagnostics",
+        lambda root, lang, files, timeout=30: [
+            {"file": "a.py", "line": 3, "message": "undefined name"}
+        ],
+    )
+    gk = GateKeeper(_make_project(), lsp_diagnostics=True, lsp_language="python")
+    success, issues, _ = gk.run_gates({})
+    assert not success
+    assert any("G4.5" in i and "undefined name" in i for i in issues)
+
+
+def test_lsp_gate_skips_when_no_diagnostics(monkeypatch):
+    import my_project_orchestrator.core.lsp as lspmod
+
+    monkeypatch.setattr(
+        lspmod, "find_source_files", lambda root, lang, cap=40: ["a.py"]
+    )
+    # None = server unavailable/slow -> skip, never fail.
+    monkeypatch.setattr(
+        lspmod, "collect_diagnostics", lambda root, lang, files, timeout=30: None
+    )
+    gk = GateKeeper(_make_project(), lsp_diagnostics=True, lsp_language="python")
+    success, issues, _ = gk.run_gates({})
+    assert success
+    assert not any("G4.5" in i for i in issues)
