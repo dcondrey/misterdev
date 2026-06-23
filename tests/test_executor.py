@@ -371,14 +371,16 @@ def test_surgical_edit_applies_to_large_file_end_to_end():
     # model reprinting it (which truncates past the output-token limit).
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
-        original = "\n".join(f"line {i}" for i in range(2000)) + "\n"
+        # Valid Rust so the (now tree-sitter-based) syntax gate passes; the file
+        # is large enough to exercise the surgical path.
+        original = "\n".join(f"const LINE_{i}: i32 = {i};" for i in range(2000)) + "\n"
         (td / "big.rs").write_text(original)
         response = (
             "```rust:big.rs\n"
             "<<<<<<< SEARCH\n"
-            "line 1500\n"
+            "const LINE_1500: i32 = 1500;\n"
             "=======\n"
-            "line 1500 EDITED\n"
+            "const LINE_1500: i32 = 9999;\n"
             ">>>>>>> REPLACE\n"
             "```\n"
         )
@@ -391,7 +393,7 @@ def test_surgical_edit_applies_to_large_file_end_to_end():
 
         assert result.status == "completed"
         new = (td / "big.rs").read_text()
-        assert "line 1500 EDITED" in new
+        assert "const LINE_1500: i32 = 9999;" in new
         # every other line preserved: same line count, only one line differs
         assert new.count("\n") == original.count("\n")
         o_lines, n_lines = original.splitlines(), new.splitlines()

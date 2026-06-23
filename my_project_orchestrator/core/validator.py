@@ -271,6 +271,17 @@ class CodeValidator:
         # bracket check for shell rather than emit false "unclosed delimiter".
         if lang in ["shell", "sh", "bash", "zsh"]:
             return True, None
+        # Real parse-based check for languages with a trustworthy grammar. It
+        # understands strings/comments (so braces in a literal don't false-trip)
+        # and catches actual syntax errors that brace-balancing misses.
+        try:
+            from my_project_orchestrator.core.topography import check_syntax
+
+            result = check_syntax(content, lang)
+        except ImportError:
+            result = None
+        if result is not None:
+            return result
         return CodeValidator._basic_integrity_check(content)
 
     @staticmethod

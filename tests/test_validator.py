@@ -58,6 +58,30 @@ def test_code_validator_unbalanced():
     assert not valid
 
 
+def test_code_validator_rust_brace_in_string_passes():
+    # Regression: brace-counting falsely rejected a brace inside a string; the
+    # tree-sitter gate understands string literals.
+    valid, err = CodeValidator.validate_code('fn f() { let s = "}"; }', language="rust")
+    assert valid and err is None
+
+
+def test_code_validator_rust_real_syntax_error():
+    valid, err = CodeValidator.validate_code("fn f( { let", language="rust")
+    assert not valid and "syntax error" in err
+
+
+def test_code_validator_tsx_jsx_passes():
+    valid, err = CodeValidator.validate_code(
+        "const v = <div>{x}</div>;", language="typescript"
+    )
+    assert valid and err is None
+
+
+def test_code_validator_csharp_syntax_error():
+    valid, err = CodeValidator.validate_code("class A { void M( {", language="csharp")
+    assert not valid
+
+
 def test_certainty_high():
     score = CertaintyScorer.compute_score(
         "I have verified that this is correct. Tests pass successfully. The solution is complete."

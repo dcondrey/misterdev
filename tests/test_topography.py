@@ -5,7 +5,82 @@ from my_project_orchestrator.core.topography import (
     SymbolNode,
     SymbolGraph,
     TopographyEngine,
+    check_syntax,
 )
+
+
+def test_symbol_graph_parses_javascript():
+    syms = _symbols_for("a.js", "function f(x){return x}\nclass A { m() {} }")
+    if not syms:
+        return
+    assert ("function", "f") in syms
+    assert ("class", "A") in syms
+    assert ("method", "A.m") in syms
+
+
+def test_symbol_graph_parses_kotlin():
+    syms = _symbols_for(
+        "E.kt", "class Engine {\n  fun start() {}\n}\nfun run() {}\nobject Reg {}"
+    )
+    if not syms:
+        return
+    assert ("class", "Engine") in syms
+    assert ("method", "Engine.start") in syms
+    assert ("function", "run") in syms
+    assert ("object", "Reg") in syms
+
+
+def test_typescript_captures_enum_arrow_const_and_labels():
+    syms = _symbols_for(
+        "app.ts",
+        "export interface Cmd { n: string }\nexport type Id = string;\n"
+        "export enum Mode { A, B }\nexport const run = (x: number) => x + 1;\n",
+    )
+    if not syms:
+        return
+    assert ("interface", "Cmd") in syms
+    assert ("type", "Id") in syms
+    assert ("enum", "Mode") in syms
+    assert ("function", "run") in syms  # arrow-const captured as a function
+
+
+def test_tsx_arrow_component_captured():
+    syms = _symbols_for("ui.tsx", "export const View = () => <div>{x}</div>;")
+    if not syms:
+        return
+    assert ("function", "View") in syms
+
+
+# --- check_syntax: real parse-based correctness verification ----------------
+
+
+def test_check_syntax_valid_and_invalid_rust():
+    if check_syntax("fn main() {}", "rust") is None:
+        return
+    assert check_syntax("fn main() {}", "rust") == (True, None)
+    ok, msg = check_syntax("fn main( { let", "rust")
+    assert ok is False and "syntax error" in msg
+
+
+def test_check_syntax_brace_in_string_not_flagged():
+    # The killer case for brace-counting: a brace inside a string literal.
+    result = check_syntax('fn f() { let s = "}"; }', "rust")
+    if result is None:
+        return
+    assert result == (True, None)
+
+
+def test_check_syntax_tsx_jsx_not_false_flagged():
+    result = check_syntax("const v = <a href='x'>{y}</a>;", "typescript")
+    if result is None:
+        return
+    assert result == (True, None)
+
+
+def test_check_syntax_unsupported_returns_none():
+    # No trustworthy grammar (Kotlin excluded, Java unsupported) -> defer.
+    assert check_syntax("class A {}", "java") is None
+    assert check_syntax("fun x() {}", "kotlin") is None
 
 
 def _symbols_for(filename: str, source: str):

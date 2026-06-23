@@ -40,6 +40,8 @@ def _get_ts_parsers() -> Dict[str, Any]:
         "cpp": "tree_sitter_cpp",
         "swift": "tree_sitter_swift",
         "csharp": "tree_sitter_c_sharp",
+        "javascript": "tree_sitter_javascript",
+        "kotlin": "tree_sitter_kotlin",
     }
     for lang_name, module_name in grammars.items():
         try:
@@ -110,6 +112,12 @@ _EXT_TO_LANG: Dict[str, str] = {
     ".hh": "cpp",
     ".swift": "swift",
     ".cs": "csharp",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
 }
 
 
@@ -120,6 +128,48 @@ def _node_text(src: bytes, node: Any) -> str:
     bytes and decode after, never on the str.
     """
     return src[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
+
+
+# Languages whose tree-sitter grammar is trustworthy enough to gate edits on.
+# Kotlin is excluded: its grammar emits ERROR nodes on some valid code, which
+# would false-reject correct edits. TypeScript is parsed with the TSX grammar
+# (a superset) so JSX never trips a false syntax error.
+_SYNTAX_CHECK_LANGS = {
+    "rust", "c", "cpp", "csharp", "swift", "javascript", "typescript", "tsx",
+}
+
+
+def _first_error_node(node: Any):
+    """Pre-order search for the first ERROR or MISSING node, or None."""
+    if node.type == "ERROR" or node.is_missing:
+        return node
+    for child in node.children:
+        found = _first_error_node(child)
+        if found is not None:
+            return found
+    return None
+
+
+def check_syntax(source: str, lang: str):
+    """Verify ``source`` parses cleanly for ``lang`` using tree-sitter.
+
+    Returns ``(ok, message)`` when the language has a trustworthy grammar, or
+    ``None`` when it does not (the caller then falls back to a lighter check).
+    Unlike brace-counting, this understands strings and comments, so braces in
+    a string literal never false-trip and real syntax errors are caught before
+    the expensive build gate.
+    """
+    parsers = _get_ts_parsers()
+    key = "tsx" if lang in ("typescript", "tsx") else lang
+    if lang not in _SYNTAX_CHECK_LANGS or key not in parsers:
+        return None
+    tree = parsers[key].parse(source.encode("utf-8"))
+    err = _first_error_node(tree.root_node)
+    if err is None:
+        return True, None
+    line = err.start_point[0] + 1
+    snippet = source.split("\n")[err.start_point[0]].strip()[:80]
+    return False, f"{lang} syntax error near line {line}: {snippet}"
 
 
 class SymbolGraph:
@@ -177,8 +227,10 @@ class SymbolGraph:
 
         if lang == "rust":
             self._traverse_rust(tree.root_node, content, rel_path)
-        elif lang in ("typescript", "tsx"):
+        elif lang in ("typescript", "tsx", "javascript"):
             self._traverse_typescript(tree.root_node, content, rel_path)
+        elif lang == "kotlin":
+            self._traverse_kotlin(tree.root_node, content, rel_path)
         elif lang in ("c", "cpp"):
             self._traverse_clike(tree.root_node, content, rel_path)
         elif lang == "swift":
@@ -278,13 +330,18 @@ class SymbolGraph:
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = _node_text(content, name_node)
-                self._add_symbol(name, file_path, "function", node, content)
+                full = f"{parent_class}.{name}" if parent_class else name
+                self._add_symbol(
+                    full, file_path, "method" if parent_class else "function",
+                    node, content,
+                )
 
         elif t in ("class_declaration", "interface_declaration"):
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = _node_text(content, name_node)
-                self._add_symbol(name, file_path, "class", node, content)
+                kind = "interface" if t == "interface_declaration" else "class"
+                self._add_symbol(name, file_path, kind, node, content)
                 body_node = node.child_by_field_name("body")
                 if body_node:
                     for child in body_node.children:
@@ -292,6 +349,33 @@ class SymbolGraph:
                             child, content, file_path, parent_class=name
                         )
                 return
+
+        elif t == "enum_declaration":
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                self._add_symbol(
+                    _node_text(content, name_node), file_path, "enum", node, content
+                )
+
+        elif t in ("lexical_declaration", "variable_declaration"):
+            # const/let X = () => {...} or function(){...}: how React components
+            # and most modern TS/JS functions are written. Capture the binding.
+            for decl in node.children:
+                if decl.type != "variable_declarator":
+                    continue
+                value = decl.child_by_field_name("value")
+                name_node = decl.child_by_field_name("name")
+                if (
+                    name_node
+                    and value is not None
+                    and value.type in ("arrow_function", "function_expression")
+                ):
+                    name = _node_text(content, name_node)
+                    full = f"{parent_class}.{name}" if parent_class else name
+                    self._add_symbol(
+                        full, file_path, "method" if parent_class else "function",
+                        node, content,
+                    )
 
         elif t == "method_definition":
             name_node = node.child_by_field_name("name")
@@ -305,7 +389,7 @@ class SymbolGraph:
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = _node_text(content, name_node)
-                self._add_symbol(name, file_path, "class", node, content)
+                self._add_symbol(name, file_path, "type", node, content)
 
         elif t == "export_statement":
             for child in node.children:
@@ -432,6 +516,36 @@ class SymbolGraph:
 
         for child in node.children:
             self._traverse_csharp(child, content, file_path, parent)
+
+    def _traverse_kotlin(
+        self, node: Any, content: str, file_path: str, parent: Optional[str] = None
+    ):
+        # Best-effort: the Kotlin grammar reports ERROR nodes on some valid
+        # code, so always recurse all children (declarations under an ERROR
+        # node are still captured) and never use Kotlin for the syntax gate.
+        t = node.type
+        if t == "function_declaration":
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                name = _node_text(content, name_node)
+                full = f"{parent}.{name}" if parent else name
+                self._add_symbol(
+                    full, file_path, "method" if parent else "function", node, content
+                )
+        elif t in ("class_declaration", "object_declaration"):
+            name_node = node.child_by_field_name("name") or self._first_child_of_type(
+                node, "type_identifier"
+            )
+            if name_node:
+                name = _node_text(content, name_node)
+                kind = "object" if t == "object_declaration" else "class"
+                self._add_symbol(name, file_path, kind, node, content)
+                for child in node.children:
+                    self._traverse_kotlin(child, content, file_path, parent=name)
+                return
+
+        for child in node.children:
+            self._traverse_kotlin(child, content, file_path, parent)
 
     @staticmethod
     def _first_child_of_type(node: Any, type_name: str) -> Any:
