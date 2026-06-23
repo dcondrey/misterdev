@@ -497,9 +497,24 @@ def _read_docs(project_path: Path) -> str:
 
 
 _OVERVIEW_CODE_EXTS = {
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go", ".java",
-    ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh",
-    ".swift", ".cs", ".kt",
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".rs",
+    ".go",
+    ".java",
+    ".c",
+    ".h",
+    ".cpp",
+    ".cc",
+    ".cxx",
+    ".hpp",
+    ".hh",
+    ".swift",
+    ".cs",
+    ".kt",
 }
 
 

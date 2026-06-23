@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 from my_project_orchestrator.logging_setup import setup_logger
 
@@ -21,11 +21,14 @@ logger = setup_logger(__name__)
 #   File "file.py", line 42
 #   --> file.py:42:10
 _LOCATION_PATTERNS: list[re.Pattern] = [
-    re.compile(r'^(?P<file>[^\s:]+\.(?:py|js|ts|rs|go|java|c|cpp|h|rb|cs))'
-               r':(?P<line>\d+)(?::\d+)?[:\s]', re.MULTILINE),
+    re.compile(
+        r"^(?P<file>[^\s:]+\.(?:py|js|ts|rs|go|java|c|cpp|h|rb|cs))"
+        r":(?P<line>\d+)(?::\d+)?[:\s]",
+        re.MULTILINE,
+    ),
     re.compile(r'File "(?P<file>[^"]+)", line (?P<line>\d+)', re.MULTILINE),
-    re.compile(r'-->\s*(?P<file>[^\s:]+):(?P<line>\d+):\d+', re.MULTILINE),
-    re.compile(r'at (?P<file>[^\s(]+)\(.*:(?P<line>\d+)\)', re.MULTILINE),
+    re.compile(r"-->\s*(?P<file>[^\s:]+):(?P<line>\d+):\d+", re.MULTILINE),
+    re.compile(r"at (?P<file>[^\s(]+)\(.*:(?P<line>\d+)\)", re.MULTILINE),
 ]
 
 
@@ -80,10 +83,14 @@ class ErrorResolver:
                 seen.add(key)
 
                 snippet = self._read_snippet(file_str, line_no)
-                locations.append(ErrorLocation(file=file_str, line=line_no, snippet=snippet))
+                locations.append(
+                    ErrorLocation(file=file_str, line=line_no, snippet=snippet)
+                )
 
         if not locations:
-            logger.debug("ErrorResolver: no structured locations found in error output.")
+            logger.debug(
+                "ErrorResolver: no structured locations found in error output."
+            )
 
         return locations
 
@@ -114,7 +121,9 @@ class ErrorResolver:
         for path in candidates:
             if path.exists():
                 try:
-                    source_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+                    source_lines = path.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).splitlines()
                     start = max(0, line_no - context - 1)
                     end = min(len(source_lines), line_no + context)
                     numbered = [

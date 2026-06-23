@@ -7,11 +7,9 @@ Verifies:
 - ContextBudget accepts a custom max_tokens constructor argument.
 """
 
-import concurrent.futures
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 from my_project_orchestrator.core.config import DEFAULT_CONFIG
 from my_project_orchestrator.core.context_budget import ContextBudget

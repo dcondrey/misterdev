@@ -19,7 +19,6 @@ HMS_AVAILABLE = HMS_PATH.exists() and (HMS_PATH / "project.yaml").exists()
 
 @pytest.mark.skipif(not HMS_AVAILABLE, reason="HMS project not available")
 class TestHMSIntegration:
-
     def _load_tasks(self):
         cfg = ConfigManager().load_project_config(HMS_PATH)
 
@@ -34,7 +33,9 @@ class TestHMSIntegration:
     def test_discovers_all_task_files(self):
         tm = self._load_tasks()
         task_ids = sorted(tm.tasks.keys())
-        assert len(task_ids) >= 23, f"Expected 23+ tasks, got {len(task_ids)}: {task_ids}"
+        assert len(task_ids) >= 23, (
+            f"Expected 23+ tasks, got {len(task_ids)}: {task_ids}"
+        )
 
     def test_skips_documentation_files(self):
         tm = self._load_tasks()
@@ -54,14 +55,20 @@ class TestHMSIntegration:
 
     def test_group1_has_no_dependencies(self):
         tm = self._load_tasks()
-        g1_ids = [tid for tid, t in tm.tasks.items() if t.processor_data.get("group") == "G1"]
+        g1_ids = [
+            tid for tid, t in tm.tasks.items() if t.processor_data.get("group") == "G1"
+        ]
         assert len(g1_ids) == 5, f"Expected 5 G1 tasks, got {g1_ids}"
         for tid in g1_ids:
-            assert tm.tasks[tid].dependencies == [], f"G1 task {tid} should have no deps"
+            assert tm.tasks[tid].dependencies == [], (
+                f"G1 task {tid} should have no deps"
+            )
 
     def test_group2_depends_on_group1(self):
         tm = self._load_tasks()
-        g2_ids = [tid for tid, t in tm.tasks.items() if t.processor_data.get("group") == "G2"]
+        g2_ids = [
+            tid for tid, t in tm.tasks.items() if t.processor_data.get("group") == "G2"
+        ]
         assert len(g2_ids) >= 1
         for tid in g2_ids:
             deps = tm.tasks[tid].dependencies

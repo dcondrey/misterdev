@@ -5,6 +5,7 @@ from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
 
+
 class FormatterTool(CommandTool):
     def execute(self, project: Any, file_path: str = ".") -> Tuple[bool, str]:
         """

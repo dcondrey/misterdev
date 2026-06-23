@@ -8,6 +8,7 @@ ephemeral cleanup, and report persistence.
 
 import json
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -1231,15 +1232,17 @@ def test_integration_gate_reverts_regressing_task():
 
         # Sanity: suite is red at HEAD before the gate runs.
         ok_before, _ = executor._run_command(
-            project, "python -m pytest -q", timeout=120
+            project, f"{sys.executable} -m pytest -q", timeout=120
         )
         assert not ok_before
 
         reverted = orch._integration_gate(
-            project, executor, "python -m pytest -q", [task], timeout=120
+            project, executor, f"{sys.executable} -m pytest -q", [task], timeout=120
         )
         assert reverted == ["T-bad"]
-        ok_after, _ = executor._run_command(project, "python -m pytest -q", timeout=120)
+        ok_after, _ = executor._run_command(
+            project, f"{sys.executable} -m pytest -q", timeout=120
+        )
         assert ok_after  # tree restored to green
 
         # HEAD must remain attached to the branch (not detached by bisect), or
@@ -1281,14 +1284,14 @@ def test_integration_gate_noop_when_suite_stays_green():
         orch = ProjectOrchestrator()
         task = SimpleNamespace(id="T-ok")
         reverted = orch._integration_gate(
-            project, executor, "python -m pytest -q", [task], timeout=120
+            project, executor, f"{sys.executable} -m pytest -q", [task], timeout=120
         )
         assert reverted == []
 
 
 # --- interactive planner: advisor + goal selection --------------------------
 def test_recommend_work_parses_and_normalizes():
-    from my_project_orchestrator.core.advisor import recommend_work, Recommendation
+    from my_project_orchestrator.core.advisor import recommend_work
     from my_project_orchestrator.core.assessment import ProjectAssessment
 
     class _LLM:
@@ -1422,7 +1425,7 @@ def test_run_health_check_populates_test_count():
         (root / "test_x.py").write_text(
             "def test_a():\n    assert True\n", encoding="utf-8"
         )
-        health = run_health_check(root, None, "python -m pytest -q", None)
+        health = run_health_check(root, None, f"{sys.executable} -m pytest -q", None)
         assert health.test_count == 1 and health.test_failures == 0
         assert health.tests_pass
 
@@ -1837,7 +1840,7 @@ def test_full_pipeline_offline_smart_build(monkeypatch):
 
         assessment = ProjectAssessment()
         assessment.structure.build_command = "true"
-        assessment.structure.test_command = "python -m pytest -q"
+        assessment.structure.test_command = f"{sys.executable} -m pytest -q"
         assessment.health = HealthCheck(builds=True, tests_pass=True, test_count=1)
 
         from datetime import datetime, timezone
@@ -1871,7 +1874,7 @@ def test_full_pipeline_offline_smart_build(monkeypatch):
         # Full suite still green (integration gate did not revert), tree clean.
         assert (
             subprocess.run(
-                ["python", "-m", "pytest", "-q"],
+                [sys.executable, "-m", "pytest", "-q"],
                 cwd=repo,
                 capture_output=True,
                 text=True,

@@ -1,7 +1,6 @@
 import tempfile
 from pathlib import Path
 
-import pytest
 
 from my_project_orchestrator.tools.command import CommandTool
 

@@ -13,7 +13,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from my_project_orchestrator.logging_setup import setup_logger
 from my_project_orchestrator.llm.client import BaseLLMClient
@@ -59,7 +59,7 @@ class EphemeralCodeManager:
                 output += f"\nERR: {res.stderr}"
             return res.returncode == 0, output
         except subprocess.TimeoutExpired:
-            return False, f"Ephemeral script timed out after 60s"
+            return False, "Ephemeral script timed out after 60s"
         except Exception as e:
             return False, str(e)
 

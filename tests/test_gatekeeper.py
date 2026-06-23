@@ -328,9 +328,7 @@ def test_gatekeeper_explicit_lint_timeout(monkeypatch):
         return True, "ok"
 
     monkeypatch.setattr(gk, "_run_cmd", fake_run_cmd)
-    keeper = gk.GateKeeper(
-        _make_project(), test_timeout=300, lint_timeout=240
-    )
+    keeper = gk.GateKeeper(_make_project(), test_timeout=300, lint_timeout=240)
     keeper.run_gates({"lint_command": "clippy", "test_command": "test"})
     assert calls["clippy"] == 240
     assert calls["test"] == 300

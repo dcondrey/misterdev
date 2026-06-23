@@ -6,6 +6,7 @@ from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
 
+
 class GitTool(CommandTool):
     """Tool for common Git operations including worktrees and branching."""
 
@@ -15,7 +16,9 @@ class GitTool(CommandTool):
         elif action == "add":
             return self.add(project, kwargs.get("files", "."))
         elif action == "commit":
-            return self.commit(project, kwargs.get("message", "Auto-commit by Project Orchestrator"))
+            return self.commit(
+                project, kwargs.get("message", "Auto-commit by Project Orchestrator")
+            )
         elif action == "diff":
             return self.diff(project)
         elif action == "worktree_add":
@@ -33,26 +36,37 @@ class GitTool(CommandTool):
         else:
             return super().execute(project, command=f"git {shlex.quote(action)}")
 
-    def worktree_add(self, project: Any, path: str, branch: str, new_branch: bool = False) -> Tuple[bool, str]:
-        logger.info(f"Creating git worktree at {path} (branch: {branch}, new={new_branch})")
+    def worktree_add(
+        self, project: Any, path: str, branch: str, new_branch: bool = False
+    ) -> Tuple[bool, str]:
+        logger.info(
+            f"Creating git worktree at {path} (branch: {branch}, new={new_branch})"
+        )
         flag = "-b " if new_branch else ""
         return super().execute(
-            project, command=f"git worktree add {shlex.quote(path)} {flag}{shlex.quote(branch)}"
+            project,
+            command=f"git worktree add {shlex.quote(path)} {flag}{shlex.quote(branch)}",
         )
 
     def worktree_remove(self, project: Any, path: str) -> Tuple[bool, str]:
         logger.info(f"Removing git worktree at {path}")
-        return super().execute(project, command=f"git worktree remove --force {shlex.quote(path)}")
+        return super().execute(
+            project, command=f"git worktree remove --force {shlex.quote(path)}"
+        )
 
     def merge_worktree(self, project: Any, branch: str) -> Tuple[bool, str]:
         """Merge a worktree's branch into the current branch, then delete it."""
-        success, out = super().execute(project, command=f"git merge --no-ff {shlex.quote(branch)} --no-edit")
+        success, out = super().execute(
+            project, command=f"git merge --no-ff {shlex.quote(branch)} --no-edit"
+        )
         if success:
             super().execute(project, command=f"git branch -d {shlex.quote(branch)}")
         return success, out
 
     def branch_create(self, project: Any, branch: str) -> Tuple[bool, str]:
-        return super().execute(project, command=f"git checkout -b {shlex.quote(branch)}")
+        return super().execute(
+            project, command=f"git checkout -b {shlex.quote(branch)}"
+        )
 
     def branch_delete(self, project: Any, branch: str) -> Tuple[bool, str]:
         return super().execute(project, command=f"git branch -D {shlex.quote(branch)}")

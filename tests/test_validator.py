@@ -1,5 +1,9 @@
 from my_project_orchestrator.core.validator import (
-    CodeValidator, CertaintyScorer, StallDetector, _tokenize, _parse_test_counts,
+    CodeValidator,
+    CertaintyScorer,
+    StallDetector,
+    _tokenize,
+    _parse_test_counts,
 )
 
 
@@ -49,12 +53,16 @@ def test_code_validator_invalid_python():
 
 
 def test_code_validator_balanced_braces():
-    valid, err = CodeValidator.validate_code("fn main() { let x = [1, 2]; }", language="rust")
+    valid, err = CodeValidator.validate_code(
+        "fn main() { let x = [1, 2]; }", language="rust"
+    )
     assert valid and err is None
 
 
 def test_code_validator_unbalanced():
-    valid, err = CodeValidator.validate_code("fn main() { let x = [1, 2; }", language="rust")
+    valid, err = CodeValidator.validate_code(
+        "fn main() { let x = [1, 2; }", language="rust"
+    )
     assert not valid
 
 
@@ -90,13 +98,17 @@ def test_certainty_high():
 
 
 def test_certainty_low():
-    score = CertaintyScorer.compute_score("Maybe this could work, not sure, possibly wrong.")
+    score = CertaintyScorer.compute_score(
+        "Maybe this could work, not sure, possibly wrong."
+    )
     assert score < 0.3
 
 
 def test_certainty_code_boost():
     score_no_code = CertaintyScorer.compute_score("Here is a solution.")
-    score_code = CertaintyScorer.compute_score("Here is a solution.\n```python\nx = 1\n```")
+    score_code = CertaintyScorer.compute_score(
+        "Here is a solution.\n```python\nx = 1\n```"
+    )
     assert score_code > score_no_code
 
 

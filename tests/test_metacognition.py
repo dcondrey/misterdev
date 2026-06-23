@@ -2,7 +2,10 @@ import json
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.metacognition import _extract_json_array, SessionAuditor
+from my_project_orchestrator.core.metacognition import (
+    _extract_json_array,
+    SessionAuditor,
+)
 
 
 def test_extract_json_array_simple():

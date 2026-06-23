@@ -1,14 +1,20 @@
 from my_project_orchestrator.core.models import Task
 from my_project_orchestrator.core.decomposer import (
-    topological_sort, _add_implicit_dependencies, _parse_tasks, format_plan,
+    topological_sort,
+    _add_implicit_dependencies,
+    _parse_tasks,
+    format_plan,
 )
 from my_project_orchestrator.core.modes import BuildMode
 
 
 def _task(id, deps=None, category="feature", files_create=None, files_modify=None):
     return Task(
-        id=id, description=id, project_ref=".",
-        dependencies=deps or [], category=category,
+        id=id,
+        description=id,
+        project_ref=".",
+        dependencies=deps or [],
+        category=category,
         files_to_create=files_create or [],
         files_to_modify=files_modify or [],
     )

@@ -42,24 +42,33 @@ class PreflightValidator:
         for task in tasks:
             for f in task.context_files:
                 if not (project_path / f).exists():
-                    issues.append(PreflightIssue(
-                        task.id, "warning", f"Context file '{f}' does not exist"
-                    ))
+                    issues.append(
+                        PreflightIssue(
+                            task.id, "warning", f"Context file '{f}' does not exist"
+                        )
+                    )
 
             for dep in task.dependencies:
                 if dep not in task_ids:
-                    issues.append(PreflightIssue(
-                        task.id, "error", f"Dependency '{dep}' does not match any task"
-                    ))
+                    issues.append(
+                        PreflightIssue(
+                            task.id,
+                            "error",
+                            f"Dependency '{dep}' does not match any task",
+                        )
+                    )
 
             test_cmd = task.processor_data.get("test_command")
             if test_cmd:
                 binary = test_cmd.split()[0]
                 if not shutil.which(binary):
-                    issues.append(PreflightIssue(
-                        task.id, "warning",
-                        f"Test command binary '{binary}' not found in PATH"
-                    ))
+                    issues.append(
+                        PreflightIssue(
+                            task.id,
+                            "warning",
+                            f"Test command binary '{binary}' not found in PATH",
+                        )
+                    )
 
             if not task.title:
                 issues.append(PreflightIssue(task.id, "warning", "Task has no title"))
@@ -70,11 +79,14 @@ class PreflightValidator:
         for file_path, tids in modifiers.items():
             independent = [t for t in tasks if t.id in tids and not t.dependencies]
             if len(tids) > 1 and len(independent) > 1:
-                issues.append(PreflightIssue(
-                    independent[1], "warning",
-                    f"File '{file_path}' modified by multiple independent tasks "
-                    f"({', '.join(tids)}); they may conflict if run in the same wave"
-                ))
+                issues.append(
+                    PreflightIssue(
+                        independent[1],
+                        "warning",
+                        f"File '{file_path}' modified by multiple independent tasks "
+                        f"({', '.join(tids)}); they may conflict if run in the same wave",
+                    )
+                )
 
         return issues
 

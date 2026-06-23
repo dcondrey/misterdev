@@ -36,83 +36,174 @@ class ErrorCategory:
 
 # (category, indicator_strings)
 _INDICATORS: List[Tuple[str, List[str]]] = [
-    (ErrorCategory.SYNTAX, [
-        "syntax error", "SyntaxError", "unexpected token",
-        "unexpected eof", "unterminated", "invalid syntax",
-        "expected one of", "expected `,`", "expected `{`", "expected `;`",
-        # clang/gcc/swiftc
-        "expected ';'", "expected expression", "expected '}'",
-        "expected declaration", "extraneous", "expected identifier",
-    ]),
-    (ErrorCategory.MISSING_IMPORT, [
-        "unresolved import", "ModuleNotFoundError", "No module named",
-        "could not find crate", "use of undeclared crate",
-        "cannot find module", "ImportError",
-        # swift / C / C++
-        "no such module", "cannot find interface declaration",
-    ]),
-    (ErrorCategory.MISSING_EXPORT, [
-        "is private", "not accessible", "module is private",
-        "function is private", "struct is private",
-        "pub(crate)", "inaccessible",
-        # swift / C++ / C#
-        "is inaccessible due to", "marked private", "not visible",
-        "inaccessible due to its protection level",
-    ]),
-    (ErrorCategory.WRONG_TYPE, [
-        "type mismatch", "expected type", "mismatched types",
-        "TypeError", "incompatible type", "cannot convert",
-        "expected struct", "expected enum", "wrong number of",
-        "arguments were supplied",
-        "the trait bound", "is not satisfied",
-        # swift / clang
-        "cannot convert value of type", "cannot initialize",
-        "no viable conversion", "no matching function for call",
-        "argument of type", "incompatible pointer",
-        # C# / roslyn
-        "cannot implicitly convert type", "cannot convert from",
-    ]),
-    (ErrorCategory.MISSING_SYMBOL, [
-        "not found in this scope", "cannot find value",
-        "cannot find function", "cannot find type",
-        "no field", "no method named", "no variant",
-        "NameError", "AttributeError",
-        "has no member", "unknown field",
-        # swift / clang
-        "use of undeclared identifier", "use of unresolved identifier",
-        "no member named", "has no member named",
-        # C# / roslyn
-        "does not contain a definition for",
-        "does not exist in the current context",
-    ]),
-    (ErrorCategory.TEST_ASSERTION, [
-        "assertion failed", "AssertionError", "assert_eq",
-        "assert_ne", "panicked at", "test result: FAILED",
-        "left:", "right:",
-        # XCTest / ctest
-        "XCTAssert", "XCTFail", "failed (", "tests failed out of",
-    ]),
-    (ErrorCategory.LINK_ERROR, [
-        "linker", "undefined reference", "unresolved external",
-        "link error", "multiple definition", "duplicate symbol",
-        # apple ld / clang
-        "undefined symbols for architecture", "symbol(s) not found",
-        "ld: ", "linker command failed",
-    ]),
-    (ErrorCategory.MANIFEST, [
-        "failed to parse manifest", "could not find `cargo.toml`",
-        "missing either a `[package]`", "virtual manifest",
-        "invalid toml", "expected value", "duplicate key",
-        "error parsing pyproject.toml", "invalid package.json",
-        # swiftpm / meson / cmake
-        "could not find package.swift", "manifest parse error",
-        "neither directory contains a build file", "cmake error",
-        "does not appear to contain cmakelists.txt",
-    ]),
-    (ErrorCategory.FILE_NOT_FOUND, [
-        "no such file or directory", "file not found",
-        "cannot open", "enoent",
-    ]),
+    (
+        ErrorCategory.SYNTAX,
+        [
+            "syntax error",
+            "SyntaxError",
+            "unexpected token",
+            "unexpected eof",
+            "unterminated",
+            "invalid syntax",
+            "expected one of",
+            "expected `,`",
+            "expected `{`",
+            "expected `;`",
+            # clang/gcc/swiftc
+            "expected ';'",
+            "expected expression",
+            "expected '}'",
+            "expected declaration",
+            "extraneous",
+            "expected identifier",
+        ],
+    ),
+    (
+        ErrorCategory.MISSING_IMPORT,
+        [
+            "unresolved import",
+            "ModuleNotFoundError",
+            "No module named",
+            "could not find crate",
+            "use of undeclared crate",
+            "cannot find module",
+            "ImportError",
+            # swift / C / C++
+            "no such module",
+            "cannot find interface declaration",
+        ],
+    ),
+    (
+        ErrorCategory.MISSING_EXPORT,
+        [
+            "is private",
+            "not accessible",
+            "module is private",
+            "function is private",
+            "struct is private",
+            "pub(crate)",
+            "inaccessible",
+            # swift / C++ / C#
+            "is inaccessible due to",
+            "marked private",
+            "not visible",
+            "inaccessible due to its protection level",
+        ],
+    ),
+    (
+        ErrorCategory.WRONG_TYPE,
+        [
+            "type mismatch",
+            "expected type",
+            "mismatched types",
+            "TypeError",
+            "incompatible type",
+            "cannot convert",
+            "expected struct",
+            "expected enum",
+            "wrong number of",
+            "arguments were supplied",
+            "the trait bound",
+            "is not satisfied",
+            # swift / clang
+            "cannot convert value of type",
+            "cannot initialize",
+            "no viable conversion",
+            "no matching function for call",
+            "argument of type",
+            "incompatible pointer",
+            # C# / roslyn
+            "cannot implicitly convert type",
+            "cannot convert from",
+        ],
+    ),
+    (
+        ErrorCategory.MISSING_SYMBOL,
+        [
+            "not found in this scope",
+            "cannot find value",
+            "cannot find function",
+            "cannot find type",
+            "no field",
+            "no method named",
+            "no variant",
+            "NameError",
+            "AttributeError",
+            "has no member",
+            "unknown field",
+            # swift / clang
+            "use of undeclared identifier",
+            "use of unresolved identifier",
+            "no member named",
+            "has no member named",
+            # C# / roslyn
+            "does not contain a definition for",
+            "does not exist in the current context",
+        ],
+    ),
+    (
+        ErrorCategory.TEST_ASSERTION,
+        [
+            "assertion failed",
+            "AssertionError",
+            "assert_eq",
+            "assert_ne",
+            "panicked at",
+            "test result: FAILED",
+            "left:",
+            "right:",
+            # XCTest / ctest
+            "XCTAssert",
+            "XCTFail",
+            "failed (",
+            "tests failed out of",
+        ],
+    ),
+    (
+        ErrorCategory.LINK_ERROR,
+        [
+            "linker",
+            "undefined reference",
+            "unresolved external",
+            "link error",
+            "multiple definition",
+            "duplicate symbol",
+            # apple ld / clang
+            "undefined symbols for architecture",
+            "symbol(s) not found",
+            "ld: ",
+            "linker command failed",
+        ],
+    ),
+    (
+        ErrorCategory.MANIFEST,
+        [
+            "failed to parse manifest",
+            "could not find `cargo.toml`",
+            "missing either a `[package]`",
+            "virtual manifest",
+            "invalid toml",
+            "expected value",
+            "duplicate key",
+            "error parsing pyproject.toml",
+            "invalid package.json",
+            # swiftpm / meson / cmake
+            "could not find package.swift",
+            "manifest parse error",
+            "neither directory contains a build file",
+            "cmake error",
+            "does not appear to contain cmakelists.txt",
+        ],
+    ),
+    (
+        ErrorCategory.FILE_NOT_FOUND,
+        [
+            "no such file or directory",
+            "file not found",
+            "cannot open",
+            "enoent",
+        ],
+    ),
 ]
 
 # Fix guidance per category
@@ -161,21 +252,21 @@ FIX_GUIDANCE = {
 
 # Rust compiler error codes -> category (authoritative, no fuzzy matching needed)
 _RUST_ERROR_CODES: Dict[str, str] = {
-    "E0061": ErrorCategory.WRONG_TYPE,     # wrong number of arguments
-    "E0106": ErrorCategory.SYNTAX,          # missing lifetime specifier
-    "E0277": ErrorCategory.WRONG_TYPE,     # trait bound not satisfied
-    "E0308": ErrorCategory.WRONG_TYPE,     # mismatched types
-    "E0369": ErrorCategory.WRONG_TYPE,     # binary operation not supported
-    "E0382": ErrorCategory.WRONG_TYPE,     # use of moved value
-    "E0412": ErrorCategory.MISSING_SYMBOL, # cannot find type
-    "E0422": ErrorCategory.MISSING_SYMBOL, # cannot find struct/variant
-    "E0425": ErrorCategory.MISSING_SYMBOL, # cannot find value/function
-    "E0432": ErrorCategory.MISSING_IMPORT, # unresolved import
-    "E0433": ErrorCategory.MISSING_IMPORT, # failed to resolve: use of undeclared crate
-    "E0603": ErrorCategory.MISSING_EXPORT, # private item
-    "E0614": ErrorCategory.WRONG_TYPE,     # cannot dereference
-    "E0615": ErrorCategory.MISSING_SYMBOL, # attempted to take value of method
-    "E0624": ErrorCategory.MISSING_EXPORT, # associated item is private
+    "E0061": ErrorCategory.WRONG_TYPE,  # wrong number of arguments
+    "E0106": ErrorCategory.SYNTAX,  # missing lifetime specifier
+    "E0277": ErrorCategory.WRONG_TYPE,  # trait bound not satisfied
+    "E0308": ErrorCategory.WRONG_TYPE,  # mismatched types
+    "E0369": ErrorCategory.WRONG_TYPE,  # binary operation not supported
+    "E0382": ErrorCategory.WRONG_TYPE,  # use of moved value
+    "E0412": ErrorCategory.MISSING_SYMBOL,  # cannot find type
+    "E0422": ErrorCategory.MISSING_SYMBOL,  # cannot find struct/variant
+    "E0425": ErrorCategory.MISSING_SYMBOL,  # cannot find value/function
+    "E0432": ErrorCategory.MISSING_IMPORT,  # unresolved import
+    "E0433": ErrorCategory.MISSING_IMPORT,  # failed to resolve: use of undeclared crate
+    "E0603": ErrorCategory.MISSING_EXPORT,  # private item
+    "E0614": ErrorCategory.WRONG_TYPE,  # cannot dereference
+    "E0615": ErrorCategory.MISSING_SYMBOL,  # attempted to take value of method
+    "E0624": ErrorCategory.MISSING_EXPORT,  # associated item is private
 }
 
 
@@ -186,12 +277,12 @@ _CSHARP_ERROR_CODES: Dict[str, str] = {
     "CS1061": ErrorCategory.MISSING_SYMBOL,  # no definition / extension method
     "CS0246": ErrorCategory.MISSING_IMPORT,  # type/namespace not found (using?)
     "CS0234": ErrorCategory.MISSING_IMPORT,  # namespace member does not exist
-    "CS0029": ErrorCategory.WRONG_TYPE,      # cannot implicitly convert
-    "CS1503": ErrorCategory.WRONG_TYPE,      # argument cannot convert from
-    "CS0019": ErrorCategory.WRONG_TYPE,      # operator cannot be applied
-    "CS1002": ErrorCategory.SYNTAX,          # ; expected
-    "CS1513": ErrorCategory.SYNTAX,          # } expected
-    "CS1519": ErrorCategory.SYNTAX,          # invalid token
+    "CS0029": ErrorCategory.WRONG_TYPE,  # cannot implicitly convert
+    "CS1503": ErrorCategory.WRONG_TYPE,  # argument cannot convert from
+    "CS0019": ErrorCategory.WRONG_TYPE,  # operator cannot be applied
+    "CS1002": ErrorCategory.SYNTAX,  # ; expected
+    "CS1513": ErrorCategory.SYNTAX,  # } expected
+    "CS1519": ErrorCategory.SYNTAX,  # invalid token
     "CS0122": ErrorCategory.MISSING_EXPORT,  # inaccessible protection level
 }
 
@@ -242,7 +333,10 @@ def format_classified_error(error_output: str, max_lines: int = 50) -> str:
     # Truncate raw output
     lines = error_output.splitlines()
     if len(lines) > max_lines:
-        truncated = "\n".join(lines[:max_lines]) + f"\n... ({len(lines) - max_lines} more lines)"
+        truncated = (
+            "\n".join(lines[:max_lines])
+            + f"\n... ({len(lines) - max_lines} more lines)"
+        )
     else:
         truncated = error_output
 

@@ -1,10 +1,13 @@
 from my_project_orchestrator.core.error_classifier import (
-    classify_error, classify_and_guide, format_classified_error, ErrorCategory,
+    classify_error,
+    classify_and_guide,
+    format_classified_error,
+    ErrorCategory,
 )
 
 
 def test_classify_rust_syntax():
-    error = 'error: expected `;`\n --> src/core/posting.rs:42:5'
+    error = "error: expected `;`\n --> src/core/posting.rs:42:5"
     assert classify_error(error) == ErrorCategory.SYNTAX
 
 
@@ -62,7 +65,9 @@ def test_classify_swift_missing_module():
 
 
 def test_classify_swift_wrong_type():
-    error = "error: cannot convert value of type 'Int' to expected argument type 'String'"
+    error = (
+        "error: cannot convert value of type 'Int' to expected argument type 'String'"
+    )
     assert classify_error(error) == ErrorCategory.WRONG_TYPE
 
 
@@ -82,7 +87,9 @@ def test_classify_clang_syntax():
 
 
 def test_classify_apple_linker():
-    error = "Undefined symbols for architecture arm64:\n  '_emathy_start', referenced from:"
+    error = (
+        "Undefined symbols for architecture arm64:\n  '_emathy_start', referenced from:"
+    )
     assert classify_error(error) == ErrorCategory.LINK_ERROR
 
 
@@ -100,7 +107,9 @@ def test_classify_csharp_missing_using_code():
 
 
 def test_classify_csharp_wrong_type_code():
-    error = "Cmd.cs(8,20): error CS1503: Argument 1: cannot convert from 'int' to 'string'"
+    error = (
+        "Cmd.cs(8,20): error CS1503: Argument 1: cannot convert from 'int' to 'string'"
+    )
     assert classify_error(error) == ErrorCategory.WRONG_TYPE
 
 

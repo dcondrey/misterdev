@@ -4,7 +4,7 @@ Maps raw build/test error output back to specific project symbols and files.
 """
 
 from pathlib import Path
-from typing import List, Optional, Any
+from typing import List, Optional
 
 from my_project_orchestrator.core.topography import SymbolGraph
 from my_project_orchestrator.logging_setup import setup_logger
@@ -13,7 +13,9 @@ logger = setup_logger(__name__)
 
 
 class ErrorLocation:
-    def __init__(self, file_path: str, line: int, message: str, symbol: Optional[str] = None):
+    def __init__(
+        self, file_path: str, line: int, message: str, symbol: Optional[str] = None
+    ):
         self.file_path = file_path
         self.line = line
         self.message = message
@@ -86,14 +88,14 @@ class ErrorResolver:
         quote_end = line.find('"', quote_start + 1)
         if quote_start < 0 or quote_end < 0:
             return None
-        file_path = line[quote_start + 1:quote_end]
+        file_path = line[quote_start + 1 : quote_end]
 
         # Extract line number
         line_marker = ", line "
         line_idx = line.find(line_marker, quote_end)
         if line_idx < 0:
             return None
-        after_marker = line[line_idx + len(line_marker):]
+        after_marker = line[line_idx + len(line_marker) :]
         # Line number ends at comma or end of string
         num_chars = []
         for c in after_marker:

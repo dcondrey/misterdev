@@ -19,10 +19,14 @@ from my_project_orchestrator.llm.client import (
 
 def test_embedding_backend_routing():
     # local: always the fastembed client (construction is lazy, no download)
-    c = create_embedding_client({"llm": {"provider": "anthropic", "embedding_backend": "local"}})
+    c = create_embedding_client(
+        {"llm": {"provider": "anthropic", "embedding_backend": "local"}}
+    )
     assert isinstance(c, LocalEmbeddingClient)
     # auto + non-openrouter provider -> falls back to local
-    c = create_embedding_client({"llm": {"provider": "anthropic", "embedding_backend": "auto"}})
+    c = create_embedding_client(
+        {"llm": {"provider": "anthropic", "embedding_backend": "auto"}}
+    )
     assert isinstance(c, LocalEmbeddingClient)
     # none -> disabled
     assert create_embedding_client({"llm": {"embedding_backend": "none"}}) is None

@@ -46,8 +46,16 @@ def test_to_errors_keeps_only_error_severity():
         {
             "uri": "file:///proj/a.py",
             "diagnostics": [
-                {"severity": 1, "range": {"start": {"line": 4}}, "message": "undefined"},
-                {"severity": 2, "range": {"start": {"line": 9}}, "message": "warn only"},
+                {
+                    "severity": 1,
+                    "range": {"start": {"line": 4}},
+                    "message": "undefined",
+                },
+                {
+                    "severity": 2,
+                    "range": {"start": {"line": 9}},
+                    "message": "warn only",
+                },
             ],
         }
     ]

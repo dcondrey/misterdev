@@ -15,8 +15,7 @@ def test_load_project_config_merges():
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         (td / "project.yaml").write_text(
-            "name: my-proj\nlanguage: rust\n"
-            "llm:\n  model: anthropic/claude-opus-4\n"
+            "name: my-proj\nlanguage: rust\nllm:\n  model: anthropic/claude-opus-4\n"
         )
         cm = ConfigManager()
         config = cm.load_project_config(td)

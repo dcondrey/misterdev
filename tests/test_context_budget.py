@@ -1,5 +1,7 @@
 from my_project_orchestrator.core.context_budget import (
-    ContextBudget, estimate_tokens, _get_encoder,
+    ContextBudget,
+    estimate_tokens,
+    _get_encoder,
 )
 
 

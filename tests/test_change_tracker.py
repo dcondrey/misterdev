@@ -8,7 +8,9 @@ from my_project_orchestrator.core.change_tracker import ChangeTracker, TaskChang
 def _init_git_repo(path: Path):
     subprocess.run("git init", shell=True, cwd=path, capture_output=True)
     subprocess.run("git add -A", shell=True, cwd=path, capture_output=True)
-    subprocess.run('git commit -m "init" --allow-empty', shell=True, cwd=path, capture_output=True)
+    subprocess.run(
+        'git commit -m "init" --allow-empty', shell=True, cwd=path, capture_output=True
+    )
 
 
 def test_task_change_roundtrip():
@@ -36,9 +38,15 @@ def test_get_recent_changes_for_files():
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         ct = ChangeTracker(td)
-        ct.changes["T-001"] = TaskChange("T-001", ["src/lib.rs", "src/core/mod.rs"], "added pub mod", 5, 0)
-        ct.changes["T-002"] = TaskChange("T-002", ["src/posting.rs"], "new file", 100, 0)
-        ct.changes["T-003"] = TaskChange("T-003", ["src/core/mod.rs"], "added posting import", 1, 0)
+        ct.changes["T-001"] = TaskChange(
+            "T-001", ["src/lib.rs", "src/core/mod.rs"], "added pub mod", 5, 0
+        )
+        ct.changes["T-002"] = TaskChange(
+            "T-002", ["src/posting.rs"], "new file", 100, 0
+        )
+        ct.changes["T-003"] = TaskChange(
+            "T-003", ["src/core/mod.rs"], "added posting import", 1, 0
+        )
 
         result = ct.get_recent_changes_for_files(["src/core/mod.rs"])
         assert "T-003" in result
@@ -59,7 +67,9 @@ def test_record_task_changes_in_git():
         _init_git_repo(td)
         (td / "file.txt").write_text("modified")
         subprocess.run("git add -A", shell=True, cwd=td, capture_output=True)
-        subprocess.run('git commit -m "task change"', shell=True, cwd=td, capture_output=True)
+        subprocess.run(
+            'git commit -m "task change"', shell=True, cwd=td, capture_output=True
+        )
 
         ct = ChangeTracker(td)
         change = ct.record_task_changes("T-001", ["file.txt"])
@@ -72,7 +82,9 @@ def test_max_entries_cap():
         td = Path(td)
         ct = ChangeTracker(td)
         for i in range(20):
-            ct.changes[f"T-{i:03d}"] = TaskChange(f"T-{i:03d}", ["shared.rs"], f"change {i}", 1, 0)
+            ct.changes[f"T-{i:03d}"] = TaskChange(
+                f"T-{i:03d}", ["shared.rs"], f"change {i}", 1, 0
+            )
 
         result = ct.get_recent_changes_for_files(["shared.rs"], max_entries=3)
         assert result.count("###") == 3

@@ -453,6 +453,7 @@ def _reindent(matched: List[str], search: List[str], replace: List[str]) -> List
     every non-blank replacement line lands the new code at the file's real
     indentation even when the model used a different indent in its SEARCH.
     """
+
     def first_indent(lines: List[str]) -> str:
         for ln in lines:
             if ln.strip():
@@ -466,7 +467,7 @@ def _reindent(matched: List[str], search: List[str], replace: List[str]) -> List
         if not ln.strip():
             out.append(ln)
             continue
-        body = ln[len(source):] if ln.startswith(source) else ln.lstrip()
+        body = ln[len(source) :] if ln.startswith(source) else ln.lstrip()
         out.append(target + body)
     return out
 

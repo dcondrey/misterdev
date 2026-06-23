@@ -18,7 +18,9 @@ class ScratchpadEntry:
     files: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
 
-    def matches(self, query_files: list[str] = None, query_tags: list[str] = None) -> bool:
+    def matches(
+        self, query_files: list[str] = None, query_tags: list[str] = None
+    ) -> bool:
         """Check if this entry is relevant to the given files or tags."""
         if query_files:
             for qf in query_files:

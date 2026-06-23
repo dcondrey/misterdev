@@ -118,7 +118,7 @@ class ContextBudget:
 
             # Binary search for the right number of lines
             target_tokens = max(
-                estimate_tokens("\n".join(lines[:section.min_lines])),
+                estimate_tokens("\n".join(lines[: section.min_lines])),
                 section.tokens - overflow,
             )
 
@@ -141,7 +141,9 @@ class ContextBudget:
 
 
 class _Section:
-    def __init__(self, name: str, content: str, priority: int, min_lines: int, tokens: int):
+    def __init__(
+        self, name: str, content: str, priority: int, min_lines: int, tokens: int
+    ):
         self.name = name
         self.content = content
         self.priority = priority
@@ -163,7 +165,9 @@ def _truncate_to_tokens(lines: list, target_tokens: int, name: str) -> str:
     total_lines = len(lines)
     omitted = total_lines - len(kept)
     if omitted > 0:
-        kept.append(f"\n... ({omitted} lines omitted from {name} to fit context budget)")
+        kept.append(
+            f"\n... ({omitted} lines omitted from {name} to fit context budget)"
+        )
         logger.info(f"Truncated {name}: kept {len(kept)}/{total_lines} lines")
 
     return "\n".join(kept)

@@ -1,12 +1,11 @@
-import os
 import subprocess
 from pathlib import Path
-from typing import Any
 
 from my_project_orchestrator.environments.base_env import BaseEnvironmentManager
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
+
 
 class VenvEnvironmentManager(BaseEnvironmentManager):
     def __init__(self, config: dict, project_path: str | Path):
@@ -21,8 +20,10 @@ class VenvEnvironmentManager(BaseEnvironmentManager):
             return True
 
         logger.info(f"Setting up venv at {self.venv_path}")
-        setup_commands = self.config.get("setup_commands", [f"python -m venv {self.root_dir}"])
-        
+        setup_commands = self.config.get(
+            "setup_commands", [f"python -m venv {self.root_dir}"]
+        )
+
         for cmd_template in setup_commands:
             command = cmd_template.format(root_dir=self.root_dir)
             logger.info(f"Running env setup command: {command}")
@@ -35,5 +36,7 @@ class VenvEnvironmentManager(BaseEnvironmentManager):
 
     def activate_command(self) -> str:
         """Returns the activation command."""
-        activate_script = self.config.get("activate_script", "source {root_dir}/bin/activate")
+        activate_script = self.config.get(
+            "activate_script", "source {root_dir}/bin/activate"
+        )
         return activate_script.format(root_dir=self.root_dir)

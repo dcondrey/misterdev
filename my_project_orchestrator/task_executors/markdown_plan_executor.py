@@ -149,12 +149,16 @@ def _window_lines(lines: List[str], ranges) -> str:
     for start, end in ranges:
         if start > prev_end + 1:
             gap = start - (prev_end + 1)
-            out.append(f"... [{gap} lines elided: L{prev_end + 2}-L{start} — see outline] ...")
+            out.append(
+                f"... [{gap} lines elided: L{prev_end + 2}-L{start} — see outline] ..."
+            )
         out.extend(lines[start : end + 1])
         prev_end = end
     if prev_end < len(lines) - 1:
         gap = len(lines) - 1 - prev_end
-        out.append(f"... [{gap} lines elided: L{prev_end + 2}-L{len(lines)} — see outline] ...")
+        out.append(
+            f"... [{gap} lines elided: L{prev_end + 2}-L{len(lines)} — see outline] ..."
+        )
     return "\n".join(out)
 
 
@@ -273,7 +277,9 @@ def _is_test_file(file_path: str) -> bool:
 # mis-parsed into a command. Ordered/anchored so multi-word runners match before
 # their first word (e.g. "python -m pytest" before bare "python").
 _ACCEPTANCE_RUNNERS = (
-    r"python3?\s+-m\s+pytest",
+    # Allow an absolute/relative interpreter path (e.g. a venv's python) before
+    # "-m pytest", so a venv-pinned acceptance command is recognized too.
+    r"(?:[\w./-]*/)?python3?\s+-m\s+pytest",
     r"pytest",
     r"cargo\s+test",
     r"cargo\s+build",
@@ -1256,8 +1262,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         return (
             header
             + f"\n# File: {file_path} (large file: windowed to relevant symbols; "
-            "use the outline above to locate anything not shown)\n"
-            + f"{body}\n"
+            "use the outline above to locate anything not shown)\n" + f"{body}\n"
         )
 
     def _invoke_llm(self, project: Project, prompt: str, system_prompt: str):
@@ -1679,9 +1684,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             full_path = project.path / path
             try:
                 original = (
-                    full_path.read_text(encoding="utf-8")
-                    if full_path.exists()
-                    else ""
+                    full_path.read_text(encoding="utf-8") if full_path.exists() else ""
                 )
             except (UnicodeDecodeError, OSError) as exc:
                 return {}, f"{path}: could not read file to apply edit ({exc})"

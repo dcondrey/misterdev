@@ -1,3 +1,4 @@
+import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -707,7 +708,11 @@ def test_acceptance_command_passes_completes():
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         result = _run_acceptance_task(
-            td, "mod.py", "x = 1\n", "true", "pytest --version passes"
+            td,
+            "mod.py",
+            "x = 1\n",
+            "true",
+            f"{sys.executable} -m pytest --version passes",
         )
         assert result.status == "completed"
 

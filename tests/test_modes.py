@@ -2,7 +2,9 @@ import tempfile
 from pathlib import Path
 
 from my_project_orchestrator.core.modes import (
-    BuildMode, BuildFlags, parse_flags, resolve_mode,
+    BuildMode,
+    parse_flags,
+    resolve_mode,
 )
 
 
@@ -15,7 +17,18 @@ def test_parse_flags_empty():
 
 
 def test_parse_flags_all():
-    args = ["debug", "--budget", "50", "--commit", "--no-verify", "--dry-run", "--interactive", "--parallel", "--focus", "src/"]
+    args = [
+        "debug",
+        "--budget",
+        "50",
+        "--commit",
+        "--no-verify",
+        "--dry-run",
+        "--interactive",
+        "--parallel",
+        "--focus",
+        "src/",
+    ]
     remaining, flags = parse_flags(args)
     assert remaining == ["debug"]
     assert flags.budget == 50.0

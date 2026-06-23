@@ -135,7 +135,14 @@ def _node_text(src: bytes, node: Any) -> str:
 # would false-reject correct edits. TypeScript is parsed with the TSX grammar
 # (a superset) so JSX never trips a false syntax error.
 _SYNTAX_CHECK_LANGS = {
-    "rust", "c", "cpp", "csharp", "swift", "javascript", "typescript", "tsx",
+    "rust",
+    "c",
+    "cpp",
+    "csharp",
+    "swift",
+    "javascript",
+    "typescript",
+    "tsx",
 }
 
 
@@ -332,8 +339,11 @@ class SymbolGraph:
                 name = _node_text(content, name_node)
                 full = f"{parent_class}.{name}" if parent_class else name
                 self._add_symbol(
-                    full, file_path, "method" if parent_class else "function",
-                    node, content,
+                    full,
+                    file_path,
+                    "method" if parent_class else "function",
+                    node,
+                    content,
                 )
 
         elif t in ("class_declaration", "interface_declaration"):
@@ -373,8 +383,11 @@ class SymbolGraph:
                     name = _node_text(content, name_node)
                     full = f"{parent_class}.{name}" if parent_class else name
                     self._add_symbol(
-                        full, file_path, "method" if parent_class else "function",
-                        node, content,
+                        full,
+                        file_path,
+                        "method" if parent_class else "function",
+                        node,
+                        content,
                     )
 
         elif t == "method_definition":
@@ -415,8 +428,10 @@ class SymbolGraph:
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = _node_text(content, name_node)
-                kind = "class" if t == "class_specifier" else (
-                    "enum" if t == "enum_specifier" else "struct"
+                kind = (
+                    "class"
+                    if t == "class_specifier"
+                    else ("enum" if t == "enum_specifier" else "struct")
                 )
                 self._add_symbol(name, file_path, kind, node, content)
                 body = node.child_by_field_name("body")
@@ -457,8 +472,10 @@ class SymbolGraph:
                 # `struct` keyword child; distinguish so the kind is accurate.
                 kinds = {c.type for c in node.children}
                 kind = (
-                    "protocol" if t == "protocol_declaration"
-                    else "struct" if "struct" in kinds
+                    "protocol"
+                    if t == "protocol_declaration"
+                    else "struct"
+                    if "struct" in kinds
                     else "class"
                 )
                 self._add_symbol(name, file_path, kind, node, content)
@@ -627,9 +644,7 @@ class SymbolGraph:
             for s in self.file_symbols(file_path)
         )
 
-    def project_outline(
-        self, max_files: int = 300, max_syms_per_file: int = 60
-    ) -> str:
+    def project_outline(self, max_files: int = 300, max_syms_per_file: int = 60) -> str:
         """A whole-project structural map: every file with its top-level symbols.
 
         Far denser than reading file heads — it conveys the architecture (what

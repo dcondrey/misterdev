@@ -2,8 +2,12 @@ import tempfile
 from pathlib import Path
 
 from my_project_orchestrator.core.contracts import (
-    ContractRegistry, _extract_rust_symbols, _extract_python_symbols,
-    _extract_name, _strip_visibility, _extract_generics,
+    ContractRegistry,
+    _extract_rust_symbols,
+    _extract_python_symbols,
+    _extract_name,
+    _strip_visibility,
+    _extract_generics,
 )
 
 
@@ -172,7 +176,9 @@ def test_contract_registry_roundtrip():
         )
 
         reg = ContractRegistry(td)
-        contracts = reg.extract_contracts("T-001", ["src/lib.rs"], td, None, language="rust")
+        contracts = reg.extract_contracts(
+            "T-001", ["src/lib.rs"], td, None, language="rust"
+        )
         assert len(contracts) == 1
         assert len(contracts[0].symbols) >= 2
 
@@ -184,10 +190,14 @@ def test_get_contracts_for_task():
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         (td / "src").mkdir()
-        (td / "src" / "posting.rs").write_text("pub fn overlap_scan() -> Vec<u64> { vec![] }\n")
+        (td / "src" / "posting.rs").write_text(
+            "pub fn overlap_scan() -> Vec<u64> { vec![] }\n"
+        )
 
         reg = ContractRegistry(td)
-        reg.extract_contracts("001-posting", ["src/posting.rs"], td, None, language="rust")
+        reg.extract_contracts(
+            "001-posting", ["src/posting.rs"], td, None, language="rust"
+        )
 
         ctx = reg.get_contracts_for_task(["001-posting"])
         assert "overlap_scan" in ctx

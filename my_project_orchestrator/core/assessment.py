@@ -10,6 +10,7 @@ from typing import Optional
 
 class HealthCheck(BaseModel):
     """Result of running build, test, and lint commands."""
+
     builds: bool = False
     build_output: str = ""
     tests_pass: bool = False
@@ -24,6 +25,7 @@ class HealthCheck(BaseModel):
 
 class FeatureInfo(BaseModel):
     """A single feature with evidence of its state."""
+
     name: str
     description: str = ""
     evidence_files: list[str] = Field(default_factory=list)
@@ -32,6 +34,7 @@ class FeatureInfo(BaseModel):
 
 class FeatureInventory(BaseModel):
     """Completeness analysis from /build Phase 1b."""
+
     existing: list[FeatureInfo] = Field(default_factory=list)
     incomplete: list[FeatureInfo] = Field(default_factory=list)
     missing: list[FeatureInfo] = Field(default_factory=list)
@@ -43,6 +46,7 @@ class FeatureInventory(BaseModel):
 
 class ProjectStructure(BaseModel):
     """Structural profile from /build Phase 1a."""
+
     project_type: str = "unknown"  # web-api, web-app, cli, library, etc.
     languages: list[str] = Field(default_factory=list)
     frameworks: list[str] = Field(default_factory=list)
@@ -58,6 +62,7 @@ class ProjectStructure(BaseModel):
 
 class ProjectContext(BaseModel):
     """Contextual information from /build Phase 1c."""
+
     purpose: str = ""
     goals: str = ""
     conventions: str = ""
@@ -69,6 +74,7 @@ class ProjectContext(BaseModel):
 
 class TechnicalDebt(BaseModel):
     """Technical debt estimation from /build Phase 1."""
+
     score: int = 0  # 0-100
     description: str = ""
     critical_issues: list[str] = Field(default_factory=list)
@@ -76,6 +82,7 @@ class TechnicalDebt(BaseModel):
 
 class RiskAssessment(BaseModel):
     """Risk analysis for the proposed build."""
+
     level: str = "low"  # low, medium, high, critical
     factors: list[str] = Field(default_factory=list)
     mitigations: list[str] = Field(default_factory=list)
@@ -86,6 +93,7 @@ class ProjectAssessment(BaseModel):
 
     This is the central data structure that drives Phases 2-6.
     """
+
     structure: ProjectStructure = Field(default_factory=ProjectStructure)
     health: HealthCheck = Field(default_factory=HealthCheck)
     features: FeatureInventory = Field(default_factory=FeatureInventory)
@@ -99,7 +107,11 @@ class ProjectAssessment(BaseModel):
         h = self.health
         lang = ", ".join(s.languages) if s.languages else "unknown"
         build_status = "OK" if h.builds else "FAIL"
-        test_status = f"{h.test_count - h.test_failures}/{h.test_count}" if h.test_count else "none"
+        test_status = (
+            f"{h.test_count - h.test_failures}/{h.test_count}"
+            if h.test_count
+            else "none"
+        )
         return (
             f"[{s.project_type}] {lang} | "
             f"build={build_status} tests={test_status} "

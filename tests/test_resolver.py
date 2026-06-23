@@ -19,7 +19,9 @@ def _make_resolver(graph=None):
 
 def test_parse_python_traceback():
     r = _make_resolver()
-    locs = r.resolve_errors('  File "src/main.py", line 42, in do_stuff\nValueError: bad')
+    locs = r.resolve_errors(
+        '  File "src/main.py", line 42, in do_stuff\nValueError: bad'
+    )
     assert len(locs) == 1
     assert locs[0].file_path == "src/main.py"
     assert locs[0].line == 42
@@ -43,7 +45,9 @@ def test_parse_pytest_error():
 
 def test_dedup_same_file_line():
     r = _make_resolver()
-    error_output = "src/lib.rs:10: error one\nsrc/lib.rs:10: error two\nsrc/lib.rs:20: error three"
+    error_output = (
+        "src/lib.rs:10: error one\nsrc/lib.rs:10: error two\nsrc/lib.rs:20: error three"
+    )
     locs = r.resolve_errors(error_output)
     assert len(locs) == 2
     lines = {loc.line for loc in locs}
@@ -77,7 +81,9 @@ def test_absolute_path_outside_project_ignored():
 
 def test_symbol_attribution():
     graph = _make_graph()
-    node = SymbolNode("do_stuff", "src/main.py", "function", 40, 50, "def do_stuff(): pass")
+    node = SymbolNode(
+        "do_stuff", "src/main.py", "function", 40, 50, "def do_stuff(): pass"
+    )
     graph.symbols["src/main.py:do_stuff"] = node
     r = _make_resolver(graph)
     locs = r.resolve_errors("src/main.py:42: error here")

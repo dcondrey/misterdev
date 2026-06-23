@@ -2,13 +2,17 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    MarkdownPlanExecutor,
+)
 
 
 def _init_git_repo(path: Path):
     subprocess.run("git init", shell=True, cwd=path, capture_output=True)
     subprocess.run("git add -A", shell=True, cwd=path, capture_output=True)
-    subprocess.run('git commit -m "init" --allow-empty', shell=True, cwd=path, capture_output=True)
+    subprocess.run(
+        'git commit -m "init" --allow-empty', shell=True, cwd=path, capture_output=True
+    )
 
 
 def test_is_git_repo():

@@ -1,6 +1,7 @@
 import logging
 import sys
 
+
 def setup_logger(name="project_orchestrator", level=logging.INFO):
     """Sets up a standardized logger for the project orchestrator."""
     logger = logging.getLogger(name)
@@ -10,7 +11,7 @@ def setup_logger(name="project_orchestrator", level=logging.INFO):
         formatter = logging.Formatter(
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
-        
+
         # Console Handler
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(formatter)

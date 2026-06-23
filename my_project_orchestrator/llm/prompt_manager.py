@@ -21,14 +21,18 @@ class PromptManager:
     def format_prompt(self, template_key: str, context_dict: Dict[str, Any]) -> str:
         template = self.templates.get(template_key)
         if not template:
-            raise ValueError(f"Prompt template '{template_key}' not found in configuration.")
+            raise ValueError(
+                f"Prompt template '{template_key}' not found in configuration."
+            )
 
         # Inject inherited system prompt if not already in context
         if "inherited_system_prompt" not in context_dict and template_key != "system":
             context_dict["inherited_system_prompt"] = self.templates.get("system", "")
 
         # Convert all context values to strings
-        str_context = {k: str(v) if v is not None else "" for k, v in context_dict.items()}
+        str_context = {
+            k: str(v) if v is not None else "" for k, v in context_dict.items()
+        }
 
         # First pass: replace {{var}} syntax (preferred, safe)
         result = template

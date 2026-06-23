@@ -2,8 +2,14 @@ import tempfile
 from pathlib import Path
 
 from my_project_orchestrator.core.assessment import (
-    HealthCheck, FeatureInfo, FeatureInventory, ProjectStructure,
-    ProjectContext, TechnicalDebt, RiskAssessment, ProjectAssessment,
+    HealthCheck,
+    FeatureInfo,
+    FeatureInventory,
+    ProjectStructure,
+    ProjectContext,
+    TechnicalDebt,
+    RiskAssessment,
+    ProjectAssessment,
 )
 from my_project_orchestrator.core.models import Task, ExecutionResult
 from my_project_orchestrator.analyzers.project_analyzer import _get_source_overview
@@ -38,7 +44,9 @@ def test_health_check_defaults():
 
 
 def test_feature_info():
-    f = FeatureInfo(name="auth", description="Authentication module", complexity="large")
+    f = FeatureInfo(
+        name="auth", description="Authentication module", complexity="large"
+    )
     assert f.name == "auth"
     assert f.complexity == "large"
 
@@ -64,7 +72,9 @@ def test_project_context_defaults():
 
 
 def test_technical_debt():
-    td = TechnicalDebt(score=75, description="High debt", critical_issues=["god module"])
+    td = TechnicalDebt(
+        score=75, description="High debt", critical_issues=["god module"]
+    )
     assert td.score == 75
     assert "god module" in td.critical_issues
 
@@ -84,8 +94,12 @@ def test_project_assessment_defaults():
 
 def test_project_assessment_summary():
     pa = ProjectAssessment(
-        structure=ProjectStructure(project_type="library", languages=["rust", "python"]),
-        health=HealthCheck(builds=True, test_count=50, test_failures=2, lint_warnings=3),
+        structure=ProjectStructure(
+            project_type="library", languages=["rust", "python"]
+        ),
+        health=HealthCheck(
+            builds=True, test_count=50, test_failures=2, lint_warnings=3
+        ),
     )
     s = pa.summary()
     assert "library" in s
@@ -116,9 +130,14 @@ def test_task_model():
 
 def test_task_model_with_fields():
     t = Task(
-        id="T-002", description="Add query engine", project_ref="hms",
-        title="QueryEngine", files_to_modify=["src/query.rs"],
-        dependencies=["T-001"], complexity="large", category="core",
+        id="T-002",
+        description="Add query engine",
+        project_ref="hms",
+        title="QueryEngine",
+        files_to_modify=["src/query.rs"],
+        dependencies=["T-001"],
+        complexity="large",
+        category="core",
     )
     assert t.title == "QueryEngine"
     assert t.dependencies == ["T-001"]

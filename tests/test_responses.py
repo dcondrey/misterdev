@@ -98,10 +98,7 @@ def test_parse_search_replace_multiple_hunks_same_file():
 
 
 def test_parse_search_replace_bare_path_line():
-    output = (
-        "src/lib.rs\n"
-        "<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n"
-    )
+    output = "src/lib.rs\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n"
     edits = LLMResponseParser.parse_search_replace_blocks(output)
     assert len(edits) == 1
     assert edits[0].path == "src/lib.rs"
@@ -142,30 +139,22 @@ def test_apply_search_replace_applies_hunk_in_large_file():
 
 def test_apply_search_replace_not_found_raises():
     with pytest.raises(EditConflictError, match="not found"):
-        apply_search_replace(
-            "real content", [SearchReplaceEdit("f.rs", "absent", "x")]
-        )
+        apply_search_replace("real content", [SearchReplaceEdit("f.rs", "absent", "x")])
 
 
 def test_apply_search_replace_ambiguous_raises():
     with pytest.raises(EditConflictError, match="matches 2"):
-        apply_search_replace(
-            "dup\ndup\n", [SearchReplaceEdit("f.rs", "dup", "x")]
-        )
+        apply_search_replace("dup\ndup\n", [SearchReplaceEdit("f.rs", "dup", "x")])
 
 
 def test_apply_search_replace_empty_search_creates_new_file():
-    result = apply_search_replace(
-        "", [SearchReplaceEdit("new.rs", "", "fn main() {}")]
-    )
+    result = apply_search_replace("", [SearchReplaceEdit("new.rs", "", "fn main() {}")])
     assert result == "fn main() {}"
 
 
 def test_apply_search_replace_empty_search_on_existing_raises():
     with pytest.raises(EditConflictError, match="empty SEARCH"):
-        apply_search_replace(
-            "existing", [SearchReplaceEdit("f.rs", "", "wipe")]
-        )
+        apply_search_replace("existing", [SearchReplaceEdit("f.rs", "", "wipe")])
 
 
 def test_apply_search_replace_tolerates_trailing_whitespace():
