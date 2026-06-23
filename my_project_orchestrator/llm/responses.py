@@ -322,6 +322,8 @@ class LLMResponseParser:
 
             i += 2
             new_lines = []
+            hunk_count = 0
+            new_start: Optional[int] = None
 
             # Collect hunks
             while i < len(lines):
@@ -329,6 +331,9 @@ class LLMResponseParser:
                 if line.startswith("--- "):
                     break  # next diff
                 if line.startswith("@@"):
+                    hunk_count += 1
+                    if hunk_count == 1:
+                        new_start = _unified_new_start(line)
                     i += 1
                     continue
                 if line.startswith("+") and not line.startswith("+++"):
@@ -339,7 +344,13 @@ class LLMResponseParser:
                     break  # end of diff section
                 i += 1
 
-            if new_lines:
+            # This parser rebuilds the whole file from the diff's +/context
+            # lines, which equals the real file ONLY for a single hunk that
+            # starts at line 1 (or a brand-new file). A partial or multi-hunk
+            # diff omits the unchanged regions between hunks, so reconstructing
+            # from it would TRUNCATE the file. Skip that unsafe case so the
+            # caller falls back (or retries) instead of writing a corrupt file.
+            if new_lines and hunk_count == 1 and new_start in (0, 1):
                 edits[file_path] = "\n".join(new_lines)
 
         return edits
@@ -348,6 +359,25 @@ class LLMResponseParser:
 # ------------------------------------------------------------------
 # Pure-function helpers (no regex, no state)
 # ------------------------------------------------------------------
+
+
+def _unified_new_start(header: str) -> Optional[int]:
+    """New-file start line from a ``@@ -a,b +c,d @@`` hunk header, or None.
+
+    Returns ``c`` (the first line number of the new side), used to confirm a
+    single-hunk diff begins at line 1 before its reconstruction is trusted as
+    whole-file content.
+    """
+    plus = header.find("+")
+    if plus == -1:
+        return None
+    digits = ""
+    for ch in header[plus + 1 :]:
+        if ch.isdigit():
+            digits += ch
+        else:
+            break
+    return int(digits) if digits else None
 
 
 def _is_search_marker(line: str) -> bool:

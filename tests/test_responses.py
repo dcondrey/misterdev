@@ -35,6 +35,49 @@ def test_unified_diff():
     assert "new = True" in edits["src/lib.py"]
 
 
+def test_unified_diff_multi_hunk_rejected():
+    # A partial multi-hunk diff omits the unchanged regions between hunks, so
+    # rebuilding the file from it would truncate it. Must NOT be parsed as a
+    # whole-file edit (returns nothing -> caller falls back / retries).
+    output = (
+        "--- a/src/lib.py\n"
+        "+++ b/src/lib.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-a = 1\n"
+        "+a = 2\n"
+        "@@ -50,1 +50,1 @@\n"
+        "-z = 9\n"
+        "+z = 10\n"
+    )
+    assert LLMResponseParser.parse_file_edits(output) == {}
+
+
+def test_unified_diff_not_starting_at_line_one_rejected():
+    # A single hunk that starts deep in the file is also partial -> rejected.
+    output = (
+        "--- a/src/lib.py\n"
+        "+++ b/src/lib.py\n"
+        "@@ -40,2 +40,2 @@\n"
+        "-old = True\n"
+        "+new = True\n"
+        " same = True\n"
+    )
+    assert LLMResponseParser.parse_file_edits(output) == {}
+
+
+def test_unified_diff_new_file_accepted():
+    # A brand-new file is a single hunk from line 1 -> safe to reconstruct.
+    output = (
+        "--- /dev/null\n"
+        "+++ b/src/new.py\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+x = 1\n"
+        "+y = 2\n"
+    )
+    edits = LLMResponseParser.parse_file_edits(output)
+    assert edits.get("src/new.py") == "x = 1\ny = 2"
+
+
 def test_tilde_fence():
     output = "~~~~python:tests/test_foo.py\nassert True\n~~~~"
     edits = LLMResponseParser.parse_file_edits(output)
