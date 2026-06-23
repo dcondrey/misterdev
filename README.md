@@ -62,8 +62,10 @@ reports done.
 - **Optional vision verification gate** (`orchestrator.vision_verify`,
   `runtime.vision`): a vision model judges whether a captured screenshot
   satisfies a stated visual requirement (`assert`), affirm→GREEN / deny→RED.
-  Daemon-threaded with a hard timeout; no config / no model / no network is a
-  SKIP. Uses the project's LLM client.
+  When the web gate also runs, its captured screenshot is reused automatically
+  as the vision input (no need to repeat the path) unless `runtime.vision.capture`
+  is set explicitly. Daemon-threaded with a hard timeout; no config / no model /
+  no network is a SKIP. Uses the project's LLM client.
 - **Optional MCP tool-host substrate** (`orchestrator.mcp_enabled`,
   `mcp.servers`): connects to configured MCP (Model Context Protocol) servers
   over stdio, discovers their tools (`project.mcp.tools`), and can call one

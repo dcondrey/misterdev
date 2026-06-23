@@ -438,6 +438,71 @@ def test_diff_hygiene_clean_outside_git():
     assert gk._check_diff_hygiene() == []
 
 
+def test_vision_gate_reuses_web_evidence_screenshot(monkeypatch):
+    # When both gates are on and vision has no explicit capture, it must receive
+    # the web gate's freshly captured screenshot path automatically.
+    import my_project_orchestrator.core.web_verify as webmod
+    import my_project_orchestrator.core.vision_verify as vismod
+
+    monkeypatch.setattr(
+        webmod,
+        "run_web_gate",
+        lambda root, cfg: webmod.WebResult(
+            webmod.GREEN, evidence="/shots/web_verify_evidence.png"
+        ),
+    )
+    seen = {}
+
+    def fake_vision(root, cfg, llm_client=None):
+        seen["cfg"] = cfg
+        return vismod.VisionResult(vismod.GREEN)
+
+    monkeypatch.setattr(vismod, "run_vision_gate", fake_vision)
+
+    gk = GateKeeper(
+        _make_project(),
+        web_verify=True,
+        vision_verify=True,
+        runtime_config={
+            "web": {"url": "http://x"},
+            "vision": {"assert": "looks right"},
+        },
+    )
+    success, issues, _ = gk.run_gates({})
+    assert success
+    assert seen["cfg"]["capture"] == "/shots/web_verify_evidence.png"
+
+
+def test_vision_explicit_capture_not_overridden_by_web(monkeypatch):
+    import my_project_orchestrator.core.web_verify as webmod
+    import my_project_orchestrator.core.vision_verify as vismod
+
+    monkeypatch.setattr(
+        webmod,
+        "run_web_gate",
+        lambda root, cfg: webmod.WebResult(webmod.GREEN, evidence="/shots/web.png"),
+    )
+    seen = {}
+    monkeypatch.setattr(
+        vismod,
+        "run_vision_gate",
+        lambda root, cfg, llm_client=None: (
+            seen.update(cfg=cfg) or vismod.VisionResult(vismod.GREEN)
+        ),
+    )
+    gk = GateKeeper(
+        _make_project(),
+        web_verify=True,
+        vision_verify=True,
+        runtime_config={
+            "web": {"url": "http://x"},
+            "vision": {"assert": "ok", "capture": "/explicit/shot.png"},
+        },
+    )
+    gk.run_gates({})
+    assert seen["cfg"]["capture"] == "/explicit/shot.png"
+
+
 def test_lsp_gate_blocks_on_errors(monkeypatch):
     import my_project_orchestrator.core.lsp as lspmod
 

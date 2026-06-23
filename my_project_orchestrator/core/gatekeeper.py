@@ -346,10 +346,14 @@ class GateKeeper:
         # Best-effort and timeout-bounded: a SKIP (no/incomplete config, no
         # Playwright/browser, timeout) never fails; only a RED (a failed check)
         # blocks the build. Real screenshot evidence is captured.
+        web_evidence: Optional[str] = None
         if self.web_verify:
             from my_project_orchestrator.core.web_verify import run_web_gate
 
             web = run_web_gate(self.project_path, self.runtime_config.get("web"))
+            # The captured screenshot doubles as the vision gate's input below, so
+            # the two gates compose: web renders + captures, vision judges it.
+            web_evidence = web.evidence or None
             if web.status == "red":
                 issues.append(f"G4.7: Web verify failed ({web.reason or 'no detail'})")
                 health.tests_pass = False
@@ -365,9 +369,16 @@ class GateKeeper:
         if self.vision_verify:
             from my_project_orchestrator.core.vision_verify import run_vision_gate
 
+            # Default the screenshot to the web gate's freshly captured evidence
+            # when the vision config doesn't name its own ``capture``, so enabling
+            # both gates "just works" without duplicating the path. An explicit
+            # capture in config still wins.
+            vision_config = dict(self.runtime_config.get("vision") or {})
+            if not vision_config.get("capture") and web_evidence:
+                vision_config["capture"] = web_evidence
             vision = run_vision_gate(
                 self.project_path,
-                self.runtime_config.get("vision"),
+                vision_config or None,
                 llm_client=self.vision_client,
             )
             if vision.status == "red":
