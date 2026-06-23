@@ -350,6 +350,94 @@ def test_run_gates_surfaces_banned_and_secrets():
     assert any("G6" in i for i in issues)
 
 
+def test_secret_in_added_env_file_flagged():
+    # Regression: a credential planted in a newly added .env/config file must be
+    # caught by G6 even though .env is not a CODE_EXTENSION (was a blind spot).
+    root = _make_git_project(
+        committed={"src/main.py": "x = 1\n"},
+        working={".env": 'API_KEY="sk-deadbeefdeadbeef"\n'},
+    )
+    gk = GateKeeper(root)
+    found = gk._scan_secrets()
+    assert any(".env" in f for f in found)
+
+
+def test_secret_in_added_yaml_file_flagged():
+    root = _make_git_project(
+        committed={"src/main.py": "x = 1\n"},
+        working={"config/app.yaml": 'password: "hunter2trustno1"\n'},
+    )
+    gk = GateKeeper(root)
+    found = gk._scan_secrets()
+    assert any("app.yaml" in f for f in found)
+
+
+def test_banned_marker_in_yaml_not_flagged():
+    # G5 stays code-only: a TODO/FIXME in config or docs is not a banned marker.
+    root = _make_git_project(
+        committed={"src/main.py": "x = 1\n"},
+        working={"deploy.yaml": "# FIXME tune this later\nkey: value\n"},
+    )
+    gk = GateKeeper(root)
+    assert gk._scan_banned_markers() == []
+
+
+def test_secret_in_whole_tree_config_file_flagged():
+    # Non-git fallback must also reach config/env files, not just source.
+    root = _make_project({".env": 'SECRET="topsecretvalue123"\n'})
+    gk = GateKeeper(root)
+    found = gk._scan_secrets()
+    assert any(".env" in f for f in found)
+
+
+def test_diff_hygiene_flags_unstaged_debug_artifact():
+    # Regression: G9 once scanned only --cached; an unstaged print() slipped
+    # through. It must now be caught in the staged+unstaged union diff.
+    root = _make_git_project(
+        committed={"src/main.py": "x = 1\n"},
+        working={"src/main.py": "x = 1\nprint('debug here')\n"},
+    )
+    gk = GateKeeper(root)
+    issues = gk._check_diff_hygiene()
+    assert any("G9" in i and "print(" in i for i in issues)
+
+
+def test_diff_hygiene_flags_staged_debug_artifact():
+    root = _make_git_project(committed={"src/main.py": "x = 1\n"})
+    (root / "src/main.py").write_text("x = 1\ndbg!(value);\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    gk = GateKeeper(root)
+    issues = gk._check_diff_hygiene()
+    assert any("G9" in i and "dbg!(" in i for i in issues)
+
+
+def test_diff_hygiene_ignores_debug_marker_in_config_file():
+    # print( inside a YAML string is not a code debug artifact.
+    root = _make_git_project(
+        committed={"src/main.py": "x = 1\n"},
+        working={"notes.yaml": "msg: print(here)\n"},
+    )
+    gk = GateKeeper(root)
+    assert gk._check_diff_hygiene() == []
+
+
+def test_diff_hygiene_deduplicates_repeated_marker():
+    root = _make_git_project(
+        committed={"src/main.py": "x = 1\n"},
+        working={"src/main.py": "x = 1\nprint('a')\nprint('b')\nprint('c')\n"},
+    )
+    gk = GateKeeper(root)
+    issues = [i for i in gk._check_diff_hygiene() if "print(" in i]
+    assert len(issues) == 1
+
+
+def test_diff_hygiene_clean_outside_git():
+    root = _make_project({"src/main.py": "print('this is fine, not a diff')\n"})
+    gk = GateKeeper(root)
+    # No git repo -> no diff to scope to -> G9 is a no-op (not a whole-tree scan).
+    assert gk._check_diff_hygiene() == []
+
+
 def test_lsp_gate_blocks_on_errors(monkeypatch):
     import my_project_orchestrator.core.lsp as lspmod
 

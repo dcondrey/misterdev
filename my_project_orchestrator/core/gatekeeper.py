@@ -77,6 +77,40 @@ CODE_EXTENSIONS = frozenset(
     }
 )
 
+# Secrets leak through config/env files just as readily as source — and a
+# planted credential there is never "code", so the code-only scan (G5/G9) misses
+# it. G6 therefore scans these in addition to CODE_EXTENSIONS. Banned-marker and
+# debug-artifact scans deliberately stay code-only (a TODO in a YAML is fine).
+SECRET_SCAN_EXTENSIONS = CODE_EXTENSIONS | frozenset(
+    {
+        ".env",
+        ".yaml",
+        ".yml",
+        ".json",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".properties",
+        ".xml",
+        ".tfvars",
+    }
+)
+
+# Dotfiles whose whole name is the extension (``Path(".env").suffix == ""``), so
+# they must be matched by name rather than suffix.
+SECRET_SCAN_FILENAMES = frozenset({".env", ".envrc", ".netrc", ".pgpass"})
+
+
+def _path_in_scope(
+    path_str: str,
+    extensions: frozenset,
+    filenames: frozenset = frozenset(),
+) -> bool:
+    """True when ``path_str`` is in scope by file extension or exact name."""
+    p = Path(path_str)
+    return p.suffix in extensions or p.name in filenames
+
 
 class GateKeeper:
     """Implements the gate sequence for project validation.
@@ -93,8 +127,8 @@ class GateKeeper:
       G4.7: Web verification, headless browser (optional)
       G4.8: Vision verification, VLM judgment (optional)
       G5: Completeness scan (no banned markers in source)
-      G6: Secrets scan (no leaked credentials)
-      G9: Diff hygiene (no debug artifacts in staged changes)
+      G6: Secrets scan (no leaked credentials, incl. config/env files)
+      G9: Diff hygiene (no debug artifacts in staged + unstaged changes)
     """
 
     def __init__(
@@ -375,7 +409,9 @@ class GateKeeper:
         if added is None:
             return self._scan_banned_markers_whole_tree()
         found = set()
-        for _path, line in added:
+        for path, line in added:
+            if not _path_in_scope(path, CODE_EXTENSIONS):
+                continue
             for marker in BANNED_MARKERS:
                 if marker in line:
                     found.add(marker)
@@ -408,6 +444,10 @@ class GateKeeper:
         # the multi-line / per-line secret detection stays identical.
         by_file: Dict[str, List[str]] = {}
         for path, line in added:
+            if not _path_in_scope(
+                path, SECRET_SCAN_EXTENSIONS, SECRET_SCAN_FILENAMES
+            ):
+                continue
             by_file.setdefault(path, []).append(line)
         flagged = []
         for path, lines in by_file.items():
@@ -416,9 +456,9 @@ class GateKeeper:
         return flagged
 
     def _scan_secrets_whole_tree(self) -> List[str]:
-        """Non-git fallback for G6: scan every source file."""
+        """Non-git fallback for G6: scan every source and config/env file."""
         flagged = []
-        for path in self._iter_source_files():
+        for path in self._iter_source_files(SECRET_SCAN_EXTENSIONS, SECRET_SCAN_FILENAMES):
             try:
                 content = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -434,8 +474,9 @@ class GateKeeper:
         ``git diff --cached`` and ``git diff``), so any line this build added is
         seen regardless of whether it was staged yet. Returns ``None`` when the
         project is not a git repo, signalling callers to fall back to a
-        whole-tree scan. Only added lines (``+``) of code-extension files are
-        included; the diff header lines (``+++``) are skipped.
+        whole-tree scan. All added lines (``+``) are included regardless of file
+        type; the diff header lines (``+++``) are skipped. Callers apply their
+        own per-gate scope (code-only for G5/G9, code+config for G6).
         """
         try:
             check = subprocess.run(
@@ -473,9 +514,35 @@ class GateKeeper:
                     continue
                 if line.startswith("+++") or not line.startswith("+"):
                     continue
-                if current_file and Path(current_file).suffix not in CODE_EXTENSIONS:
-                    continue
                 added.append((current_file, line[1:]))
+        # A brand-new file is untracked and never appears in `git diff`, yet its
+        # every line was introduced by this build. Enumerate untracked files
+        # (honoring .gitignore via --exclude-standard, so build artifacts are
+        # skipped) and treat their whole content as added lines.
+        try:
+            others = subprocess.run(
+                "git ls-files --others --exclude-standard",
+                shell=True,
+                cwd=self.project_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except Exception:
+            others = None
+        if others is not None and others.returncode == 0:
+            for rel in others.stdout.splitlines():
+                rel = rel.strip()
+                if not rel:
+                    continue
+                try:
+                    content = (self.project_path / rel).read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                except OSError:
+                    continue
+                for line in content.splitlines():
+                    added.append((rel, line))
         return added
 
     @staticmethod
@@ -492,43 +559,43 @@ class GateKeeper:
     def _is_secret_assignment(line: str) -> bool:
         """True only for a credential key assigned a concrete quoted literal.
 
-        Skips variable/env references (``token = get_token()``,
+        Handles both ``key = "..."`` (source/ini/env) and ``key: "..."``
+        (YAML/JSON) forms. Skips variable/env references (``token = get_token()``,
         ``api_key = os.environ[...]``) and type annotations (``token: String``)
-        that would otherwise produce false positives on ordinary source.
+        that would otherwise produce false positives on ordinary source, because
+        the value must be a quoted literal of >=6 chars that is not a ``${...}``
+        interpolation or an env reference.
         """
-        if "=" not in line:
-            return False
-        key_part, _, value = line.partition("=")
-        if not any(k in key_part.lower() for k in ASSIGNMENT_SECRET_KEYS):
-            return False
-        value = value.strip()
-        for quote in ('"', "'"):
-            if value.startswith(quote):
-                literal = value[1:].split(quote, 1)[0]
-                low = literal.lower()
-                if (
-                    len(literal) >= 6
-                    and not literal.startswith("${")
-                    and "env" not in low
-                ):
-                    return True
+        for sep in ("=", ":"):
+            if sep not in line:
+                continue
+            key_part, _, value = line.partition(sep)
+            if not any(k in key_part.lower() for k in ASSIGNMENT_SECRET_KEYS):
+                continue
+            value = value.strip()
+            for quote in ('"', "'"):
+                if value.startswith(quote):
+                    literal = value[1:].split(quote, 1)[0]
+                    low = literal.lower()
+                    if (
+                        len(literal) >= 6
+                        and not literal.startswith("${")
+                        and "env" not in low
+                    ):
+                        return True
         return False
 
     def _check_diff_hygiene(self) -> List[str]:
-        """G9: Check staged/unstaged changes for debug artifacts."""
-        issues = []
-        try:
-            proc = subprocess.run(
-                "git diff --cached --diff-filter=ACMR -U0",
-                shell=True,
-                cwd=self.project_path,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            diff_text = proc.stdout
-        except Exception:
-            return issues
+        """G9: Check added lines (staged + unstaged) for debug artifacts.
+
+        Scoped to the same union diff as G5/G6 (``_iter_diff_added_lines``) so an
+        unstaged debug line is caught, not just a staged one. Code files only —
+        a ``print(`` in a config/doc file is not an artifact. Each distinct
+        marker is reported once even if it appears on several lines.
+        """
+        added = self._iter_diff_added_lines()
+        if added is None:
+            return []
 
         debug_markers = (
             "console.log(",
@@ -539,19 +606,25 @@ class GateKeeper:
             "binding.pry",
             "import pdb",
         )
-        for line in diff_text.splitlines():
-            if not line.startswith("+") or line.startswith("+++"):
+        found: List[str] = []
+        for path, line in added:
+            if not _path_in_scope(path, CODE_EXTENSIONS):
                 continue
-            added = line[1:]
             for marker in debug_markers:
-                if marker in added:
-                    issues.append(f"G9: Debug artifact in staged change: {marker}")
-                    break
+                if marker in line and marker not in found:
+                    found.append(marker)
+        return [f"G9: Debug artifact in diff: {marker}" for marker in found]
 
-        return issues
+    def _iter_source_files(
+        self,
+        extensions: frozenset = CODE_EXTENSIONS,
+        filenames: frozenset = frozenset(),
+    ):
+        """Yield in-scope file paths, skipping excluded directories.
 
-    def _iter_source_files(self):
-        """Yield source code file paths, skipping excluded directories."""
+        Defaults to source-code files; pass a wider ``extensions``/``filenames``
+        scope (e.g. for the G6 secret scan) to include config/env files.
+        """
         stack = [self.project_path]
         while stack:
             directory = stack.pop()
@@ -564,5 +637,5 @@ class GateKeeper:
                     continue
                 if entry.is_dir():
                     stack.append(entry)
-                elif entry.suffix in CODE_EXTENSIONS:
+                elif entry.suffix in extensions or entry.name in filenames:
                     yield entry
