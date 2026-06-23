@@ -62,6 +62,8 @@ class Project:
         self._llm_cache = None
         self._semantic_ranker = None
         self._ranker_built = False
+        self._mcp = None
+        self._mcp_built = False
         # Topography (symbol graph) is built lazily on first use, not here:
         # every CLI command registers all known projects, and eagerly scanning
         # each one's whole tree just to list/status is wasted work. The executor
@@ -123,6 +125,24 @@ class Project:
                 # which still beats the arbitrary-order slice.
                 self._semantic_ranker = SemanticRanker(embedder, cache, weight)
         return self._semantic_ranker
+
+    @property
+    def mcp(self):
+        """MCP tool-host manager, or None when no servers are configured.
+
+        Built at most once (the manager itself is cheap; discovery is deferred
+        to first access of ``.tools`` and is timeout-bounded). A None result is
+        remembered so callers can skip MCP entirely without retrying.
+        """
+        if not self._mcp_built:
+            self._mcp_built = True
+            servers = (self.config.get("mcp") or {}).get("servers") or []
+            if servers:
+                from my_project_orchestrator.core.mcp import MCPManager
+
+                manager = MCPManager(servers)
+                self._mcp = manager if manager.enabled else None
+        return self._mcp
 
     @property
     def llm_cache(self):

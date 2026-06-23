@@ -53,6 +53,13 @@ web = [
     "playwright>=1.40.0",
     "pillow>=10.0.0",
 ]
+# Optional MCP (Model Context Protocol) tool-host substrate (project.mcp,
+# orchestrator.mcp_enabled). Connects to configured MCP servers, discovers their
+# tools, and can call one; off by default and timeout-bounded. Absent SDK = the
+# tool registry is empty and the manager is a no-op (never an error).
+mcp = [
+    "mcp>=1.0.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["my_project_orchestrator*"]
@@ -61,6 +68,9 @@ include = ["my_project_orchestrator*"]
 dev = [
     "pytest>=9.1.0",
     "coverage>=7.0",
+    # MCP SDK in the dev group so the suite exercises the REAL substrate path
+    # (an in-process stdio MCP server, fully offline) rather than skipping it.
+    "mcp>=1.0.0",
 ]
 
 [project.scripts]

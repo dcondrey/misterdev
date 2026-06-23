@@ -185,6 +185,13 @@ class OrchestratorSettings:
     # working tree), or "worktree" (always isolate each parallel task).
     parallel_mode: str = "auto"
     auto_detect_dependencies: bool = False
+    # Optional MCP (Model Context Protocol) tool awareness: when on, the tools
+    # discovered from the servers in the top-level ``mcp.servers`` list are
+    # described to the model in the task context so it knows they exist. Off by
+    # default and additive only — it never changes the single-shot build loop.
+    # The substrate (connect/discover/call) is always available via project.mcp;
+    # this flag gates only the awareness injection. Timeout-bounded throughout.
+    mcp_enabled: bool = False
 
 
 PROMPT_TEMPLATES = {
@@ -233,6 +240,11 @@ DEFAULT_CONFIG = {
     # launch/url/checks/capture/assert/timeout; not schema-validated like the
     # dataclass sections, mirroring how `environment` is an open dict.
     "runtime": {},
+    # MCP (Model Context Protocol) servers to connect to for tool discovery.
+    # ``servers`` is a list of {name, command, args, transport} mappings (stdio
+    # transport). Empty by default; awareness injection is gated separately by
+    # orchestrator.mcp_enabled. Open dict like ``runtime``, not schema-validated.
+    "mcp": {"servers": []},
     "prompt_templates": PROMPT_TEMPLATES,
     "build": asdict(BuildSettings()),
     "orchestrator": asdict(OrchestratorSettings()),

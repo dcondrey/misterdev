@@ -670,6 +670,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                     "\n\n## Project Structure (files and their symbols)\n"
                     + allocated["project_outline"]
                 )
+            full_code_context += self._mcp_awareness(project)
 
             context_dict = {
                 "project": project,
@@ -1172,6 +1173,31 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             if p.get("type") == "markdown_planner":
                 return p.get("settings", {})
         return {}
+
+    def _mcp_awareness(self, project: Project) -> str:
+        """Render the available-MCP-tools section, or "" when off / no tools.
+
+        Additive and behind ``orchestrator.mcp_enabled``: when the flag is off,
+        no MCP manager is configured, or discovery found nothing, this returns
+        an empty string so the task context is byte-for-byte unchanged from the
+        no-MCP build. It only informs the model the tools exist (awareness); it
+        does not enable the model to call them — that agentic loop is a separate,
+        out-of-scope phase that would drive ``project.mcp.call_tool``.
+        """
+        if not get_setting(project.config, "orchestrator", "mcp_enabled"):
+            return ""
+        mcp = getattr(project, "mcp", None)
+        if mcp is None:
+            return ""
+        described = mcp.describe_tools()
+        if not described:
+            return ""
+        return (
+            "\n\n## Available MCP tools (informational)\n"
+            "These external tools exist in this environment. You cannot invoke "
+            "them directly in your edits; they are listed so you understand what "
+            "capabilities are available.\n" + described
+        )
 
     def _get_code_context(
         self,
