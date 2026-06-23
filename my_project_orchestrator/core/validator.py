@@ -59,17 +59,36 @@ def _run_cmd(
     env_activate: Optional[str] = None,
     timeout: int = 180,
     runner: Optional[Callable[[str, int], Tuple[bool, str]]] = None,
+    policy: Optional[object] = None,
+    audit: Optional[object] = None,
 ) -> Tuple[bool, str]:
+    # Governance gate (opt-in): when a policy is supplied AND it refuses the
+    # command, return a refusal without executing. Both args default to None, so
+    # with no policy/audit this is byte-identical to the prior behavior. The
+    # classifier sees the raw command, before the host activation prefix.
+    if policy is not None:
+        try:
+            decision = policy.authorize(cmd)
+        except Exception:  # a policy bug must never break the command seam
+            decision = None
+        if decision is not None and not decision.allowed:
+            msg = f"Command refused by governance: {decision.reason}"
+            logger.warning(f"{msg}: {cmd}")
+            return False, msg
     # When a runner is supplied (e.g. a container engine), the command executes
     # through it instead of the local subprocess. Activation prefixes are
     # host-venv concepts, so they are only applied to local execution.
     if runner is not None:
-        return runner(cmd, timeout)
+        ok, output = runner(cmd, timeout)
+        _audit_command(audit, cmd, ok, cwd)
+        return ok, output
     if env_activate:
-        cmd = f"{env_activate} && {cmd}"
+        full_cmd = f"{env_activate} && {cmd}"
+    else:
+        full_cmd = cmd
     try:
         proc = subprocess.run(
-            cmd,
+            full_cmd,
             shell=True,
             cwd=cwd,
             capture_output=True,
@@ -79,11 +98,25 @@ def _run_cmd(
         output = proc.stdout
         if proc.stderr:
             output += "\n" + proc.stderr
-        return proc.returncode == 0, output
+        ok = proc.returncode == 0
+        _audit_command(audit, cmd, ok, cwd)
+        return ok, output
     except subprocess.TimeoutExpired:
-        return False, f"Command timed out after {timeout}s: {cmd}"
+        _audit_command(audit, cmd, False, cwd)
+        return False, f"Command timed out after {timeout}s: {full_cmd}"
     except Exception as e:
+        _audit_command(audit, cmd, False, cwd)
         return False, f"Command failed: {e}"
+
+
+def _audit_command(audit: Optional[object], cmd: str, ok: bool, cwd: Path) -> None:
+    """Record a command event if an audit trail is wired. Never raises."""
+    if audit is None:
+        return
+    try:
+        audit.record_command(cmd, ok=ok, cwd=str(cwd))
+    except Exception:  # audit is observability; it must never break execution
+        pass
 
 
 def run_validation(

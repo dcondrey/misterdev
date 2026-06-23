@@ -1,10 +1,14 @@
+import json
+
 import pytest
 
+from my_project_orchestrator.core.audit import AuditTrail
 from my_project_orchestrator.core.governance import (
     GovernancePolicy,
     is_risky,
     policy_from_config,
 )
+from my_project_orchestrator.core.validator import _run_cmd
 
 
 # --- risk classification: SAFE cases (must NOT trip) ------------------------
@@ -223,3 +227,85 @@ def test_policy_from_config_tolerates_malformed_section():
     assert pol.enabled is True
     assert pol.approval_required == []
     assert pol.auto_approve is False
+
+
+# --- _run_cmd seam integration ----------------------------------------------
+
+
+def test_run_cmd_no_policy_runs_as_today(tmp_path):
+    # Default-off path: no policy, no audit -> identical to prior behavior.
+    ok, out = _run_cmd("echo hi", tmp_path, None, 30)
+    assert ok and "hi" in out
+
+
+def test_run_cmd_blocks_risky_when_policy_refuses(tmp_path):
+    pol = GovernancePolicy(enabled=True, interactive=False, auto_approve=False)
+    ok, out = _run_cmd("rm -rf /tmp/x", tmp_path, None, 30, policy=pol)
+    assert ok is False
+    assert "refused by governance" in out
+    assert len(pol.escalations) == 1
+
+
+def test_run_cmd_safe_runs_under_active_policy(tmp_path):
+    pol = GovernancePolicy(enabled=True, interactive=False, auto_approve=False)
+    ok, out = _run_cmd("echo safe", tmp_path, None, 30, policy=pol)
+    assert ok and "safe" in out
+    assert pol.escalations == []
+
+
+def test_run_cmd_auto_approve_runs_risky(tmp_path):
+    pol = GovernancePolicy(enabled=True, interactive=False, auto_approve=True)
+    # use a harmless command that classifies risky so the run actually succeeds
+    ok, out = _run_cmd(
+        "git push --dry-run 2>/dev/null; true", tmp_path, None, 30, policy=pol
+    )
+    assert ok  # not blocked; executed
+
+
+def test_run_cmd_disabled_policy_runs_risky(tmp_path):
+    pol = GovernancePolicy(enabled=False)
+    ok, _ = _run_cmd("echo 'rm -rf'", tmp_path, None, 30, policy=pol)
+    assert ok  # disabled policy authorizes everything
+
+
+def test_run_cmd_audit_records_command(tmp_path):
+    trail = AuditTrail(tmp_path)
+    ok, _ = _run_cmd("echo hi", tmp_path, None, 30, audit=trail)
+    assert ok
+    entries = [json.loads(ln) for ln in trail.path.read_text().splitlines()]
+    assert entries[-1]["type"] == "command"
+    assert entries[-1]["command"] == "echo hi"
+    assert entries[-1]["ok"] is True
+
+
+def test_run_cmd_audit_failure_does_not_break_execution(tmp_path):
+    class BoomAudit:
+        def record_command(self, *a, **k):
+            raise RuntimeError("disk full")
+
+    ok, out = _run_cmd("echo hi", tmp_path, None, 30, audit=BoomAudit())
+    assert ok and "hi" in out  # audit failure swallowed
+
+
+# --- Project wiring ---------------------------------------------------------
+
+
+def test_project_governance_policy_none_when_off(tmp_path, monkeypatch):
+    from my_project_orchestrator.core import project as project_mod
+
+    monkeypatch.setattr(project_mod.Project, "_init_llm_client", lambda self: None)
+    project = project_mod.Project(tmp_path, {})
+    assert project.governance_policy is None
+    # audit always available (defaults on)
+    assert project.audit_trail is not None
+
+
+def test_project_governance_policy_built_when_on(tmp_path, monkeypatch):
+    from my_project_orchestrator.core import project as project_mod
+
+    monkeypatch.setattr(project_mod.Project, "_init_llm_client", lambda self: None)
+    project = project_mod.Project(tmp_path, {"orchestrator": {"governance": True}})
+    pol = project.governance_policy
+    assert pol is not None and pol.enabled is True
+    assert pol.interactive is False  # autonomous: blocks risky, records escalation
+    assert pol.audit is project.audit_trail

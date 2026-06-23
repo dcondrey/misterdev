@@ -64,6 +64,9 @@ class Project:
         self._ranker_built = False
         self._mcp = None
         self._mcp_built = False
+        self._audit_trail = None
+        self._governance_policy = None
+        self._governance_built = False
         # Topography (symbol graph) is built lazily on first use, not here:
         # every CLI command registers all known projects, and eagerly scanning
         # each one's whole tree just to list/status is wasted work. The executor
@@ -152,6 +155,39 @@ class Project:
 
             self._llm_cache = LLMCache(self.path / ".orchestrator" / "llm_cache")
         return self._llm_cache
+
+    @property
+    def audit_trail(self):
+        """Append-only JSONL audit trail (lazy, file-backed under .orchestrator).
+
+        Defaults ON: it only appends observability records to a gitignored file
+        and degrades to a no-op if the path is unwritable, so it cannot regress a
+        build. A run that wants it silent leaves the file unread (no behavioral
+        effect either way)."""
+        if self._audit_trail is None:
+            from my_project_orchestrator.core.audit import AuditTrail
+
+            self._audit_trail = AuditTrail(self.path, enabled=True)
+        return self._audit_trail
+
+    @property
+    def governance_policy(self):
+        """Risk-classified approval policy, or None when governance is off.
+
+        Built from config in AUTONOMOUS mode (interactive prompting is a deferred
+        seam: threading stdin into the wave loop risks a hang, so unattended runs
+        BLOCK a risky command and record an escalation unless governance.
+        auto_approve is set). None when orchestrator.governance is false, so the
+        command seam stays byte-identical to today."""
+        if not self._governance_built:
+            self._governance_built = True
+            from my_project_orchestrator.core.governance import policy_from_config
+
+            policy = policy_from_config(
+                self.config, interactive=False, audit=self.audit_trail
+            )
+            self._governance_policy = policy if policy.enabled else None
+        return self._governance_policy
 
     def _harvest_free_models(self) -> list:
         """Current free OpenRouter models when use_free_models is enabled."""

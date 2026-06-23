@@ -1130,7 +1130,18 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         activation = (
             project.env_manager.activate_command() if project.env_manager else None
         )
-        return _run_cmd(command, project.path, activation, timeout)
+        # Governance gate + audit trail (both no-ops when off: governance_policy
+        # is None unless orchestrator.governance is set; audit only appends).
+        # getattr-guarded so a lightweight project stub without these subsystems
+        # still executes commands unchanged.
+        return _run_cmd(
+            command,
+            project.path,
+            activation,
+            timeout,
+            policy=getattr(project, "governance_policy", None),
+            audit=getattr(project, "audit_trail", None),
+        )
 
     def _snapshot_files(
         self, project: Project, files: List[str]
