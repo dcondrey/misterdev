@@ -1,10 +1,15 @@
-"""High-Rigor Topological Context Mapping Engine.
+"""Topological context mapping: a tree-sitter symbol graph over the project.
 
 Features:
-- Scope-aware symbol resolution via Tree-Sitter.
-- LanceDB-backed semantic vector indexing.
-- Multi-degree graph traversal for 'Omniscient Context'.
-- Lazy loading for high-speed CLI performance.
+- Scope-aware symbols via tree-sitter for Python, Rust, TypeScript/TSX,
+  JavaScript/JSX, C, C++, C#, Swift, and Kotlin (best-effort).
+- Per-file outlines (a symbol table of contents) and a whole-project structural
+  map, used to navigate and window large files for focused edits.
+- Call-neighbor traversal for related-symbol context, ranked by an optional
+  semantic embedder (else lexical).
+- check_syntax(): tree-sitter parse-based syntax verification (ERROR/MISSING
+  nodes) that understands strings/comments, used by the correctness gate.
+- Lazy loading; byte-correct slicing for non-ASCII sources.
 """
 
 from pathlib import Path
