@@ -1,4 +1,5 @@
 import json
+import sys
 import types
 
 import pytest
@@ -16,7 +17,89 @@ from my_project_orchestrator.llm.client import (
     LocalEmbeddingClient,
     OpenRouterLLMClient,
     OpenRouterEmbeddingClient,
+    AnthropicLLMClient,
 )
+
+
+def _make_anthropic(monkeypatch, model="claude-sonnet-4-6"):
+    # Inject a fake `anthropic` module so the client constructs without the real
+    # SDK installed; the network client is replaced per-test.
+    fake = types.ModuleType("anthropic")
+    fake.Anthropic = lambda api_key=None: types.SimpleNamespace()
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    cfg = {
+        "llm": {
+            "provider": "anthropic",
+            "model": model,
+            "api_key_env_var": "ANTHROPIC_API_KEY",
+            "temperature": 0.1,
+        }
+    }
+    return AnthropicLLMClient(cfg)
+
+
+def _anthropic_usage(inp=10, out=4):
+    return types.SimpleNamespace(
+        input_tokens=inp,
+        output_tokens=out,
+        cache_creation_input_tokens=0,
+        cache_read_input_tokens=0,
+    )
+
+
+def test_anthropic_call_parses_text_blocks_and_caches_system(monkeypatch):
+    client = _make_anthropic(monkeypatch)
+    captured = {}
+
+    def create(**kw):
+        captured.update(kw)
+        return types.SimpleNamespace(
+            content=[types.SimpleNamespace(type="text", text="hi there")],
+            usage=_anthropic_usage(),
+            stop_reason="end_turn",
+        )
+
+    client.client = types.SimpleNamespace(messages=types.SimpleNamespace(create=create))
+    out = client.generate_code("do it", "be brief")
+    assert out == "hi there"
+    assert client.cumulative_usage.estimated_cost > 0
+    # System prompt is marked cacheable (ephemeral cache_control).
+    assert captured["system"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_anthropic_call_wraps_api_error(monkeypatch):
+    client = _make_anthropic(monkeypatch)
+
+    def boom(**kw):
+        raise RuntimeError("overloaded")
+
+    client.client = types.SimpleNamespace(messages=types.SimpleNamespace(create=boom))
+    with pytest.raises(LLMCallError):
+        client.generate_code("x")
+
+
+def test_anthropic_stream_yields_and_reads_final_usage(monkeypatch):
+    client = _make_anthropic(monkeypatch)
+
+    class _Stream:
+        text_stream = ["par", "tial"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get_final_message(self):
+            return types.SimpleNamespace(usage=_anthropic_usage(inp=5, out=2))
+
+    client.client = types.SimpleNamespace(
+        messages=types.SimpleNamespace(stream=lambda **kw: _Stream())
+    )
+    resp = client.generate_stream("p", "s")
+    assert resp.content == "partial"
+    assert resp.usage.prompt_tokens == 5
 
 
 def _completion(content, pt=10, ct=5, finish="stop", tool_calls=None):
