@@ -168,12 +168,14 @@ def _default_vlm_call(llm_client, model: Optional[str]) -> Optional[VlmCall]:
         return None
 
     def _call(prompt: str, image_b64: str) -> str:
-        client = llm_client.with_model(model) if model else llm_client
-        raw = getattr(client, "client", None)
+        # Use the raw OpenAI-compatible SDK client directly. with_model is a
+        # context manager (not a client factory), so we must not rebind through
+        # it; the explicit ``model=`` below already selects the vision model.
+        raw = getattr(llm_client, "client", None)
         if raw is None or not hasattr(raw, "chat"):
             raise RuntimeError("client does not expose a multimodal chat endpoint")
         resp = raw.chat.completions.create(
-            model=model or getattr(client, "model", None),
+            model=model or getattr(llm_client, "model", None),
             messages=[
                 {
                     "role": "user",

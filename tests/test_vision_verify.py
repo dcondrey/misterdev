@@ -1,5 +1,6 @@
 import os
 import time
+import types
 
 import pytest
 
@@ -9,6 +10,7 @@ from my_project_orchestrator.core.vision_verify import (
     SKIP,
     VisionResult,
     run_vision_gate,
+    _default_vlm_call,
     _parse_verdict,
 )
 
@@ -17,6 +19,47 @@ def _shot(tmp_path):
     p = tmp_path / "shot.png"
     p.write_bytes(b"\x89PNG\r\n\x1a\n-fake-bytes")
     return p
+
+
+def test_default_vlm_call_uses_raw_client_not_with_model(tmp_path):
+    # Regression: with_model is a context manager, not a client factory. The
+    # default call must use llm_client.client directly (and pass model=). A
+    # client with a real .client.chat.completions.create must produce a verdict.
+    captured = {}
+
+    class _Completions:
+        def create(self, **kw):
+            captured.update(kw)
+            return types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        message=types.SimpleNamespace(content="YES, a login form.")
+                    )
+                ]
+            )
+
+    def _boom_with_model(_m):
+        raise AssertionError("with_model must not be called as a client factory")
+
+    client = types.SimpleNamespace(
+        client=types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=_Completions())
+        ),
+        model="base/model",
+        with_model=_boom_with_model,
+    )
+    shot = _shot(tmp_path)
+    res = run_vision_gate(
+        tmp_path,
+        {"capture": str(shot), "assert": "a login form", "model": "vendor/vision"},
+        llm_client=client,
+    )
+    assert res.status == GREEN
+    assert captured["model"] == "vendor/vision"  # explicit model selection used
+
+
+def test_default_vlm_call_none_without_client():
+    assert _default_vlm_call(None, "m") is None
 
 
 # --- SKIP semantics ---------------------------------------------------------
