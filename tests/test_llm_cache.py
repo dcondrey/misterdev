@@ -1,3 +1,4 @@
+import os
 import tempfile
 from pathlib import Path
 
@@ -48,3 +49,50 @@ def test_overwrite_updates_entry(cache):
     cache.put("sys", "p", "first")
     cache.put("sys", "p", "second")
     assert cache.get("sys", "p") == "second"
+
+
+def _count_entries(cache):
+    return len(list(cache.dir.glob("*.json")))
+
+
+def test_eviction_caps_entry_count():
+    with tempfile.TemporaryDirectory() as d:
+        cache = LLMCache(Path(d) / "c", max_entries=5)
+        for i in range(20):
+            # mtime granularity is coarse; stamp each file so eviction order is
+            # well-defined regardless of clock resolution.
+            cache.put("sys", f"prompt-{i}", f"out-{i}")
+            p = cache._path(cache._key("sys", f"prompt-{i}"))
+            os.utime(p, (i, i))
+        assert _count_entries(cache) == 5
+
+
+def test_eviction_drops_oldest_first():
+    with tempfile.TemporaryDirectory() as d:
+        cache = LLMCache(Path(d) / "c", max_entries=3)
+        for i in range(6):
+            cache.put("sys", f"p{i}", f"o{i}")
+            os.utime(cache._path(cache._key("sys", f"p{i}")), (i, i))
+        # Oldest (p0..p2) evicted; newest (p3..p5) retained.
+        assert cache.get("sys", "p0") is None
+        assert cache.get("sys", "p2") is None
+        assert cache.get("sys", "p5") == "o5"
+
+
+def test_zero_max_entries_disables_eviction():
+    with tempfile.TemporaryDirectory() as d:
+        cache = LLMCache(Path(d) / "c", max_entries=0)
+        for i in range(10):
+            cache.put("sys", f"p{i}", f"o{i}")
+        assert _count_entries(cache) == 10
+
+
+def test_eviction_ignores_tmp_files():
+    with tempfile.TemporaryDirectory() as d:
+        cache = LLMCache(Path(d) / "c", max_entries=100)
+        cache.put("sys", "p", "o")
+        # A stray .tmp file must not be counted or evicted as a cache entry.
+        stray = cache.dir / "leftover.json.tmp"
+        stray.write_text("{}", encoding="utf-8")
+        cache.put("sys", "p2", "o2")
+        assert stray.exists()

@@ -13,6 +13,7 @@ result is reusable regardless of which model would be picked next time.
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -20,12 +21,18 @@ from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
 
+# Cap on stored entries. One file per entry would otherwise grow without bound
+# across many builds; past the cap the oldest entries (by mtime) are evicted.
+# A re-applied hit only ever saves a gate run, so dropping cold entries is safe.
+DEFAULT_MAX_ENTRIES = 2000
+
 
 class LLMCache:
-    """One JSON file per cache entry under a directory."""
+    """One JSON file per cache entry under a directory, bounded by mtime LRU."""
 
-    def __init__(self, dir_path: Path):
+    def __init__(self, dir_path: Path, max_entries: int = DEFAULT_MAX_ENTRIES):
         self.dir = Path(dir_path)
+        self.max_entries = max_entries
 
     @staticmethod
     def _key(system_prompt: str, prompt: str) -> str:
@@ -74,3 +81,30 @@ class LLMCache:
             encoding="utf-8",
         )
         tmp.replace(path)
+        self._evict_if_needed()
+
+    def _evict_if_needed(self) -> None:
+        """Drop the oldest entries (by mtime) once the cap is exceeded.
+
+        Best-effort: any filesystem error degrades to leaving the cache as-is
+        rather than raising into the build, like the rest of this module.
+        """
+        if self.max_entries <= 0:
+            return
+        try:
+            entries = [
+                (e.stat().st_mtime, e.path)
+                for e in os.scandir(self.dir)
+                if e.name.endswith(".json") and e.is_file()
+            ]
+        except OSError:
+            return
+        excess = len(entries) - self.max_entries
+        if excess <= 0:
+            return
+        entries.sort(key=lambda t: t[0])
+        for _mtime, victim in entries[:excess]:
+            try:
+                os.remove(victim)
+            except OSError:
+                continue
