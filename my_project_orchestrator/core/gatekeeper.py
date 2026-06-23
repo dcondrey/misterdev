@@ -87,6 +87,10 @@ class GateKeeper:
       G3: Tests pass
       G3.5: Golden suite (model-blind, immutable; if configured)
       G4: Type check (if available)
+      G4.5: LSP semantic diagnostics (optional)
+      G4.6: Runtime smoke (optional)
+      G4.7: Web verification, headless browser (optional)
+      G4.8: Vision verification, VLM judgment (optional)
       G5: Completeness scan (no banned markers in source)
       G6: Secrets scan (no leaked credentials)
       G9: Diff hygiene (no debug artifacts in staged changes)
@@ -105,6 +109,9 @@ class GateKeeper:
         container: Optional["ContainerEngine"] = None,
         runtime_smoke: bool = False,
         runtime_config: Optional[Dict] = None,
+        web_verify: bool = False,
+        vision_verify: bool = False,
+        vision_client=None,
     ):
         self.project_path = Path(project_path)
         self.env_activate = env_activate
@@ -125,6 +132,14 @@ class GateKeeper:
         # `smoke` key. Timeout-bounded so it can never block the build.
         self.runtime_smoke = runtime_smoke
         self.runtime_config = runtime_config or {}
+        # Optional web (headless-browser) and vision (VLM) verification gates,
+        # both off by default. Their specs live under the top-level `runtime`
+        # mapping (`runtime.web`, `runtime.vision`). Like the smoke gate they are
+        # daemon-threaded and timeout-bounded so they can never block the build;
+        # a SKIP (no/incomplete config, missing dep, timeout) never fails.
+        self.web_verify = web_verify
+        self.vision_verify = vision_verify
+        self.vision_client = vision_client
 
     @property
     def _runner(self) -> Optional[Callable[[str, int], Tuple[bool, str]]]:
@@ -260,6 +275,43 @@ class GateKeeper:
                 health.tests_pass = False
                 if smoke.evidence:
                     health.test_output = smoke.evidence
+                return False, issues, health
+
+        # G4.7: Web verification gate (optional, off by default). Drives a real
+        # headless browser against the running web artifact and runs declarative
+        # checks (DOM/text presence, no console errors, axe, screenshot diff).
+        # Best-effort and timeout-bounded: a SKIP (no/incomplete config, no
+        # Playwright/browser, timeout) never fails; only a RED (a failed check)
+        # blocks the build. Real screenshot evidence is captured.
+        if self.web_verify:
+            from my_project_orchestrator.core.web_verify import run_web_gate
+
+            web = run_web_gate(self.project_path, self.runtime_config.get("web"))
+            if web.status == "red":
+                issues.append(f"G4.7: Web verify failed ({web.reason or 'no detail'})")
+                health.tests_pass = False
+                if web.evidence:
+                    health.test_output = f"web evidence: {web.evidence}"
+                return False, issues, health
+
+        # G4.8: Vision verification gate (optional, off by default). Asks a
+        # vision model whether a captured screenshot satisfies a stated visual
+        # requirement. Best-effort and timeout-bounded: a SKIP (no/incomplete
+        # config, no model/network, unparseable verdict, timeout) never fails;
+        # only a RED (the model denies the assertion) blocks the build.
+        if self.vision_verify:
+            from my_project_orchestrator.core.vision_verify import run_vision_gate
+
+            vision = run_vision_gate(
+                self.project_path,
+                self.runtime_config.get("vision"),
+                llm_client=self.vision_client,
+            )
+            if vision.status == "red":
+                issues.append(
+                    f"G4.8: Vision verify failed ({vision.reason or 'no detail'})"
+                )
+                health.tests_pass = False
                 return False, issues, health
 
         # G5: Completeness scan

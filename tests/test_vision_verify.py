@@ -176,6 +176,115 @@ def test_vision_result_repr_and_flags():
     assert "green" in repr(r)
 
 
+# --- default client call path -----------------------------------------------
+
+
+class _FakeMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+class _FakeChoice:
+    def __init__(self, content):
+        self.message = _FakeMessage(content)
+
+
+class _FakeCompletions:
+    def __init__(self, content):
+        self._content = content
+        self.seen = {}
+
+    def create(self, model=None, messages=None):
+        self.seen["model"] = model
+        self.seen["messages"] = messages
+        return type("R", (), {"choices": [_FakeChoice(self._content)]})()
+
+
+class _FakeChat:
+    def __init__(self, content):
+        self.completions = _FakeCompletions(content)
+
+
+class _FakeRaw:
+    def __init__(self, content):
+        self.chat = _FakeChat(content)
+
+
+class _FakeClient:
+    def __init__(self, content):
+        self.client = _FakeRaw(content)
+        self.model = "vision-model"
+
+    def with_model(self, model):
+        return self
+
+
+def test_default_call_uses_client_multimodal(tmp_path):
+    shot = _shot(tmp_path)
+    client = _FakeClient("YES\nlooks right")
+    res = run_vision_gate(
+        tmp_path,
+        {"capture": str(shot), "assert": "ok", "timeout": 10},
+        llm_client=client,
+    )
+    assert res.status == GREEN
+    msgs = client.client.chat.completions.seen["messages"]
+    parts = msgs[0]["content"]
+    # Multimodal: a text part and an image_url part with a base64 data URL.
+    assert any(p.get("type") == "text" for p in parts)
+    img = next(p for p in parts if p.get("type") == "image_url")
+    assert img["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+# --- gatekeeper integration -------------------------------------------------
+
+
+def test_gatekeeper_skips_vision_when_off(tmp_path):
+    from my_project_orchestrator.core.gatekeeper import GateKeeper
+
+    (tmp_path / "a.py").write_text("x = 1\n")
+    shot = _shot(tmp_path)
+    keeper = GateKeeper(
+        tmp_path,
+        vision_verify=False,
+        vision_client=_FakeClient("NO\nbroken"),
+        runtime_config={"vision": {"capture": str(shot), "assert": "ok"}},
+    )
+    _success, issues, _ = keeper.run_gates({})
+    assert not any("G4.8" in i for i in issues)
+
+
+def test_gatekeeper_red_vision_blocks_build(tmp_path):
+    from my_project_orchestrator.core.gatekeeper import GateKeeper
+
+    (tmp_path / "a.py").write_text("x = 1\n")
+    shot = _shot(tmp_path)
+    keeper = GateKeeper(
+        tmp_path,
+        vision_verify=True,
+        vision_client=_FakeClient("NO\nthe layout is broken"),
+        runtime_config={"vision": {"capture": str(shot), "assert": "ok", "timeout": 5}},
+    )
+    success, issues, _ = keeper.run_gates({})
+    assert not success
+    assert any("G4.8" in i for i in issues)
+
+
+def test_gatekeeper_green_vision_passes(tmp_path):
+    from my_project_orchestrator.core.gatekeeper import GateKeeper
+
+    (tmp_path / "a.py").write_text("x = 1\n")
+    shot = _shot(tmp_path)
+    keeper = GateKeeper(
+        tmp_path,
+        vision_verify=True,
+        vision_client=_FakeClient("YES\nlooks good"),
+        runtime_config={"vision": {"capture": str(shot), "assert": "ok", "timeout": 5}},
+    )
+    _success, issues, _ = keeper.run_gates({})
+    assert not any("G4.8" in i for i in issues)
+
+
 # --- live integration (opt-in) ----------------------------------------------
 
 

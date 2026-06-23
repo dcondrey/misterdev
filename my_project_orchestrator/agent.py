@@ -717,6 +717,11 @@ class ProjectOrchestrator:
                     project.config, "orchestrator", "runtime_smoke"
                 ),
                 runtime_config=project.config.get("runtime") or {},
+                web_verify=get_setting(project.config, "orchestrator", "web_verify"),
+                vision_verify=get_setting(
+                    project.config, "orchestrator", "vision_verify"
+                ),
+                vision_client=project.llm_client,
             )
             commands = {
                 "build_command": assessment.structure.build_command,

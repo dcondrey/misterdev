@@ -11,7 +11,13 @@ from my_project_orchestrator.core.web_verify import (
     WebResult,
     run_web_gate,
     _byte_diff_fraction,
+    _capture_evidence,
     _image_diff_fraction,
+    _record_console,
+    _run_axe,
+    _run_check,
+    _run_screenshot_diff,
+    _terminate,
 )
 
 
@@ -261,6 +267,50 @@ def test_red_when_screenshot_diff_exceeds_threshold(monkeypatch, tmp_path):
     assert "diff" in res.reason
 
 
+def test_serve_started_and_torn_down(monkeypatch, tmp_path):
+    # A real (short-lived) server process is launched, its readiness signal is
+    # awaited, the fake browser runs, then the server is torn down.
+    import sys
+
+    page = _FakePage(html="<html><body>ok</body></html>")
+    _patch_pw(monkeypatch, page)
+    serve = (
+        f"{sys.executable} -c "
+        "\"import time;print('LISTENING',flush=True);time.sleep(30)\""
+    )
+    res = run_web_gate(
+        tmp_path,
+        {
+            "url": "http://x",
+            "serve": serve,
+            "ready": "LISTENING",
+            "baseline_dir": str(tmp_path / "s"),
+            "checks": ["text:ok"],
+            "timeout": 10,
+        },
+    )
+    assert res.status == GREEN
+
+
+def test_serve_without_ready_signal(monkeypatch, tmp_path):
+    import sys
+
+    page = _FakePage(html="<html><body>ok</body></html>")
+    _patch_pw(monkeypatch, page)
+    serve = f'{sys.executable} -c "import time;time.sleep(30)"'
+    res = run_web_gate(
+        tmp_path,
+        {
+            "url": "http://x",
+            "serve": serve,
+            "baseline_dir": str(tmp_path / "s"),
+            "checks": ["text:ok"],
+            "timeout": 5,
+        },
+    )
+    assert res.status == GREEN
+
+
 # --- never blocks (hard timeout) -------------------------------------------
 
 
@@ -296,6 +346,68 @@ def test_browser_error_is_skip_not_crash(monkeypatch, tmp_path):
     assert "error" in res.reason
 
 
+# --- gatekeeper integration -------------------------------------------------
+
+
+def test_gatekeeper_skips_web_when_off(tmp_path):
+    from my_project_orchestrator.core.gatekeeper import GateKeeper
+
+    (tmp_path / "a.py").write_text("x = 1\n")
+    # web_verify off -> gate not run even with a (would-fail) spec present.
+    keeper = GateKeeper(
+        tmp_path,
+        web_verify=False,
+        runtime_config={"web": {"url": "http://x", "checks": ["dom:#nope"]}},
+    )
+    success, issues, _ = keeper.run_gates({})
+    assert not any("G4.7" in i for i in issues)
+
+
+def test_gatekeeper_red_web_blocks_build(monkeypatch, tmp_path):
+    from my_project_orchestrator.core.gatekeeper import GateKeeper
+
+    (tmp_path / "a.py").write_text("x = 1\n")
+    page = _FakePage(selectors=())
+    _patch_pw(monkeypatch, page)
+    keeper = GateKeeper(
+        tmp_path,
+        web_verify=True,
+        runtime_config={
+            "web": {
+                "url": "http://x",
+                "baseline_dir": str(tmp_path / "s"),
+                "checks": ["dom:#missing"],
+                "timeout": 5,
+            }
+        },
+    )
+    success, issues, _ = keeper.run_gates({})
+    assert not success
+    assert any("G4.7" in i for i in issues)
+
+
+def test_gatekeeper_green_web_passes(monkeypatch, tmp_path):
+    from my_project_orchestrator.core.gatekeeper import GateKeeper
+
+    (tmp_path / "a.py").write_text("x = 1\n")
+    page = _FakePage(html="<html><body><h1>Up</h1></body></html>", selectors=("h1",))
+    _patch_pw(monkeypatch, page)
+    keeper = GateKeeper(
+        tmp_path,
+        web_verify=True,
+        runtime_config={
+            "web": {
+                "url": "http://x",
+                "baseline_dir": str(tmp_path / "s"),
+                "checks": ["dom:h1", "text:Up"],
+                "timeout": 5,
+            }
+        },
+    )
+    success, issues, _ = keeper.run_gates({})
+    assert not any("G4.7" in i for i in issues)
+
+
 # --- helpers / result object ------------------------------------------------
 
 
@@ -309,6 +421,107 @@ def test_byte_diff_fraction():
 def test_image_diff_identical_bytes_is_zero():
     # Pillow can't open these bytes -> falls back to byte diff (identical = 0).
     assert _image_diff_fraction(b"not-an-image", b"not-an-image") == 0.0
+
+
+def _png(color, size=(4, 4)):
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_image_diff_pillow_pixel_path():
+    # Real PNGs exercise the Pillow per-pixel comparison (not the byte fallback).
+    red = _png((255, 0, 0))
+    assert _image_diff_fraction(red, red) == 0.0
+    blue = _png((0, 0, 255))
+    assert _image_diff_fraction(red, blue) == 1.0  # every pixel differs
+    # Differing sizes are normalized via resize, not crash.
+    big_blue = _png((0, 0, 255), size=(8, 8))
+    assert _image_diff_fraction(red, big_blue) == 1.0
+
+
+# --- internal check helpers (browser-free) ----------------------------------
+
+
+def test_run_check_dom_selector_error_is_red():
+    class _Boom:
+        def query_selector(self, sel):
+            raise RuntimeError("bad selector")
+
+    ok, detail = _run_check(_Boom(), "dom:::", [], None, 0.0)
+    assert ok is False and "selector error" in detail
+
+
+def test_run_check_text_content_error_is_red():
+    class _Boom:
+        def content(self):
+            raise RuntimeError("no content")
+
+    ok, detail = _run_check(_Boom(), "text:hi", [], None, 0.0)
+    assert ok is False and "content error" in detail
+
+
+def test_run_check_unknown_check_is_red():
+    ok, detail = _run_check(_FakePage(), "totally-unknown", [], None, 0.0)
+    assert ok is False and detail == "unknown check"
+
+
+def test_run_axe_unavailable_passes():
+    # axe-core fails to inject -> no opinion (pass the individual check).
+    page = _FakePage(axe_violations=None)
+    ok, detail = _run_axe(page)
+    assert ok is True and "unavailable" in detail
+
+
+def test_run_axe_no_violations_passes():
+    page = _FakePage(axe_violations=[])
+    ok, detail = _run_axe(page)
+    assert ok is True and detail == "no violations"
+
+
+def test_run_screenshot_diff_seed_returns_none(tmp_path):
+    page = _FakePage(screenshot_bytes=b"PNGDATA")
+    ok, detail = _run_screenshot_diff(page, tmp_path, 0.01)
+    assert ok is None and "seeded" in detail
+
+
+def test_run_screenshot_diff_error_skips():
+    class _Boom:
+        def screenshot(self, full_page=False):
+            raise RuntimeError("no shot")
+
+    ok, detail = _run_screenshot_diff(_Boom(), None, 0.0)
+    assert ok is True and "unavailable" in detail
+
+
+def test_record_console_only_errors():
+    sink = []
+    _record_console(_FakeConsoleMsg("log", "info line"), sink)
+    _record_console(_FakeConsoleMsg("error", "boom"), sink)
+    assert sink == ["boom"]
+
+
+def test_capture_evidence_failure_returns_empty():
+    class _Boom:
+        def screenshot(self, path=None, full_page=False):
+            raise RuntimeError("no shot")
+
+    # baseline_dir under a path component that is a file -> mkdir/write fails.
+    assert _capture_evidence(_Boom(), web_verify.Path("/dev/null/x")) == ""
+
+
+def test_terminate_none_and_dead_process_is_noop():
+    _terminate(None)  # must not raise
+
+    class _Dead:
+        def poll(self):
+            return 0
+
+    _terminate(_Dead())  # already exited -> no-op
 
 
 def test_web_result_repr_and_flags():

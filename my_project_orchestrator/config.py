@@ -160,6 +160,18 @@ class OrchestratorSettings:
     # block a build; missing/incomplete runtime.smoke config makes it a SKIP.
     # The smoke spec itself lives under the top-level ``runtime.smoke`` key.
     runtime_smoke: bool = False
+    # Optional web verification gate: when on, a headless browser (Playwright)
+    # drives the running web artifact and runs declarative checks (DOM/text
+    # presence, no console errors, axe accessibility, screenshot diff). Off by
+    # default and timeout-bounded (daemon thread) so it can never block a build;
+    # missing config or a missing Playwright/browser makes it a SKIP. The spec
+    # lives under the top-level ``runtime.web`` key.
+    web_verify: bool = False
+    # Optional vision verification gate: when on, a vision model judges whether a
+    # captured screenshot satisfies a stated visual requirement. Off by default
+    # and timeout-bounded; no config / no model / no network makes it a SKIP. The
+    # spec lives under the top-level ``runtime.vision`` key.
+    vision_verify: bool = False
     verify_acceptance: bool = True
     llm_acceptance_judge: bool = True
     # Golden suite: files the model never sees and may never edit, plus a
@@ -215,10 +227,11 @@ DEFAULT_CONFIG = {
     "llm": asdict(LLMSettings()),
     "tools": [],
     "environment": {"type": "none"},
-    # Runtime smoke gate spec (off unless orchestrator.runtime_smoke is true and
-    # this carries a `smoke` mapping). Free-form so projects can describe any
-    # launch/ready/probe/expect/timeout; not schema-validated like the dataclass
-    # sections, mirroring how `environment` is an open dict.
+    # Runtime gate specs (each off unless its orchestrator flag is true and this
+    # carries the matching mapping): `smoke` (runtime_smoke), `web` (web_verify),
+    # `vision` (vision_verify). Free-form so projects can describe any
+    # launch/url/checks/capture/assert/timeout; not schema-validated like the
+    # dataclass sections, mirroring how `environment` is an open dict.
     "runtime": {},
     "prompt_templates": PROMPT_TEMPLATES,
     "build": asdict(BuildSettings()),
