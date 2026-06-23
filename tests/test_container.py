@@ -1,5 +1,8 @@
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 import my_project_orchestrator.core.container as container
 from my_project_orchestrator.core.container import (
@@ -292,3 +295,37 @@ def test_env_manager_auto_image_from_language(tmp_path, monkeypatch):
     mgr = ContainerEnvironmentManager({"type": "docker"}, tmp_path, language="rust")
     mgr.setup()
     assert "rust" in mgr.engine().image
+
+
+# --- live integration (opt-in) ----------------------------------------------
+
+
+def test_container_integration_runs_or_skips(tmp_path):
+    # Opportunistic live integration: run real gate commands inside a throwaway
+    # alpine container via a detected OCI engine. Gated behind
+    # RUN_CONTAINER_INTEGRATION so the normal suite never needs a daemon; it also
+    # skips cleanly when no engine is present.
+    if not os.environ.get("RUN_CONTAINER_INTEGRATION"):
+        pytest.skip("set RUN_CONTAINER_INTEGRATION=1 to exercise a real container")
+    engine = detect_engine()
+    if engine is None:
+        pytest.skip("no OCI engine available")
+
+    (tmp_path / "x.py").write_text("x = 1\n")
+    eng = ContainerEngine(engine, "alpine", tmp_path)
+    keeper = GateKeeper(tmp_path, container=eng)
+    # `uname -s` reports the CONTAINER kernel (Linux), not the macOS host, which
+    # proves the gate command actually executed inside the container.
+    success, issues, _health = keeper.run_gates(
+        {"build_command": "true", "test_command": "uname -s"}
+    )
+    assert success, f"containerized gates failed: {issues}"
+    ok, out = eng.run("uname -s", timeout=120)
+    assert ok and "Linux" in out, f"expected Linux kernel from container, got: {out!r}"
+
+    # Egress is blocked when network is "none": an outbound fetch must fail.
+    no_net = ContainerEngine(engine, "alpine", tmp_path, network="none")
+    blocked_ok, _blocked_out = no_net.run(
+        "wget -q -T3 -O- http://example.com", timeout=120
+    )
+    assert blocked_ok is False, "expected egress to be blocked with network=none"
