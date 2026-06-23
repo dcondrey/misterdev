@@ -12,13 +12,23 @@ Features:
 - Lazy loading; byte-correct slicing for non-ASCII sources.
 """
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Any
 
 from my_project_orchestrator.logging_setup import setup_logger
-from my_project_orchestrator.utils.file_utils import read_file, is_golden_path
+from my_project_orchestrator.utils.file_utils import (
+    read_file,
+    is_golden_path,
+    ensure_artifact_dir,
+)
 
 logger = setup_logger(__name__)
+
+# Bump when the parse output shape or any _traverse_* logic changes, so a stale
+# on-disk cache from an older grammar/format is discarded rather than served.
+_CACHE_FORMAT_VERSION = 1
 
 # Lazy imports for optional heavy dependencies
 _ts_parsers: Dict[str, Any] = {}
@@ -100,6 +110,114 @@ class SymbolNode:
 
     def __repr__(self):
         return f"Symbol({self.kind}:{self.name} in {self.file_path})"
+
+
+def _symbol_to_dict(s: "SymbolNode") -> Dict[str, Any]:
+    """Serialize the parse-derived fields of a SymbolNode for the disk cache.
+
+    Only the fields produced by parsing are stored; call neighbors (rebuilt by
+    ``_resolve_references`` from content) and imports are intentionally omitted
+    so the cache never has to track derived/global state.
+    """
+    return {
+        "name": s.name,
+        "file_path": s.file_path,
+        "kind": s.kind,
+        "start_line": s.start_line,
+        "end_line": s.end_line,
+        "content": s.content,
+    }
+
+
+def _symbol_from_dict(d: Dict[str, Any]) -> "SymbolNode":
+    return SymbolNode(
+        d["name"],
+        d["file_path"],
+        d["kind"],
+        d["start_line"],
+        d["end_line"],
+        d["content"],
+    )
+
+
+class _TopographyCache:
+    """Disk-backed per-file symbol cache, keyed by content hash + lang + format.
+
+    Maps a project-relative path to ``{"key": <hash>, "symbols": [...]}`` where
+    the key folds the file's content sha256, its language, and the cache-format
+    version. An entry is only reused when the recomputed key matches, so an edit
+    (content change), a language change, or a format bump all invalidate it; mtime
+    is never consulted. Every read/write is best-effort: a corrupt or unreadable
+    cache degrades to an empty in-memory map and a full parse, never a raise and
+    never stale symbols.
+    """
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.entries: Dict[str, Dict[str, Any]] = {}
+
+    @staticmethod
+    def make_key(content_bytes: bytes, lang: str) -> str:
+        h = hashlib.sha256()
+        h.update(f"{_CACHE_FORMAT_VERSION}\x00{lang}\x00".encode("utf-8"))
+        h.update(content_bytes)
+        return h.hexdigest()
+
+    def load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError) as e:
+            logger.debug(f"Topography cache unreadable, starting fresh: {e}")
+            self.entries = {}
+            return
+        if (
+            not isinstance(data, dict)
+            or data.get("format") != _CACHE_FORMAT_VERSION
+            or not isinstance(data.get("files"), dict)
+        ):
+            logger.debug("Topography cache format mismatch; starting fresh")
+            self.entries = {}
+            return
+        self.entries = data["files"]
+
+    def get(self, rel_path: str, key: str) -> Optional[List["SymbolNode"]]:
+        """Cached symbols for ``rel_path`` iff its key matches, else None."""
+        entry = self.entries.get(rel_path)
+        if not isinstance(entry, dict) or entry.get("key") != key:
+            return None
+        raw = entry.get("symbols")
+        if not isinstance(raw, list):
+            return None
+        try:
+            return [_symbol_from_dict(d) for d in raw]
+        except (KeyError, TypeError) as e:
+            logger.debug(f"Topography cache entry for {rel_path} malformed: {e}")
+            return None
+
+    def put(self, rel_path: str, key: str, symbols: List["SymbolNode"]) -> None:
+        self.entries[rel_path] = {
+            "key": key,
+            "symbols": [_symbol_to_dict(s) for s in symbols],
+        }
+
+    def prune(self, live_paths: Set[str]) -> None:
+        """Drop entries for files no longer present in the source tree."""
+        for stale in [p for p in self.entries if p not in live_paths]:
+            del self.entries[stale]
+
+    def save(self) -> None:
+        try:
+            ensure_artifact_dir(self.path.parent)
+            payload = json.dumps(
+                {"format": _CACHE_FORMAT_VERSION, "files": self.entries}
+            )
+            tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            tmp.replace(self.path)
+        except OSError as e:
+            logger.debug(f"Topography cache write failed (non-fatal): {e}")
 
 
 _EXT_TO_LANG: Dict[str, str] = {
@@ -192,6 +310,7 @@ class SymbolGraph:
         self.symbols: Dict[str, SymbolNode] = {}
         self.parsers = _get_ts_parsers()
         self.golden_paths = golden_paths or []
+        self.cache_path = Path(project_path) / ".orchestrator" / "topography_cache.json"
 
     def build(self):
         logger.info(f"Building symbol graph for {self.project_path}")
@@ -221,36 +340,98 @@ class SymbolGraph:
             logger.info("No supported source files found; symbol graph will be empty")
             return
 
+        cache = _TopographyCache(self.cache_path)
+        cache.load()
+        live_paths: Set[str] = set()
+
         for src_file in source_files:
             lang = _EXT_TO_LANG.get(src_file.suffix)
-            if lang and lang in self.parsers:
-                self._parse_file(src_file, lang)
+            if not (lang and lang in self.parsers):
+                continue
+            rel_path = str(src_file.relative_to(self.project_path))
+            live_paths.add(rel_path)
+
+            # Content-hash key: an edit changes the bytes and so the key, which
+            # is the cache-invalidation signal (mtime is never trusted).
+            content_bytes = self._read_bytes(src_file)
+            key = (
+                _TopographyCache.make_key(content_bytes, lang)
+                if content_bytes is not None
+                else None
+            )
+
+            cached = cache.get(rel_path, key) if key is not None else None
+            if cached is not None:
+                for sym in cached:
+                    self.symbols[f"{sym.file_path}:{sym.name}"] = sym
+                continue
+
+            file_symbols = self._parse_file(src_file, lang, content_bytes=content_bytes)
+            for sym in file_symbols:
+                self.symbols[f"{sym.file_path}:{sym.name}"] = sym
+            # Only cache a clean parse: a read failure yields no key, so we never
+            # persist a wrong (empty) result under a real file's slot.
+            if key is not None:
+                cache.put(rel_path, key, file_symbols)
+
+        cache.prune(live_paths)
+        cache.save()
 
         self._resolve_references()
         logger.info(f"Symbol graph complete: {len(self.symbols)} symbols.")
 
-    def _parse_file(self, file_path: Path, lang: str):
+    def _read_bytes(self, file_path: Path) -> Optional[bytes]:
+        """Read a file's UTF-8 bytes, or None on any I/O/decode error.
+
+        A None result forces a (failed) parse path with no caching, so a
+        transiently unreadable file never poisons the cache with empty symbols.
+        """
+        try:
+            return read_file(file_path).encode("utf-8")
+        except (OSError, UnicodeError) as e:
+            logger.debug(f"Topography could not read {file_path}: {e}")
+            return None
+
+    def _parse_file(
+        self, file_path: Path, lang: str, content_bytes: Optional[bytes] = None
+    ) -> List[SymbolNode]:
         # tree-sitter reports BYTE offsets; slice the UTF-8 bytes (not the str)
         # so non-ASCII content before a symbol doesn't shift and mangle names.
-        content = read_file(file_path).encode("utf-8")
+        content = (
+            content_bytes if content_bytes is not None else self._read_bytes(file_path)
+        )
+        if content is None:
+            return []
         parser = self.parsers[lang]
         tree = parser.parse(content)
         rel_path = str(file_path.relative_to(self.project_path))
 
+        # Parse into a private dict so the symbols for THIS file are isolated
+        # (for caching) without disturbing the graph-wide self.symbols.
+        prev_symbols = self.symbols
+        self.symbols = {}
+        try:
+            self._dispatch_traverse(tree.root_node, content, rel_path, lang)
+            parsed = list(self.symbols.values())
+        finally:
+            self.symbols = prev_symbols
+        return parsed
+
+    def _dispatch_traverse(self, root: Any, content: bytes, rel_path: str, lang: str):
         if lang == "rust":
-            self._traverse_rust(tree.root_node, content, rel_path)
+            self._traverse_rust(root, content, rel_path)
         elif lang in ("typescript", "tsx", "javascript"):
-            self._traverse_typescript(tree.root_node, content, rel_path)
+            self._traverse_typescript(root, content, rel_path)
         elif lang == "kotlin":
-            self._traverse_kotlin(tree.root_node, content, rel_path)
+            self._traverse_kotlin(root, content, rel_path)
         elif lang in ("c", "cpp"):
-            self._traverse_clike(tree.root_node, content, rel_path)
+            self._traverse_clike(root, content, rel_path)
         elif lang == "swift":
-            self._traverse_swift(tree.root_node, content, rel_path)
+            self._traverse_swift(root, content, rel_path)
         elif lang == "csharp":
-            self._traverse_csharp(tree.root_node, content, rel_path)
+            self._traverse_csharp(root, content, rel_path)
         else:
-            self._traverse_python(tree.root_node, content, rel_path)
+            self._traverse_python(root, content, rel_path)
 
     def _traverse_python(
         self,
