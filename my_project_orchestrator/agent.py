@@ -718,6 +718,10 @@ class ProjectOrchestrator:
                 lsp_language=project.config.get("language"),
                 lsp_timeout=get_setting(project.config, "orchestrator", "lsp_timeout"),
                 container=self._container_engine(project),
+                mutation_gate=get_setting(
+                    project.config, "orchestrator", "mutation_gate"
+                ),
+                mutation_config=project.config.get("mutation") or {},
                 runtime_smoke=get_setting(
                     project.config, "orchestrator", "runtime_smoke"
                 ),

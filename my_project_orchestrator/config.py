@@ -172,6 +172,12 @@ class OrchestratorSettings:
     # and timeout-bounded; no config / no model / no network makes it a SKIP. The
     # spec lives under the top-level ``runtime.vision`` key.
     vision_verify: bool = False
+    # Optional mutation-score gate: when on, the project's configured mutation
+    # command (top-level ``mutation.command``) is run and its parsed score must
+    # meet ``mutation.min_score`` — proving the suite kills injected faults, not
+    # just passes. Off by default and timeout-bounded; no config / an unparseable
+    # score / a timeout is a SKIP, only a score below the floor is a RED.
+    mutation_gate: bool = False
     verify_acceptance: bool = True
     llm_acceptance_judge: bool = True
     # Optional goal-completion check: when on, an LLM judge reads the goal,
@@ -254,6 +260,11 @@ DEFAULT_CONFIG = {
     # transport). Empty by default; awareness injection is gated separately by
     # orchestrator.mcp_enabled. Open dict like ``runtime``, not schema-validated.
     "mcp": {"servers": []},
+    # Mutation-score gate spec (off unless orchestrator.mutation_gate is true and
+    # this carries a ``command``): ``command`` (the mutation-testing command),
+    # ``min_score`` (floor, a fraction or percentage), ``timeout`` (seconds).
+    # Open dict like ``runtime``, not schema-validated, so any tool/command fits.
+    "mutation": {},
     "prompt_templates": PROMPT_TEMPLATES,
     "build": asdict(BuildSettings()),
     "orchestrator": asdict(OrchestratorSettings()),

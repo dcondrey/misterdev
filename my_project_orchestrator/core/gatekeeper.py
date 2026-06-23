@@ -86,6 +86,7 @@ class GateKeeper:
       G2: Lint passes
       G3: Tests pass
       G3.5: Golden suite (model-blind, immutable; if configured)
+      G3.6: Mutation-score gate (optional; suite must kill injected faults)
       G4: Type check (if available)
       G4.5: LSP semantic diagnostics (optional)
       G4.6: Runtime smoke (optional)
@@ -107,6 +108,8 @@ class GateKeeper:
         lsp_language: Optional[str] = None,
         lsp_timeout: int = 30,
         container: Optional["ContainerEngine"] = None,
+        mutation_gate: bool = False,
+        mutation_config: Optional[Dict] = None,
         runtime_smoke: bool = False,
         runtime_config: Optional[Dict] = None,
         web_verify: bool = False,
@@ -119,6 +122,12 @@ class GateKeeper:
         # (build/lint/test/golden/typecheck) run inside it instead of locally.
         # Git stays host-side (never routed here). None -> run locally as before.
         self.container = container if container and container.is_available() else None
+        # Optional mutation-score gate (off by default). mutation_config carries
+        # the top-level `mutation` mapping (command/min_score/timeout). Like the
+        # runtime gates it is timeout-bounded and SKIP-on-unparseable so it can
+        # never block a build except on a parsed score below the configured floor.
+        self.mutation_gate = mutation_gate
+        self.mutation_config = mutation_config or {}
         # Honor the project's configured timeouts so a slow compiler or linter
         # isn't falsely failed by the gate the way the analyzer once was.
         self.build_timeout = build_timeout
@@ -222,6 +231,26 @@ class GateKeeper:
                 issues.append("G3.5: Golden suite failed")
                 health.tests_pass = False
                 health.test_output = output
+                return False, issues, health
+
+        # G3.6: Mutation-score gate (optional, off by default). Runs the project's
+        # configured mutation command and asserts the parsed score meets a floor —
+        # catching a suite that passes but kills few injected faults. Best-effort
+        # and timeout-bounded: a SKIP (no config, unparseable score, timeout)
+        # never fails; only a parsed score below the floor is a RED that blocks.
+        if self.mutation_gate:
+            from my_project_orchestrator.core.mutation_gate import run_mutation_gate
+
+            mutation = run_mutation_gate(
+                self.project_path, self.mutation_config, runner=self._runner
+            )
+            if mutation.status == "red":
+                issues.append(
+                    f"G3.6: Mutation score gate failed ({mutation.reason or 'no detail'})"
+                )
+                health.tests_pass = False
+                if mutation.evidence:
+                    health.test_output = mutation.evidence
                 return False, issues, health
 
         # G4: Type check (optional). Blocking like G1/G3: a configured
