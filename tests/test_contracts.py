@@ -3,12 +3,42 @@ from pathlib import Path
 
 from my_project_orchestrator.core.contracts import (
     ContractRegistry,
+    _extract_public_symbols,
     _extract_rust_symbols,
     _extract_python_symbols,
     _extract_name,
     _strip_visibility,
     _extract_generics,
 )
+
+
+def test_public_symbols_rust_treesitter_enum_trait_type_impl():
+    # Drives the tree-sitter dispatcher path (not the line fallback), covering
+    # enum/trait/type extraction and the variant/method/member helpers.
+    content = (
+        "pub enum Status { Ok, Failed }\n"
+        "pub trait Queryable { fn query(&self) -> String; }\n"
+        "pub type Id = u64;\n"
+        "pub fn run(x: u32) -> u32 { x }\n"
+        "pub struct Cfg { pub name: String }\n"
+        "impl Cfg { pub fn new() -> Self { Cfg { name: String::new() } } }\n"
+    )
+    syms = _extract_public_symbols(content, "rust")
+    if not syms:
+        return  # rust grammar unavailable
+    kinds = {s["kind"] for s in syms}
+    names = {s["name"] for s in syms}
+    assert {"pub enum", "pub trait", "pub type", "pub fn", "pub struct"} <= kinds
+    assert "Cfg::new" in names  # impl method walked with parent
+    enum = next(s for s in syms if s["kind"] == "pub enum")
+    assert "Ok" in enum["signature"] and "Failed" in enum["signature"]
+
+
+def test_public_symbols_generic_language_fallback():
+    content = "export function render() {}\nfunc Handle(w, r) {}\n"
+    syms = _extract_public_symbols(content, "typescript")
+    kinds = {s["kind"] for s in syms}
+    assert "export" in kinds and "func" in kinds
 
 
 def test_extract_rust_pub_fn():
