@@ -341,3 +341,70 @@ def test_golden_excluded_from_symbol_graph():
         indexed = " ".join(g.symbols.keys())
         # Golden symbols must never be indexed (regardless of parser availability).
         assert "golden_secret_symbol" not in indexed
+
+
+def _graph_with_symbols(*nodes):
+    with tempfile.TemporaryDirectory() as td:
+        g = SymbolGraph(Path(td))
+        for n in nodes:
+            g.symbols[f"{n.file_path}:{n.name}"] = n
+        g._resolve_references()
+        return g
+
+
+def test_resolve_references_no_substring_false_positive():
+    parse = SymbolNode("parse", "a.py", "function", 1, 2, "def parse():\n    return 1")
+    reparse = SymbolNode(
+        "reparse", "a.py", "function", 4, 5, "def reparse():\n    return parse()"
+    )
+    caller = SymbolNode("C", "b.py", "function", 1, 2, "def C():\n    return reparse()")
+    g = _graph_with_symbols(parse, reparse, caller)
+
+    c = g.symbols["b.py:C"]
+    # The old `f"{name}(" in content` substring test linked C->parse via "reparse(".
+    assert "a.py:reparse" in c.outgoing_calls
+    assert "a.py:parse" not in c.outgoing_calls
+    assert "b.py:C" in g.symbols["a.py:reparse"].incoming_calls
+
+
+def test_resolve_references_preserves_true_calls():
+    parse = SymbolNode("parse", "a.py", "function", 1, 2, "def parse():\n    return 1")
+    foo = SymbolNode("foo", "a.py", "method", 4, 5, "def foo(self):\n    return 2")
+    caller = SymbolNode(
+        "C", "b.py", "function", 1, 3, "def C(self):\n    parse()\n    self.foo()"
+    )
+    g = _graph_with_symbols(parse, foo, caller)
+
+    c = g.symbols["b.py:C"]
+    assert "a.py:parse" in c.outgoing_calls  # whole-word call
+    assert "a.py:foo" in c.outgoing_calls  # method/attribute call self.foo(
+    assert "b.py:C" in g.symbols["a.py:parse"].incoming_calls
+
+
+def test_resolve_references_no_self_edge():
+    # A recursive call must not produce a self-loop in the call graph.
+    rec = SymbolNode("rec", "a.py", "function", 1, 2, "def rec():\n    return rec()")
+    g = _graph_with_symbols(rec)
+    assert "a.py:rec" not in g.symbols["a.py:rec"].outgoing_calls
+
+
+def test_resolve_references_recomputed_each_build():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "src").mkdir()
+        (root / "src" / "app.py").write_text(
+            "def helper():\n    return 1\n\ndef run():\n    return helper()\n",
+            encoding="utf-8",
+        )
+        g = SymbolGraph(root)
+        g.build()
+        run_key = next(k for k in g.symbols if k.endswith(":run"))
+        helper_key = next(k for k in g.symbols if k.endswith(":helper"))
+        assert helper_key in g.symbols[run_key].outgoing_calls
+
+        # Rebuild on the same (cached) tree: edges must be recomputed, not stale,
+        # since the content-hash cache excludes call edges by contract.
+        g2 = SymbolGraph(root)
+        g2.build()
+        assert helper_key in g2.symbols[run_key].outgoing_calls
+        assert run_key in g2.symbols[helper_key].incoming_calls

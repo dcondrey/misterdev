@@ -14,6 +14,7 @@ Features:
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Any
 
@@ -29,6 +30,11 @@ logger = setup_logger(__name__)
 # Bump when the parse output shape or any _traverse_* logic changes, so a stale
 # on-disk cache from an older grammar/format is discarded rather than served.
 _CACHE_FORMAT_VERSION = 1
+
+# Whole-identifier call detection: an identifier directly followed by "(" and
+# not preceded by an identifier char, so "reparse(" yields "reparse" — never a
+# spurious "parse" — unlike the old `f"{name}(" in content` substring test.
+_CALL_PATTERN = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z_]\w*)\s*\(")
 
 # Lazy imports for optional heavy dependencies
 _ts_parsers: Dict[str, Any] = {}
@@ -804,11 +810,11 @@ class SymbolGraph:
 
     def _resolve_references(self):
         name_to_key = {s.name: key for key, s in self.symbols.items()}
-        call_patterns = {name: f"{name}(" for name in name_to_key}
         for key, symbol in self.symbols.items():
-            for name, pattern in call_patterns.items():
+            called = {m.group(1) for m in _CALL_PATTERN.finditer(symbol.content)}
+            for name in called & name_to_key.keys():
                 other_key = name_to_key[name]
-                if other_key != key and pattern in symbol.content:
+                if other_key != key:
                     symbol.outgoing_calls.add(other_key)
                     self.symbols[other_key].incoming_calls.add(key)
 
