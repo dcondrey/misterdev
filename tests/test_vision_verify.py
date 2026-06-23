@@ -358,11 +358,96 @@ def test_gatekeeper_green_vision_passes(tmp_path):
 # --- live integration (opt-in) ----------------------------------------------
 
 
-def test_live_vision_runs_or_skips(tmp_path):
-    # Opportunistic live integration against a real VLM. Gated behind
-    # RUN_VISION_INTEGRATION so the normal suite never needs a model or network;
-    # the timeout guarantees it can't hang. Requires a configured client, which
-    # is not constructed here, so it skips unless wired by the runner.
+_LOGIN_FORM_HTML = """<!doctype html><html><head><meta charset="utf-8">
+<title>Sign in</title></head><body style="font-family:sans-serif;padding:40px">
+<h1>Sign in</h1>
+<form>
+  <div><label>Username<br><input type="text" name="username"></label></div>
+  <div style="margin-top:12px"><label>Password<br>
+    <input type="password" name="password"></label></div>
+  <div style="margin-top:16px"><button type="submit">Log in</button></div>
+</form>
+</body></html>"""
+
+
+def _render_login_screenshot(tmp_path):
+    """Render the login form to a real PNG via headless Chromium.
+
+    Returns the screenshot path, or None when Playwright/the browser is absent
+    so the caller can skip rather than fail.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return None
+    page_html = tmp_path / "login.html"
+    page_html.write_text(_LOGIN_FORM_HTML)
+    shot = tmp_path / "login.png"
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.goto(page_html.as_uri(), timeout=15000)
+                page.screenshot(path=str(shot), full_page=True)
+            finally:
+                browser.close()
+    except Exception:
+        return None
+    return shot if shot.is_file() else None
+
+
+def test_vision_integration_runs_or_skips(tmp_path):
+    # Opportunistic live integration against a real VLM (OpenRouter gpt-4o-mini)
+    # over a real screenshot rendered by headless Chromium. Gated behind
+    # RUN_VISION_INTEGRATION so the normal suite never needs a model, key, or
+    # browser; the gate's own hard timeout guarantees it can't hang. Skips
+    # cleanly when the key or the browser is absent.
     if not os.environ.get("RUN_VISION_INTEGRATION"):
         pytest.skip("set RUN_VISION_INTEGRATION=1 to exercise a real VLM")
-    pytest.skip("live VLM client wiring is environment-specific; plumbing covered")
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        pytest.skip("OPENROUTER_API_KEY not set")
+
+    shot = _render_login_screenshot(tmp_path)
+    if shot is None:
+        pytest.skip("playwright/chromium unavailable to render the screenshot")
+
+    from my_project_orchestrator.llm.client import OpenRouterLLMClient
+
+    client = OpenRouterLLMClient(
+        {
+            "llm": {
+                "provider": "openrouter",
+                "model": "openai/gpt-4o-mini",
+                "api_key_env_var": "OPENROUTER_API_KEY",
+                "temperature": 0.0,
+            },
+            "build": {"budget": 5.0},
+        }
+    )
+
+    match = run_vision_gate(
+        tmp_path,
+        {
+            "capture": str(shot),
+            "assert": "a login form with a password field and a submit button",
+            "model": "openai/gpt-4o-mini",
+            "timeout": 60,
+        },
+        llm_client=client,
+    )
+    assert match.status == GREEN, f"expected GREEN, got {match!r} ({match.verdict!r})"
+
+    mismatch = run_vision_gate(
+        tmp_path,
+        {
+            "capture": str(shot),
+            "assert": "a bar chart of quarterly revenue",
+            "model": "openai/gpt-4o-mini",
+            "timeout": 60,
+        },
+        llm_client=client,
+    )
+    assert mismatch.status == RED, (
+        f"expected RED, got {mismatch!r} ({mismatch.verdict!r})"
+    )
