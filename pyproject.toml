@@ -45,6 +45,14 @@ local-embeddings = [
 lsp = [
     "multilspy>=0.0.1",
 ]
+# Optional web verification gate (orchestrator.web_verify): headless browser
+# (Playwright) checks plus screenshot pixel-diff (Pillow). Off by default and
+# timeout-bounded; requires `playwright install chromium` for the browser. When
+# Playwright/browser is absent the gate SKIPs rather than failing.
+web = [
+    "playwright>=1.40.0",
+    "pillow>=10.0.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["my_project_orchestrator*"]

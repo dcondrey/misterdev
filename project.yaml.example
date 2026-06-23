@@ -62,6 +62,42 @@ environment:
 #     expect: "pong"             # substring asserted in output -> GREEN
 #     timeout: 30
 
+# Web verification gate (opt-in, off by default). Requires the [web] extra
+# (`pip install -e '.[web]'` + `playwright install chromium`). Drives a headless
+# browser against the running web artifact and runs declarative checks. Daemon
+# thread + hard timeout so it can never block; no config or no Playwright/browser
+# is a SKIP. RED only on a failed check (missing selector/text, a console error,
+# an axe violation, or a screenshot diff beyond threshold).
+# orchestrator:
+#   web_verify: true
+# runtime:
+#   web:
+#     serve: "npm run dev"          # optional; started before loading url
+#     url: "http://localhost:5173"
+#     ready: "Local:"               # optional readiness substring in serve output
+#     checks:                       # any of dom:/text:/no-console-errors/axe/screenshot
+#       - "dom:#app"
+#       - "text:Welcome"
+#       - "no-console-errors"
+#       - "axe"
+#       - "screenshot"
+#     baseline_dir: ".orchestrator" # where baseline/evidence images live
+#     threshold: 0.02               # screenshot diff fraction that fails
+#     timeout: 60
+
+# Vision verification gate (opt-in, off by default). Asks the project's vision
+# model whether a captured screenshot satisfies a stated requirement. Daemon
+# thread + hard timeout; no config / no model / no network is a SKIP. RED only
+# when the model denies the assertion.
+# orchestrator:
+#   vision_verify: true
+# runtime:
+#   vision:
+#     capture: ".orchestrator/web_verify_evidence.png"  # screenshot to judge
+#     assert: "the dashboard shows a bar chart and no error banner"
+#     model: "anthropic/claude-sonnet-4.6"  # optional vision-capable model id
+#     timeout: 60
+
 # Build workflow settings (6-phase autonomous builder)
 build:
   max_tasks: 30
