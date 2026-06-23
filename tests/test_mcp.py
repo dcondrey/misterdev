@@ -289,6 +289,43 @@ def test_parse_call_none_when_no_call_line():
     assert _parse_call("") is None
 
 
+def test_parse_call_multiline_json_args():
+    reply = 'CALL tools.add {\n  "a": 2,\n  "b": 40\n}'
+    assert _parse_call(reply) == ("tools", "add", {"a": 2, "b": 40})
+
+
+def test_parse_call_tolerates_markdown_and_prose():
+    # Leading prose/markdown and a trailing explanation must not break parsing.
+    reply = 'I will compute the sum.\n`CALL tools.add {"a": 1, "b": 2}` then done.'
+    assert _parse_call(reply) == ("tools", "add", {"a": 1, "b": 2})
+
+
+def test_parse_call_object_with_braces_in_string():
+    reply = 'CALL tools.run {"cmd": "echo {hi}"}'
+    assert _parse_call(reply) == ("tools", "run", {"cmd": "echo {hi}"})
+
+
+def test_parse_call_dotted_server_name():
+    assert _parse_call("CALL my.server.echo") == ("my.server", "echo", {})
+
+
+def test_parse_call_case_insensitive_keyword():
+    assert _parse_call('call tools.add {"a": 1}') == ("tools", "add", {"a": 1})
+
+
+def test_parse_call_recall_does_not_false_match():
+    assert _parse_call("I recall tools.add was useful") is None
+
+
+def test_parse_call_ignores_stray_brace_in_later_prose():
+    # A '{' that is not adjacent to the call must not be slurped as args.
+    assert _parse_call("CALL tools.echo\nlater I might use a set {1, 2}") == (
+        "tools",
+        "echo",
+        {},
+    )
+
+
 def test_gather_calls_tool_and_captures_result(server_path):
     # Round 1: model requests add(2, 40); round 2: model says no tool needed.
     mgr = MCPManager([_stdio_server(server_path)])

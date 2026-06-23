@@ -287,10 +287,16 @@ def _run_check(
 
     if check.startswith("text:"):
         needle = check[len("text:") :]
+        # Match against the rendered, visible body text so a substring that only
+        # occurs inside a tag name or attribute value does not count as present.
+        # Fall back to the raw HTML only if the rendered text can't be read.
         try:
-            content = page.content()
-        except Exception as e:
-            return False, f"content error: {e}"
+            content = page.inner_text("body")
+        except Exception:
+            try:
+                content = page.content()
+            except Exception as e:
+                return False, f"content error: {e}"
         found = needle in content
         return (found, "found" if found else "substring not found")
 

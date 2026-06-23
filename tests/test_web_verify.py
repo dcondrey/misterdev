@@ -1,4 +1,5 @@
 import os
+import re
 import time
 
 import pytest
@@ -65,6 +66,10 @@ class _FakePage:
 
     def content(self):
         return self._html
+
+    def inner_text(self, selector):
+        # Approximate a browser's rendered text: strip tags from the stored HTML.
+        return re.sub(r"<[^>]+>", "", self._html)
 
     def screenshot(self, path=None, full_page=False):
         if path is not None:
@@ -228,6 +233,49 @@ def test_red_when_text_missing(monkeypatch, tmp_path):
         },
     )
     assert res.status == RED
+
+
+def test_text_check_ignores_substring_only_in_markup(monkeypatch, tmp_path):
+    # "header" appears only as a tag name / class, never as visible text, so the
+    # text: check must NOT consider it present (was a false positive vs raw HTML).
+    page = _FakePage(html='<html><body><header class="header">Hi</header></body></html>')
+    _patch_pw(monkeypatch, page)
+    res = run_web_gate(
+        tmp_path,
+        {
+            "url": "http://x",
+            "baseline_dir": str(tmp_path / "s"),
+            "checks": ["text:header"],
+            "timeout": 10,
+        },
+    )
+    assert res.status == RED
+
+
+def test_text_check_matches_rendered_text(monkeypatch, tmp_path):
+    page = _FakePage(html='<html><body><header class="nav">Welcome</header></body></html>')
+    _patch_pw(monkeypatch, page)
+    res = run_web_gate(
+        tmp_path,
+        {
+            "url": "http://x",
+            "baseline_dir": str(tmp_path / "s"),
+            "checks": ["text:Welcome"],
+            "timeout": 10,
+        },
+    )
+    assert res.status == GREEN
+
+
+def test_text_check_falls_back_to_content_when_inner_text_unavailable():
+    # A page object exposing only content() (no inner_text) still works via the
+    # raw-HTML fallback rather than erroring.
+    class _OnlyContent:
+        def content(self):
+            return "visible Hi there"
+
+    ok, _ = _run_check(_OnlyContent(), "text:Hi", [], None, 0.0)
+    assert ok is True
 
 
 def test_red_when_axe_violation(monkeypatch, tmp_path):

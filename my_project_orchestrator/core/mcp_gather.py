@@ -35,13 +35,47 @@ from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
 
-# One CALL line: "CALL server.tool {json}" — the json object is optional. We keep
-# the qualified name and the raw args text; args are parsed separately so a
-# malformed object degrades to {} rather than killing the whole match.
+# "CALL server.tool" anywhere in the reply. Tolerant on purpose: searched (not
+# anchored) so leading markdown (backticks, ``**``, ``> ``) and trailing prose
+# don't break it, and case-insensitive with word boundaries so neither "recall"
+# nor a lowercased keyword trips it. The server keeps dots (``a.b.tool`` ->
+# server ``a.b``, tool ``tool``); the args object is located and balanced
+# separately so it may span multiple lines.
 _CALL_RE = re.compile(
-    r"^\s*CALL\s+([A-Za-z0-9_.\-]+)\.([A-Za-z0-9_\-]+)\s*(\{.*\})?\s*$",
-    re.MULTILINE,
+    r"\bCALL\b\s+([A-Za-z0-9_.\-]+)\.([A-Za-z0-9_\-]+)",
+    re.IGNORECASE,
 )
+
+
+def _extract_balanced_object(text: str, start: int) -> Optional[str]:
+    """Return the ``{...}`` substring starting at ``start`` (a ``{``), or None.
+
+    Brace-counts while honoring braces inside double-quoted strings (with
+    escapes), so a JSON object containing ``{`` or ``}`` in a string value is
+    extracted whole. Tolerates the object spanning multiple lines.
+    """
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        c = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
 
 _GATHER_HEADER = "## Information gathered via MCP tools\n"
 
@@ -66,17 +100,22 @@ def _parse_call(text: str) -> Optional[Tuple[str, str, dict]]:
     m = _CALL_RE.search(text)
     if m is None:
         return None
-    server, tool, raw_args = m.group(1), m.group(2), m.group(3)
+    server, tool = m.group(1), m.group(2)
     args: dict = {}
-    if raw_args:
-        try:
-            parsed = json.loads(raw_args)
-            if isinstance(parsed, dict):
-                args = parsed
-            else:
-                logger.debug("MCP gather: CALL args not a JSON object; using {}.")
-        except (json.JSONDecodeError, ValueError):
-            logger.debug("MCP gather: unparseable CALL args; using {}.")
+    brace = text.find("{", m.end())
+    # Only treat a following object as the args if nothing but whitespace
+    # separates it from the call, so a stray ``{`` in later prose isn't grabbed.
+    if brace != -1 and text[m.end() : brace].strip() == "":
+        raw_args = _extract_balanced_object(text, brace)
+        if raw_args:
+            try:
+                parsed = json.loads(raw_args)
+                if isinstance(parsed, dict):
+                    args = parsed
+                else:
+                    logger.debug("MCP gather: CALL args not a JSON object; using {}.")
+            except (json.JSONDecodeError, ValueError):
+                logger.debug("MCP gather: unparseable CALL args; using {}.")
     return server, tool, args
 
 
