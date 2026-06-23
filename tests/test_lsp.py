@@ -32,12 +32,27 @@ def test_live_diagnostics_runs_or_skips():
 
 def test_collect_diagnostics_returns_collected_errors(monkeypatch):
     sentinel = [{"file": "a.py", "line": 3, "message": "undefined name"}]
-    monkeypatch.setattr(lsp, "_collect", lambda root, code_lang, files: sentinel)
+    monkeypatch.setattr(
+        lsp, "_collect", lambda root, code_lang, files, budget=0.0: sentinel
+    )
     assert collect_diagnostics(Path("."), "python", ["a.py"]) == sentinel
 
 
+def test_collect_diagnostics_passes_bounded_budget(monkeypatch):
+    seen = {}
+
+    def _capture(root, code_lang, files, budget):
+        seen["budget"] = budget
+        return []
+
+    monkeypatch.setattr(lsp, "_collect", _capture)
+    collect_diagnostics(Path("."), "python", ["a.py"], timeout=30)
+    # 70% of the hard timeout, so per-file waits can't sum past it.
+    assert seen["budget"] == 30 * 0.7
+
+
 def test_collect_diagnostics_times_out_to_none(monkeypatch):
-    def _slow(root, code_lang, files):
+    def _slow(root, code_lang, files, budget=0.0):
         time.sleep(5)
         return []
 
@@ -47,11 +62,23 @@ def test_collect_diagnostics_times_out_to_none(monkeypatch):
 
 
 def test_collect_diagnostics_swallows_server_errors(monkeypatch):
-    def _boom(root, code_lang, files):
+    def _boom(root, code_lang, files, budget=0.0):
         raise RuntimeError("server crashed")
 
     monkeypatch.setattr(lsp, "_collect", _boom)
     assert collect_diagnostics(Path("."), "python", ["a.py"]) is None
+
+
+def test_per_file_wait_scales_down_with_file_count():
+    # Few files keep a near-original wait; many files shrink it so the total
+    # stays bounded, never exceeding the budget.
+    assert lsp._per_file_wait(1, 21.0) == lsp._MAX_FILE_WAIT
+    assert lsp._per_file_wait(40, 21.0) == 21.0 / 40
+    assert lsp._per_file_wait(40, 21.0) * 40 <= 21.0
+    # Never below the floor, even with a tiny budget.
+    assert lsp._per_file_wait(100, 1.0) == lsp._MIN_FILE_WAIT
+    # Degenerate input is safe.
+    assert lsp._per_file_wait(0, 21.0) == lsp._MIN_FILE_WAIT
 
 
 def test_collect_diagnostics_unsupported_language_returns_none():

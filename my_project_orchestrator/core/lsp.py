@@ -33,6 +33,23 @@ _LANG_MAP: Dict[str, str] = {
 
 _LSP_SEVERITY_ERROR = 1  # LSP DiagnosticSeverity.Error
 
+# Per-file diagnostic settle wait bounds (seconds). The actual wait scales down
+# with file count so the total stays under the caller's hard timeout.
+_MIN_FILE_WAIT = 0.3
+_MAX_FILE_WAIT = 1.5
+
+
+def _per_file_wait(num_files: int, settle_budget: float) -> float:
+    """Settle wait per file: the budget split across files, clamped to bounds.
+
+    Keeps the single-file wait close to the original 1.5s but shrinks it as the
+    file set grows so ``wait * num_files`` cannot overrun the gate timeout (which
+    previously caused every diagnostic to be skipped on larger projects).
+    """
+    if num_files <= 0:
+        return _MIN_FILE_WAIT
+    return max(_MIN_FILE_WAIT, min(_MAX_FILE_WAIT, settle_budget / num_files))
+
 _LANG_EXTS: Dict[str, tuple] = {
     "python": (".py",),
     "rust": (".rs",),
@@ -87,10 +104,16 @@ def collect_diagnostics(
         return None
 
     box: Dict[str, Optional[List[dict]]] = {"result": None}
+    # Bound the in-server settle time to a fraction of the hard timeout so the
+    # per-file waits can't sum past it and force a blanket SKIP (the old fixed
+    # 1.5s * N did exactly that for ~20+ files at the 30s default).
+    settle_budget = max(timeout * 0.7, _MIN_FILE_WAIT)
 
     def _run() -> None:
         try:
-            box["result"] = _collect(project_root, code_lang, rel_files)
+            box["result"] = _collect(
+                project_root, code_lang, rel_files, settle_budget
+            )
         except Exception as e:  # multilspy/server failures are non-fatal
             logger.debug(f"LSP diagnostics unavailable ({language}): {e}")
             box["result"] = None
@@ -108,12 +131,19 @@ def collect_diagnostics(
     return box["result"]
 
 
-def _collect(project_root: Path, code_lang: str, rel_files: List[str]) -> List[dict]:
+def _collect(
+    project_root: Path,
+    code_lang: str,
+    rel_files: List[str],
+    settle_budget: float = 60.0,
+) -> List[dict]:
     import asyncio
 
     from multilspy import LanguageServer
     from multilspy.multilspy_config import MultilspyConfig
     from multilspy.multilspy_logger import MultilspyLogger
+
+    per_file = _per_file_wait(len(rel_files), settle_budget)
 
     async def _main() -> List[dict]:
         config = MultilspyConfig.from_dict({"code_language": code_lang})
@@ -129,7 +159,7 @@ def _collect(project_root: Path, code_lang: str, rel_files: List[str]) -> List[d
             for rel in rel_files:
                 try:
                     with server.open_file(rel):
-                        await asyncio.sleep(1.5)
+                        await asyncio.sleep(per_file)
                 except Exception:
                     continue
         return _to_errors(captured)
