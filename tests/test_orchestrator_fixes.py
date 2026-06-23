@@ -1786,6 +1786,11 @@ class _ScriptedLLM:
             )
         return "[]"
 
+    def health_check(self):
+        # Offline preflight: report the model as reachable so build() proceeds
+        # without a network round-trip.
+        return True, "ok"
+
     # context-manager / routing shims used by the executor
     def track_task(self, task_id):
         from contextlib import nullcontext
@@ -1890,6 +1895,65 @@ def test_full_pipeline_offline_smart_build(monkeypatch):
             ).stdout.strip()
             == ""
         )
+
+
+def test_build_pipeline_offline_converges_and_writes_report(monkeypatch):
+    # End-to-end through the real assessment + pipeline, fully offline (scripted
+    # LLM, dynamic selection / free-model harvest / semantic retrieval off so no
+    # network). Asserts the build converges with gates green and persists a
+    # report file under .orchestrator/reports.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    from my_project_orchestrator.config import DEFAULT_CONFIG
+    from my_project_orchestrator.core.project import Project
+    from my_project_orchestrator.core.modes import BuildMode, BuildFlags
+    from my_project_orchestrator.core.report import BuildReport
+    from my_project_orchestrator.agent import ProjectOrchestrator
+    from datetime import datetime, timezone
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "t@t.t")
+        _git(repo, "config", "user.name", "t")
+        (repo / ".gitignore").write_text(".orchestrator/\n__pycache__/\n*.pyc\n")
+        (repo / "tests").mkdir()
+        (repo / "tests" / "test_seed.py").write_text(
+            "def test_seed():\n    assert True\n"
+        )
+        (repo / "seed.py").write_text("X = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "init")
+
+        cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+        cfg["name"] = "throwaway"
+        cfg["build_command"] = "true"
+        cfg["test_command"] = f"{sys.executable} -m pytest -q"
+        cfg["llm"]["use_free_models"] = False
+        cfg["llm"]["dynamic_selection"] = False
+        cfg["llm"]["semantic_retrieval"] = False
+        project = Project(repo, cfg)
+        project.llm_client = _ScriptedLLM()
+
+        orch = ProjectOrchestrator()
+        assessment = orch._analyze(project, None)
+        report = BuildReport(
+            BuildMode.SMART, "throwaway", assessment, datetime.now(timezone.utc)
+        )
+        result = orch._run_pipeline(
+            project,
+            "add a passing test",
+            BuildMode.SMART,
+            BuildFlags(budget=100.0),
+            assessment,
+            None,
+            report,
+        )
+
+        assert "Error" not in result and "Cancelled" not in result
+        assert "PASSED" in result  # gates green
+        reports = list((repo / ".orchestrator" / "reports").glob("report_*.md"))
+        assert reports, "no report file was persisted"
+        assert "Build Report" in reports[0].read_text()
 
 
 # --- metacognition: LLM returning objects must not crash the audit -----------
