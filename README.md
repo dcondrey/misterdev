@@ -37,10 +37,12 @@ reports done.
 - **Tree-sitter syntax gate** catches real syntax errors before the expensive
   build, understanding strings/comments (a brace in a literal never false-fails).
 - **Gate sequence** G1 build → G2 lint → G3 tests → G3.5 golden suite →
-  G4 typecheck → **G4.5 optional LSP semantic diagnostics** →
-  **G4.6 optional runtime smoke** → **G4.7 optional web verification** →
-  **G4.8 optional vision verification** → G5 banned-marker → G6 secrets →
-  G9 diff hygiene. Build/test/golden/typecheck failures block.
+  **G3.6 optional mutation score** → G4 typecheck →
+  **G4.5 optional LSP semantic diagnostics** → **G4.6 optional runtime smoke** →
+  **G4.7 optional web verification** → **G4.8 optional vision verification** →
+  G5 banned-marker → G6 secrets → G9 diff hygiene. Build/test/golden/typecheck
+  failures block. An optional **goal-completion check** runs after the gates
+  settle (advisory by default).
 - **Optional container substrate** (`environment.type: docker`): gate commands
   run inside a throwaway, uid-mapped OCI container against the bind-mounted repo
   so the toolchain is pinned and reproducible. Rootless-first engine detection
@@ -71,6 +73,25 @@ reports done.
   timeouts so a missing SDK, an unstartable server, or a hang is simply absent,
   never a block or an error. Install with `.[mcp]`. The agentic loop that would
   let the model call a tool mid-build is a documented future seam.
+- **Optional mutation-score gate** (`orchestrator.mutation_gate`, `mutation`):
+  runs the project's configured mutation-testing command (tool-agnostic — mutmut,
+  cosmic-ray, cargo-mutants, Stryker, ...), parses a score, and RED-blocks (G3.6)
+  only when it is below `mutation.min_score`. Proves the suite kills injected
+  faults, not just passes. Daemon-threaded with a hard timeout; no config, an
+  unparseable score, or a timeout is a SKIP (never a RED).
+- **Optional goal-completion check** (`orchestrator.goal_check`): after the gate
+  loop settles, an LLM judge reads the goal, the tasks' acceptance criteria, and
+  the build's cumulative diff and reports whether the goal is actually met —
+  "gates green != goal met". ADVISORY by default (gaps are recorded in the report
+  and logged but do not fail the build); set `block_on_goal_gap` to make an unmet
+  goal fail. Daemon-threaded with a hard timeout; no goal/criteria/client, an
+  unparseable verdict, or a timeout is a SKIP.
+- **Spec-as-tests** (`orchestrator.spec_as_tests`, currently DEFERRED): a tested
+  generator (`core/spec_tests.py`) turns a task's acceptance criteria into a
+  failing pre-implementation test, but it is not yet wired into the build loop
+  (doing so would flip the integration-gate baseline red and disable that gate).
+  Enabling the flag logs a deferral notice and changes nothing; the wiring seam
+  is documented in `core/spec_tests.py`.
 - **Regression safety:** branch-per-task, integration gate per wave with
   `git bisect`-style revert of the culprit, test-tamper detection, dirty-tree
   guard.
@@ -128,8 +149,9 @@ project-orchestrator                                  # interactive planning
 - **`core/`** — state machine, models, decomposition, gates, topography (symbol
   graph + syntax gate), embeddings, optional LSP gate, container substrate
   (`container.py`), runtime smoke gate (`runtime.py`), web verification gate
-  (`web_verify.py`), vision verification gate (`vision_verify.py`), MCP
-  tool-host substrate (`mcp.py`).
+  (`web_verify.py`), vision verification gate (`vision_verify.py`), mutation-score
+  gate (`mutation_gate.py`), goal-completion check (`goal_check.py`), spec-as-tests
+  generator (`spec_tests.py`, deferred), MCP tool-host substrate (`mcp.py`).
 - **`llm/`** — provider clients, failover, token budgeting, SEARCH/REPLACE
   response parsing.
 - **`task_executors/`** — the try-test-fix inner loop and edit application.

@@ -116,6 +116,41 @@ environment:
 #       args: ["--root", "."]         # optional
 #       transport: "stdio"            # only stdio is supported today
 
+# Goal-completion check (opt-in, off by default). An LLM judge reads the goal,
+# the tasks' acceptance criteria, and the build's cumulative diff and reports
+# whether the goal is actually met — "gates green != goal met". ADVISORY by
+# default: gaps are recorded in the report and logged but do NOT fail the build.
+# Set block_on_goal_gap true to make an unmet goal fail the build. Daemon thread
+# + hard timeout; no goal/criteria/client, an unparseable verdict, or a timeout
+# is a SKIP (never blocks, never hangs).
+# orchestrator:
+#   goal_check: true
+#   block_on_goal_gap: false   # true => a GAP verdict fails the build
+#   goal_check_timeout: 60
+
+# Mutation-score gate (opt-in, off by default). Runs the project's configured
+# mutation-testing command and asserts the parsed score meets a floor — proving
+# the suite kills injected faults, not just passes. Tool-agnostic: supply any
+# command (mutmut, cosmic-ray, cargo-mutants, Stryker, ...). Daemon thread + hard
+# timeout; no config, an unparseable score, or a timeout is a SKIP (not a RED).
+# Only a parsed score below min_score is a RED that blocks the build (G3.6).
+# orchestrator:
+#   mutation_gate: true
+# mutation:
+#   command: "mutmut run && mutmut results"   # any command that prints a score
+#   min_score: 0.8        # floor; a fraction (0.8) or a percentage (80)
+#   timeout: 1800         # seconds (mutation runs are slow)
+
+# Spec-as-tests (opt-in, off by default; currently DEFERRED). Would generate a
+# failing test from a task's acceptance criteria before it is implemented. The
+# generator (core/spec_tests.py) is built and tested, but it is NOT wired into
+# the build loop yet: writing a failing test inside the wave loop would flip the
+# integration-gate baseline red and silently disable that gate. Enabling the flag
+# today only logs a deferral notice; it never alters the build. See the seam in
+# core/spec_tests.py.
+# orchestrator:
+#   spec_as_tests: true   # staged but DEFERRED; logs a notice, generates nothing
+
 # Build workflow settings (6-phase autonomous builder)
 build:
   max_tasks: 30

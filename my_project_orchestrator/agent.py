@@ -604,6 +604,22 @@ class ProjectOrchestrator:
         # it. Best-effort: None outside a git repo or on error, which the check
         # treats as "no diff" and degrades to a summary-only judgment.
         goal_check_base = self._capture_head(project)
+        # Spec-as-tests is staged but DEFERRED: the generation primitive exists
+        # (core/spec_tests.py) and is tested, but wiring it into the execute loop
+        # is not control-flow-neutral (a pre-implementation failing test would
+        # flip the integration-gate baseline red and disable that gate), so it is
+        # intentionally not called from the loop. Surface that clearly if a user
+        # turns it on, rather than silently doing nothing.
+        if get_setting(project.config, "orchestrator", "spec_as_tests"):
+            logger.warning(
+                "orchestrator.spec_as_tests is enabled but DEFERRED: the test "
+                "generator (core/spec_tests.py) is staged and tested but not yet "
+                "wired into the build loop; no spec tests will be generated this "
+                "run. See the seam documented in core/spec_tests.py."
+            )
+            report.key_decisions.append(
+                "spec_as_tests requested but DEFERRED (not wired into the loop)"
+            )
         # Sovereign Phase 1.5: Empirical Probes (only for SMART/CREATE modes).
         # Best-effort: probe discovery must never crash the build, so any
         # failure here degrades to no verified facts rather than aborting.

@@ -189,6 +189,15 @@ class OrchestratorSettings:
     goal_check: bool = False
     block_on_goal_gap: bool = False
     goal_check_timeout: int = 60
+    # Spec-as-tests (CONSERVATIVE, opt-in, currently DEFERRED): generate a failing
+    # test from a task's acceptance criteria before it is implemented. Off by
+    # default. The generation primitive lives in core/spec_tests.py and is tested,
+    # but it is NOT wired into the execute loop yet: writing a failing test inside
+    # the wave loop would flip the integration-gate baseline red and silently
+    # disable that gate, which is not control-flow-neutral. When set true today it
+    # only logs that the feature is staged-but-not-wired (see the seam in
+    # core/spec_tests.py); it never alters the build loop.
+    spec_as_tests: bool = False
     # Golden suite: files the model never sees and may never edit, plus a
     # blocking-gate command. Empty/None = feature off.
     golden_paths: List[str] = field(default_factory=list)
