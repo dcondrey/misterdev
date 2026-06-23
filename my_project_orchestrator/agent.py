@@ -707,6 +707,11 @@ class ProjectOrchestrator:
                 build_timeout=get_setting(project.config, "build", "build_timeout"),
                 test_timeout=get_setting(project.config, "build", "test_timeout"),
                 lint_timeout=get_setting(project.config, "build", "lint_timeout"),
+                lsp_diagnostics=get_setting(
+                    project.config, "orchestrator", "lsp_diagnostics"
+                ),
+                lsp_language=project.config.get("language"),
+                lsp_timeout=get_setting(project.config, "orchestrator", "lsp_timeout"),
             )
             commands = {
                 "build_command": assessment.structure.build_command,

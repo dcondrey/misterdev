@@ -1,12 +1,21 @@
 from my_project_orchestrator.core.context_budget import (
-    ContextBudget, estimate_tokens,
+    ContextBudget, estimate_tokens, _get_encoder,
 )
 
 
 def test_estimate_tokens():
     assert estimate_tokens("") == 1
     assert estimate_tokens("hello world") > 0
-    assert estimate_tokens("a" * 350) == 100
+    # Monotonic in length regardless of backend (tiktoken or char heuristic).
+    assert estimate_tokens("def f(): return 1\n" * 50) > estimate_tokens("def f()")
+
+
+def test_estimate_tokens_matches_tiktoken_when_available():
+    enc = _get_encoder()
+    if enc is None:
+        return  # tiktoken not installed; heuristic path covered above
+    text = "def tokenize(source: str) -> list[str]: return source.split()"
+    assert estimate_tokens(text) == len(enc.encode(text))
 
 
 def test_no_truncation_under_budget():

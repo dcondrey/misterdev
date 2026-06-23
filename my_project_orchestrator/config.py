@@ -84,6 +84,13 @@ class LLMSettings:
     # self-regulating (only embeds when selection is actually needed); degrades
     # to arbitrary order if no embedding model is reachable.
     semantic_retrieval: bool = True
+    # Which embedder backs semantic retrieval. "auto" = OpenRouter for an
+    # OpenRouter provider, else a local fastembed model (free, offline, no key);
+    # "local" forces fastembed; "openrouter" forces the API; "none" disables the
+    # dense signal (lexical-only ranking).
+    embedding_backend: str = "auto"
+    # fastembed model used by the local backend (downloaded once, then cached).
+    local_embedding_model: str = "BAAI/bge-small-en-v1.5"
     # Empty = auto-pick the cheapest (free-preferred) embedding model from
     # OpenRouter's embeddings catalog, like free-model harvesting; set an id to
     # pin one. Ranking is forgiving, so cheapest is a fine default.
@@ -141,6 +148,12 @@ class OrchestratorSettings:
     certainty_threshold: float = 0.5
     max_cost_per_task: Any = "auto"
     allow_test_edits: bool = False
+    # Optional LSP semantic gate: when on, a language server checks edited files
+    # for errors a syntax check misses (undefined names, type errors). Off by
+    # default and timeout-bounded so it can never block a build; lsp_timeout
+    # caps how long the whole check may take before it is skipped.
+    lsp_diagnostics: bool = False
+    lsp_timeout: int = 30
     verify_acceptance: bool = True
     llm_acceptance_judge: bool = True
     # Golden suite: files the model never sees and may never edit, plus a

@@ -10,12 +10,46 @@ from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
 
-# Approximate tokens per character for English/code (conservative)
+# Approximate tokens per character for English/code (conservative). Used only
+# when tiktoken is unavailable.
 CHARS_PER_TOKEN = 3.5
+
+_encoder = None
+_encoder_loaded = False
+
+
+def _get_encoder():
+    """Lazily load a tiktoken encoder; cache the result (incl. failure)."""
+    global _encoder, _encoder_loaded
+    if _encoder_loaded:
+        return _encoder
+    _encoder_loaded = True
+    try:
+        import tiktoken
+
+        # cl100k_base is a good general proxy for code/English token counts and
+        # avoids a per-model lookup that may miss newer model ids.
+        _encoder = tiktoken.get_encoding("cl100k_base")
+    except Exception as e:  # pragma: no cover - import or offline BPE fetch
+        logger.debug(f"tiktoken unavailable; using char heuristic: {e}")
+        _encoder = None
+    return _encoder
 
 
 def estimate_tokens(text: str) -> int:
-    """Estimate token count from text length. Rough but fast."""
+    """Count tokens with tiktoken when available, else a char heuristic.
+
+    Accurate counts keep ContextBudget from over- or under-filling the window
+    (the heuristic mis-sizes code, especially the windowed large-file context).
+    """
+    if not text:
+        return 1
+    enc = _get_encoder()
+    if enc is not None:
+        try:
+            return max(1, len(enc.encode(text, disallowed_special=())))
+        except Exception:  # pragma: no cover - encoder edge cases
+            pass
     return max(1, int(len(text) / CHARS_PER_TOKEN))
 
 

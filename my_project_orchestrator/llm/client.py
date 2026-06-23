@@ -873,6 +873,36 @@ class OpenRouterEmbeddingClient:
         return [list(d.embedding) for d in ordered]
 
 
+class LocalEmbeddingClient:
+    """Embedding client backed by a local fastembed model (offline, no API key).
+
+    The model is downloaded once and cached by fastembed, then runs on CPU via
+    ONNX. Loading is lazy (first ``embed`` call) so merely constructing the
+    client is cheap and failure (e.g. fastembed not installed) surfaces where
+    the factory can fall back gracefully.
+    """
+
+    def __init__(self, config: dict):
+        llm_config = config.get("llm", {})
+        self.model = (
+            get_section_setting("llm", llm_config, "local_embedding_model")
+            or "BAAI/bge-small-en-v1.5"
+        )
+        self._embedder = None
+
+    def _ensure(self):
+        if self._embedder is None:
+            from fastembed import TextEmbedding
+
+            self._embedder = TextEmbedding(model_name=self.model)
+        return self._embedder
+
+    def embed(self, texts: List[str]) -> List[List[float]]:
+        """Return one vector per input text, in input order."""
+        embedder = self._ensure()
+        return [list(vec) for vec in embedder.embed(list(texts))]
+
+
 def _create_single_client(config: dict) -> BaseLLMClient:
     provider = get_setting(config, "llm", "provider")
     if provider == "openrouter":
@@ -890,14 +920,15 @@ def create_llm_client(config: dict) -> BaseLLMClient:
     return _create_single_client(config)
 
 
-def create_embedding_client(config: dict):
-    """Build an embedding client, or None when embeddings are unavailable.
+def _create_local_embedding_client(config: dict):
+    try:
+        return LocalEmbeddingClient(config)
+    except Exception as e:
+        logger.warning(f"Local embedding client unavailable: {e}")
+        return None
 
-    Auto-picks the cheapest (free-preferred) embedding model when
-    llm.embedding_model is unset. Returns None for non-OpenRouter providers or
-    on any setup failure, so semantic retrieval simply stays off instead of
-    breaking a build.
-    """
+
+def _create_openrouter_embedding_client(config: dict):
     if get_setting(config, "llm", "provider") != "openrouter":
         return None
     from my_project_orchestrator.core.embeddings import pick_embedding_model
@@ -913,3 +944,25 @@ def create_embedding_client(config: dict):
     except Exception as e:
         logger.warning(f"Embedding client unavailable: {e}")
         return None
+
+
+def create_embedding_client(config: dict):
+    """Build an embedding client, or None when embeddings are unavailable.
+
+    Backend (llm.embedding_backend): "local" forces fastembed; "openrouter"
+    forces the API; "none" disables dense ranking; "auto" uses OpenRouter for an
+    OpenRouter provider and otherwise falls back to a local fastembed model so
+    semantic retrieval works offline without an API key. Any setup failure
+    returns None, so retrieval degrades to lexical-only rather than breaking.
+    """
+    backend = get_setting(config, "llm", "embedding_backend")
+    if backend == "none":
+        return None
+    if backend == "local":
+        return _create_local_embedding_client(config)
+    if backend == "openrouter":
+        return _create_openrouter_embedding_client(config)
+    # auto
+    if get_setting(config, "llm", "provider") == "openrouter":
+        return _create_openrouter_embedding_client(config)
+    return _create_local_embedding_client(config)

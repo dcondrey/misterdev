@@ -27,12 +27,23 @@ dependencies = [
     "tree-sitter-c-sharp>=0.23.1",
     "tree-sitter-javascript>=0.23.0",
     "tree-sitter-kotlin>=1.1.0",
+    "tiktoken>=0.7.0",
 ]
 
 [project.optional-dependencies]
 topography = [
     "tree-sitter>=0.21.0",
     "tree-sitter-python>=0.21.0",
+]
+# Local, offline embeddings for semantic context ranking (no API key). Heavy
+# (pulls onnxruntime); enable when you want dense ranking without OpenRouter.
+local-embeddings = [
+    "fastembed>=0.3.0",
+]
+# Optional LSP semantic-diagnostics gate (orchestrator.lsp_diagnostics). Needs
+# the per-language server available; off by default and timeout-bounded.
+lsp = [
+    "multilspy>=0.0.1",
 ]
 
 [tool.setuptools.packages.find]

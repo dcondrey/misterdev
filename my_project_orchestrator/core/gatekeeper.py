@@ -96,6 +96,9 @@ class GateKeeper:
         build_timeout: int = 180,
         test_timeout: int = 180,
         lint_timeout: Optional[int] = None,
+        lsp_diagnostics: bool = False,
+        lsp_language: Optional[str] = None,
+        lsp_timeout: int = 30,
     ):
         self.project_path = Path(project_path)
         self.env_activate = env_activate
@@ -104,6 +107,9 @@ class GateKeeper:
         self.build_timeout = build_timeout
         self.test_timeout = test_timeout
         self.lint_timeout = lint_timeout if lint_timeout is not None else test_timeout
+        self.lsp_diagnostics = lsp_diagnostics
+        self.lsp_language = lsp_language
+        self.lsp_timeout = lsp_timeout
 
     def run_gates(
         self, commands: Dict[str, Optional[str]]
@@ -191,6 +197,26 @@ class GateKeeper:
             )
             if not success:
                 issues.append("G4: Type check failed")
+                return False, issues, health
+
+        # G4.5: LSP semantic diagnostics (optional, off by default). Catches
+        # errors a syntax check misses; best-effort and timeout-bounded, so a
+        # None result (unsupported/slow/unavailable) is a skip, not a failure.
+        if self.lsp_diagnostics and self.lsp_language:
+            from my_project_orchestrator.core.lsp import (
+                collect_diagnostics,
+                find_source_files,
+            )
+
+            files = find_source_files(self.project_path, self.lsp_language)
+            diags = collect_diagnostics(
+                self.project_path, self.lsp_language, files, self.lsp_timeout
+            )
+            if diags:
+                for d in diags[:5]:
+                    issues.append(
+                        f"G4.5: LSP error {d['file']}:{d['line']}: {d['message'][:80]}"
+                    )
                 return False, issues, health
 
         # G5: Completeness scan

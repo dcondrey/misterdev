@@ -12,7 +12,28 @@ from my_project_orchestrator.llm.client import (
     BudgetExceededError,
     code_gen_abort_check,
     create_llm_client,
+    create_embedding_client,
+    LocalEmbeddingClient,
 )
+
+
+def test_embedding_backend_routing():
+    # local: always the fastembed client (construction is lazy, no download)
+    c = create_embedding_client({"llm": {"provider": "anthropic", "embedding_backend": "local"}})
+    assert isinstance(c, LocalEmbeddingClient)
+    # auto + non-openrouter provider -> falls back to local
+    c = create_embedding_client({"llm": {"provider": "anthropic", "embedding_backend": "auto"}})
+    assert isinstance(c, LocalEmbeddingClient)
+    # none -> disabled
+    assert create_embedding_client({"llm": {"embedding_backend": "none"}}) is None
+
+
+def test_local_embedding_client_default_model_and_lazy():
+    c = LocalEmbeddingClient({"llm": {}})
+    assert c.model == "BAAI/bge-small-en-v1.5"
+    assert c._embedder is None  # not loaded until first embed()
+    c2 = LocalEmbeddingClient({"llm": {"local_embedding_model": "intfloat/e5-small"}})
+    assert c2.model == "intfloat/e5-small"
 
 
 class FakeLLMClient(BaseLLMClient):
