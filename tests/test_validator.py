@@ -1,10 +1,66 @@
+import tempfile
+from pathlib import Path
+
 from my_project_orchestrator.core.validator import (
     CodeValidator,
     CertaintyScorer,
     StallDetector,
+    ValidationResult,
+    run_validation,
+    _run_cmd,
     _tokenize,
     _parse_test_counts,
 )
+
+
+def test_run_validation_all_pass():
+    with tempfile.TemporaryDirectory() as td:
+        r = run_validation(Path(td), "true", "true", "true")
+        assert r.build_ok and r.tests_ok and r.lint_ok
+        assert r.issues == []
+
+
+def test_run_validation_records_each_failure():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        rb = run_validation(td, "false", "true", "true")
+        assert not rb.build_ok and "Build failed during validation" in rb.issues
+        rt = run_validation(td, "true", "false", "true")
+        assert not rt.tests_ok and "Tests failed during validation" in rt.issues
+        rl = run_validation(td, "true", "true", "false")
+        assert not rl.lint_ok and any("Lint" in i for i in rl.issues)
+
+
+def test_run_validation_skips_when_no_commands():
+    with tempfile.TemporaryDirectory() as td:
+        r = run_validation(Path(td), None, None, None)
+        assert r.build_ok and r.tests_ok and r.lint_ok and r.issues == []
+
+
+def test_validation_result_summary_status():
+    r = ValidationResult()
+    r.build_ok = True
+    r.tests_ok = False
+    r.lint_ran = False
+    s = r.summary()
+    assert "build=OK" in s and "tests=FAIL" in s and "lint=SKIP" in s
+    assert r.passed is False
+
+
+def test_run_cmd_timeout_and_env_prefix():
+    with tempfile.TemporaryDirectory() as td:
+        ok, out = _run_cmd("sleep 5", Path(td), timeout=1)
+        assert not ok and "timed out" in out
+        ok2, _ = _run_cmd("true", Path(td), env_activate="true")
+        assert ok2  # env_activate prefix is chained with &&
+
+
+def test_validate_code_unsupported_language_uses_brace_fallback():
+    # Java has no tree-sitter gate here -> falls back to brace balancing.
+    ok, err = CodeValidator.validate_code("class A { void m() { }", language="java")
+    assert not ok and "delimiter" in err
+    ok2, _ = CodeValidator.validate_code("class A { void m() {} }", language="java")
+    assert ok2
 
 
 def test_parse_test_counts_swift_xctest():
