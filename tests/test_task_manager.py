@@ -122,3 +122,78 @@ def test_frontmatter_fields():
         assert t.complexity == "large"
         assert t.files_to_modify == ["src/foo.rs"]
         assert t.context_files == ["src/lib.rs"]
+
+
+def test_discover_missing_devplan_returns_empty():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "project.yaml").write_text("name: test\n")
+        cfg = ConfigManager().load_project_config(td)
+
+        class FP:
+            path = td
+            config = cfg
+
+        assert TaskManager(FP()).discover_tasks() == []
+
+
+def test_dependency_prefix_resolution_and_string_form():
+    with tempfile.TemporaryDirectory() as td:
+        tm = _setup_project(
+            td,
+            {
+                "001-base.md": "---\nstatus: pending\n---\nbase\n",
+                # depends_on given as a bare string short-id -> coerced + resolved
+                "002-feat.md": "---\nstatus: pending\ndepends_on: '001'\n---\nfeat\n",
+            },
+        )
+        tm.discover_tasks()
+        assert tm.tasks["002-feat"].dependencies == ["001-base"]
+
+
+def test_unresolved_dependency_kept_verbatim():
+    with tempfile.TemporaryDirectory() as td:
+        tm = _setup_project(
+            td,
+            {"001-a.md": "---\nstatus: pending\ndepends_on:\n  - 999\n---\na\n"},
+        )
+        tm.discover_tasks()
+        assert tm.tasks["001-a"].dependencies == ["999"]
+
+
+def test_file_overlap_adds_implicit_dependency():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "project.yaml").write_text(
+            "name: test\norchestrator:\n  auto_detect_dependencies: true\n"
+        )
+        dp = td / "devplan"
+        dp.mkdir()
+        (dp / "001-a.md").write_text(
+            "---\nstatus: pending\nfiles_to_modify:\n  - src/x.rs\n---\na\n"
+        )
+        (dp / "002-b.md").write_text(
+            "---\nstatus: pending\nfiles_to_modify:\n  - src/x.rs\n---\nb\n"
+        )
+        cfg = ConfigManager().load_project_config(td)
+
+        class FP:
+            path = td
+            config = cfg
+
+        tm = TaskManager(FP())
+        tm.discover_tasks()
+        assert "001-a" in tm.tasks["002-b"].dependencies
+
+
+def test_update_status_persists_and_skips_unknown():
+    with tempfile.TemporaryDirectory() as td:
+        tm = _setup_project(td, {"001-a.md": "---\nstatus: pending\n---\nwork\n"})
+        tm.discover_tasks()
+        tm.update_task_status("001-a", "completed")
+        assert tm.tasks["001-a"].status == "completed"
+        # persisted back to the markdown front-matter
+        text = (Path(tm.project.path) / "devplan" / "001-a.md").read_text()
+        assert "completed" in text
+        # unknown id is a no-op (no raise)
+        tm.update_task_status("nope", "completed")

@@ -14,7 +14,142 @@ from my_project_orchestrator.llm.client import (
     create_llm_client,
     create_embedding_client,
     LocalEmbeddingClient,
+    OpenRouterLLMClient,
+    OpenRouterEmbeddingClient,
 )
+
+
+def _completion(content, pt=10, ct=5, finish="stop", tool_calls=None):
+    return types.SimpleNamespace(
+        choices=[
+            types.SimpleNamespace(
+                message=types.SimpleNamespace(content=content, tool_calls=tool_calls),
+                finish_reason=finish,
+            )
+        ],
+        usage=types.SimpleNamespace(prompt_tokens=pt, completion_tokens=ct),
+    )
+
+
+def _make_openrouter(monkeypatch, model="test/model"):
+    monkeypatch.setenv("FAKE_OR_KEY", "x")
+    cfg = {
+        "llm": {
+            "provider": "openrouter",
+            "model": model,
+            "api_key_env_var": "FAKE_OR_KEY",
+            "temperature": 0.1,
+        }
+    }
+    return OpenRouterLLMClient(cfg)
+
+
+def test_openrouter_call_parses_response_and_request(monkeypatch):
+    client = _make_openrouter(monkeypatch)
+    captured = {}
+
+    class _Completions:
+        def create(self, **kw):
+            captured.update(kw)
+            return _completion("hello world")
+
+    client.client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=_Completions())
+    )
+    out = client.generate_code("do it", "sys")
+    assert out == "hello world"
+    assert captured["model"] == "test/model"
+    # provider routing always pins data_collection (deny unless training allowed)
+    assert "data_collection" in captured["extra_body"]["provider"]
+    assert client.cumulative_usage.estimated_cost > 0  # usage accounted
+
+
+def test_openrouter_api_error_wrapped(monkeypatch):
+    client = _make_openrouter(monkeypatch)
+
+    class _Boom:
+        def create(self, **kw):
+            raise RuntimeError("503 upstream")
+
+    client.client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=_Boom())
+    )
+    with pytest.raises(LLMCallError):
+        client.generate_code("x")
+
+
+def _stream_of(tokens, usage=None):
+    def fake_create(**kw):
+        def gen():
+            for tok in tokens:
+                yield types.SimpleNamespace(
+                    choices=[
+                        types.SimpleNamespace(delta=types.SimpleNamespace(content=tok))
+                    ],
+                    usage=None,
+                )
+            if usage is not None:
+                yield types.SimpleNamespace(choices=[], usage=usage)
+
+        return gen()
+
+    return fake_create
+
+
+def test_openrouter_stream_accumulates_and_reads_usage(monkeypatch):
+    client = _make_openrouter(monkeypatch)
+    create = _stream_of(
+        ["par", "tial"],
+        usage=types.SimpleNamespace(prompt_tokens=4, completion_tokens=2),
+    )
+    client.client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
+    )
+    resp = client.generate_stream("p", "s")
+    assert resp.content == "partial"
+    assert resp.finish_reason == "stop"
+    assert resp.usage.prompt_tokens == 4
+
+
+def test_openrouter_stream_aborts_early(monkeypatch):
+    client = _make_openrouter(monkeypatch)
+    create = _stream_of(["bad", "more", "evenmore"])
+    client.client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
+    )
+    resp = client.generate_stream("p", "s", abort_check=lambda acc: "bad" in acc)
+    assert resp.finish_reason == "aborted"
+    assert "bad" in resp.content
+
+
+def test_openrouter_embedding_orders_by_index(monkeypatch):
+    monkeypatch.setenv("FAKE_OR_KEY", "x")
+    cfg = {"llm": {"provider": "openrouter", "api_key_env_var": "FAKE_OR_KEY"}}
+    emb = OpenRouterEmbeddingClient(cfg, "embed-model")
+
+    class _Embeddings:
+        def create(self, **kw):
+            # return out of order to prove the client re-sorts by .index
+            return types.SimpleNamespace(
+                data=[
+                    types.SimpleNamespace(index=1, embedding=[0.2]),
+                    types.SimpleNamespace(index=0, embedding=[0.1]),
+                ]
+            )
+
+    emb.client = types.SimpleNamespace(embeddings=_Embeddings())
+    vecs = emb.embed(["a", "b"])
+    assert vecs == [[0.1], [0.2]]
+
+
+def test_local_embedding_embed_uses_fastembed(monkeypatch):
+    client = LocalEmbeddingClient({"llm": {}})
+    # Inject a fake embedder so no model download/onnx runtime is needed.
+    client._embedder = types.SimpleNamespace(
+        embed=lambda texts: [[0.1, 0.2]] * len(texts)
+    )
+    vecs = client.embed(["x", "y"])
+    assert vecs == [[0.1, 0.2], [0.1, 0.2]]
 
 
 def test_embedding_backend_routing():

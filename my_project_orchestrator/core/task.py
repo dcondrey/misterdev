@@ -76,6 +76,9 @@ class TaskManager:
         for task in self.tasks.values():
             resolved = []
             for dep in task.dependencies:
+                # YAML may parse a numeric id (e.g. `depends_on: [999]`) as int;
+                # coerce so prefix matching and comparisons don't crash.
+                dep = str(dep)
                 if dep in all_ids:
                     resolved.append(dep)
                 else:
@@ -108,8 +111,11 @@ class TaskManager:
 
         meta = post.metadata
         depends_on = meta.get("depends_on", [])
-        if isinstance(depends_on, str):
+        if not isinstance(depends_on, list):
             depends_on = [depends_on]
+        # YAML may parse a numeric id (e.g. `depends_on: [999]`) as int; coerce
+        # so the typed Task model accepts it instead of dropping the whole task.
+        depends_on = [str(d) for d in depends_on]
 
         return Task(
             id=task_id,

@@ -52,6 +52,7 @@ include = ["my_project_orchestrator*"]
 [dependency-groups]
 dev = [
     "pytest>=9.1.0",
+    "coverage>=7.0",
 ]
 
 [project.scripts]

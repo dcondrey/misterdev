@@ -1,11 +1,37 @@
+import time
 import tempfile
 from pathlib import Path
 
+import my_project_orchestrator.core.lsp as lsp
 from my_project_orchestrator.core.lsp import (
     collect_diagnostics,
     find_source_files,
     _to_errors,
 )
+
+
+def test_collect_diagnostics_returns_collected_errors(monkeypatch):
+    sentinel = [{"file": "a.py", "line": 3, "message": "undefined name"}]
+    monkeypatch.setattr(lsp, "_collect", lambda root, code_lang, files: sentinel)
+    assert collect_diagnostics(Path("."), "python", ["a.py"]) == sentinel
+
+
+def test_collect_diagnostics_times_out_to_none(monkeypatch):
+    def _slow(root, code_lang, files):
+        time.sleep(5)
+        return []
+
+    monkeypatch.setattr(lsp, "_collect", _slow)
+    # Hard timeout below the work time -> skip (None), never block.
+    assert collect_diagnostics(Path("."), "python", ["a.py"], timeout=0.2) is None
+
+
+def test_collect_diagnostics_swallows_server_errors(monkeypatch):
+    def _boom(root, code_lang, files):
+        raise RuntimeError("server crashed")
+
+    monkeypatch.setattr(lsp, "_collect", _boom)
+    assert collect_diagnostics(Path("."), "python", ["a.py"]) is None
 
 
 def test_collect_diagnostics_unsupported_language_returns_none():
