@@ -103,6 +103,8 @@ class GateKeeper:
         lsp_language: Optional[str] = None,
         lsp_timeout: int = 30,
         container: Optional["ContainerEngine"] = None,
+        runtime_smoke: bool = False,
+        runtime_config: Optional[Dict] = None,
     ):
         self.project_path = Path(project_path)
         self.env_activate = env_activate
@@ -118,6 +120,11 @@ class GateKeeper:
         self.lsp_diagnostics = lsp_diagnostics
         self.lsp_language = lsp_language
         self.lsp_timeout = lsp_timeout
+        # Optional runtime smoke gate (off by default). runtime_config carries
+        # the top-level `runtime` mapping; the smoke spec lives under its
+        # `smoke` key. Timeout-bounded so it can never block the build.
+        self.runtime_smoke = runtime_smoke
+        self.runtime_config = runtime_config or {}
 
     @property
     def _runner(self) -> Optional[Callable[[str, int], Tuple[bool, str]]]:
@@ -236,6 +243,23 @@ class GateKeeper:
                     issues.append(
                         f"G4.5: LSP error {d['file']}:{d['line']}: {d['message'][:80]}"
                     )
+                return False, issues, health
+
+        # G4.6: Runtime smoke gate (optional, off by default). Launches the
+        # built artifact and asserts it responds. Best-effort and
+        # timeout-bounded: a SKIP (no/incomplete config, timeout) never fails;
+        # only a RED (non-zero exit or missing expectation) blocks the build.
+        if self.runtime_smoke:
+            from my_project_orchestrator.core.runtime import run_smoke_gate
+
+            smoke = run_smoke_gate(self.project_path, self.runtime_config.get("smoke"))
+            if smoke.status == "red":
+                issues.append(
+                    f"G4.6: Runtime smoke failed ({smoke.reason or 'no detail'})"
+                )
+                health.tests_pass = False
+                if smoke.evidence:
+                    health.test_output = smoke.evidence
                 return False, issues, health
 
         # G5: Completeness scan

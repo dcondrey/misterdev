@@ -154,6 +154,12 @@ class OrchestratorSettings:
     # caps how long the whole check may take before it is skipped.
     lsp_diagnostics: bool = False
     lsp_timeout: int = 30
+    # Optional runtime smoke gate: when on, the built artifact is launched,
+    # probed, and asserted to respond before the build is accepted. Off by
+    # default and timeout-bounded (runs in a daemon thread) so it can never
+    # block a build; missing/incomplete runtime.smoke config makes it a SKIP.
+    # The smoke spec itself lives under the top-level ``runtime.smoke`` key.
+    runtime_smoke: bool = False
     verify_acceptance: bool = True
     llm_acceptance_judge: bool = True
     # Golden suite: files the model never sees and may never edit, plus a
@@ -209,6 +215,11 @@ DEFAULT_CONFIG = {
     "llm": asdict(LLMSettings()),
     "tools": [],
     "environment": {"type": "none"},
+    # Runtime smoke gate spec (off unless orchestrator.runtime_smoke is true and
+    # this carries a `smoke` mapping). Free-form so projects can describe any
+    # launch/ready/probe/expect/timeout; not schema-validated like the dataclass
+    # sections, mirroring how `environment` is an open dict.
+    "runtime": {},
     "prompt_templates": PROMPT_TEMPLATES,
     "build": asdict(BuildSettings()),
     "orchestrator": asdict(OrchestratorSettings()),

@@ -713,6 +713,10 @@ class ProjectOrchestrator:
                 lsp_language=project.config.get("language"),
                 lsp_timeout=get_setting(project.config, "orchestrator", "lsp_timeout"),
                 container=self._container_engine(project),
+                runtime_smoke=get_setting(
+                    project.config, "orchestrator", "runtime_smoke"
+                ),
+                runtime_config=project.config.get("runtime") or {},
             )
             commands = {
                 "build_command": assessment.structure.build_command,
