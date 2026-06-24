@@ -68,6 +68,9 @@ session (1-20 files) and have a concrete "done" condition.
 - Tech debt score: {debt_score}/100
 - Risk level: {risk_level}
 
+### Project Files (REAL paths and their symbols — the actual code that exists)
+{file_map}
+
 ## Spec
 {spec}
 
@@ -75,6 +78,11 @@ session (1-20 files) and have a concrete "done" condition.
 {mode}
 
 ## Rules
+- files_to_modify and context_files MUST be REAL paths taken from the Project
+  Files map above. NEVER invent a path or guess one from a feature/test name: to
+  change a function, find the file in the map that already defines it and put
+  THAT path in files_to_modify. Use files_to_create only for a file that is
+  genuinely absent from the map.
 {existing_guidance}- Max {max_tasks} tasks. Prioritize: must-fix > must-complete > should-add.
 - Order: infrastructure > core types > core logic > features > integration > tests > fixes > cleanup.
 - Each task's files_to_modify must not overlap with another task's files_to_create unless a dependency is declared.
@@ -105,6 +113,7 @@ def decompose_spec(
     llm_client: BaseLLMClient,
     project_ref: str,
     max_tasks: int = MAX_TASKS,
+    file_map: str = "",
 ) -> list[Task]:
     """Use LLM to decompose a spec into ordered tasks with dependencies."""
     s = assessment.structure
@@ -127,6 +136,7 @@ def decompose_spec(
 
     prompt = DECOMPOSE_PROMPT.format(
         existing_guidance=existing_guidance,
+        file_map=file_map.strip() or "(file map unavailable — infer paths cautiously)",
         project_type=s.project_type,
         languages=", ".join(s.languages) if s.languages else "unknown",
         frameworks=", ".join(s.frameworks) if s.frameworks else "none",

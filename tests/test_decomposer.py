@@ -131,3 +131,68 @@ def test_decompose_spec_honors_max_tasks_cap():
         "spec", ProjectAssessment(), BuildMode.DEBUG, _FakeClient(), ".", max_tasks=3
     )
     assert len(tasks) == 3
+
+
+def test_decompose_includes_file_map_and_grounding_rule():
+    # Regression for the "created a new duplicate file" failure: the decomposer
+    # must be shown the real file map and told to use real paths.
+    from my_project_orchestrator.core.decomposer import decompose_spec
+    from my_project_orchestrator.core.assessment import (
+        ProjectAssessment,
+        HealthCheck,
+        ProjectStructure,
+        TechnicalDebt,
+        RiskAssessment,
+    )
+
+    captured = {}
+
+    class _Client:
+        def generate_code(self, prompt, system=""):
+            captured["prompt"] = prompt
+            return '[{"id": "T-001", "title": "x", "description": "x", '\
+                   '"acceptance_criteria": "x", "files_to_create": [], '\
+                   '"files_to_modify": ["lib/allowlist.js"], "context_files": [], '\
+                   '"dependencies": [], "complexity": "small", "category": "fix"}]'
+
+    assessment = ProjectAssessment(
+        structure=ProjectStructure(project_type="web-app", languages=["javascript"]),
+        health=HealthCheck(builds=True, tests_pass=False),
+        tech_debt=TechnicalDebt(score=10),
+        risk=RiskAssessment(level="low"),
+    )
+    file_map = "lib/allowlist.js\n  function parseAllowlistCsv\n"
+    tasks = decompose_spec(
+        "fix parseAllowlistCsv", assessment, BuildMode.DEBUG, _Client(), ".",
+        file_map=file_map,
+    )
+    assert "lib/allowlist.js" in captured["prompt"]
+    assert "REAL paths" in captured["prompt"]
+    assert tasks and tasks[0].files_to_modify == ["lib/allowlist.js"]
+
+
+def test_decompose_without_file_map_uses_fallback_text():
+    from my_project_orchestrator.core.decomposer import decompose_spec
+    from my_project_orchestrator.core.assessment import (
+        ProjectAssessment,
+        HealthCheck,
+        ProjectStructure,
+        TechnicalDebt,
+        RiskAssessment,
+    )
+
+    captured = {}
+
+    class _Client:
+        def generate_code(self, prompt, system=""):
+            captured["prompt"] = prompt
+            return "[]"
+
+    assessment = ProjectAssessment(
+        structure=ProjectStructure(project_type="library", languages=["python"]),
+        health=HealthCheck(builds=True),
+        tech_debt=TechnicalDebt(score=5),
+        risk=RiskAssessment(level="low"),
+    )
+    decompose_spec("do x", assessment, BuildMode.SMART, _Client(), ".")
+    assert "file map unavailable" in captured["prompt"]

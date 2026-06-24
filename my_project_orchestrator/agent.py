@@ -748,6 +748,10 @@ class ProjectOrchestrator:
         # tasks (and exhaust the budget) the way a broad spec otherwise would.
         if isinstance(flags.max_tasks, int) and flags.max_tasks > 0:
             max_tasks = min(max_tasks, flags.max_tasks)
+        # The decomposer otherwise guesses file paths from feature/test names and
+        # the executor then CREATES a wrong new file. Feed it the real file+symbol
+        # map so a task targets the actual file that defines the code to change.
+        file_map = self._project_file_map(project)
         tasks = decompose_spec(
             spec,
             assessment,
@@ -755,6 +759,7 @@ class ProjectOrchestrator:
             project.llm_client,
             str(project.path),
             max_tasks=max_tasks,
+            file_map=file_map,
         )
         tasks = topological_sort(tasks)
 
@@ -879,6 +884,7 @@ class ProjectOrchestrator:
                 project.llm_client,
                 str(project.path),
                 max_tasks=max_tasks,
+                file_map=file_map,
             )
             tasks = topological_sort(fix_tasks)
             report.key_decisions.append(
@@ -1758,6 +1764,23 @@ class ProjectOrchestrator:
         if isinstance(env, ContainerEnvironmentManager):
             return env.engine()
         return None
+
+    def _project_file_map(self, project: Project) -> str:
+        """The project's real file+symbol outline, for grounding decomposition.
+
+        Best-effort: builds the symbol graph (idempotent) and returns its project
+        outline, or "" if topography is unavailable or errors — the decomposer
+        then falls back to cautious path inference rather than failing.
+        """
+        topo = getattr(project, "topography", None)
+        if topo is None:
+            return ""
+        try:
+            topo.initialize()
+            return topo.get_project_outline()
+        except Exception as e:
+            logger.warning(f"File map unavailable for decomposition (non-fatal): {e}")
+            return ""
 
     def _analyze(self, project: Project, env_activate: Optional[str]):
         """Phase 1 analysis with config-driven commands and timeouts.

@@ -289,7 +289,10 @@ PROMPT_TEMPLATES = {
         "## Recent Changes to Related Files\n{recent_changes}\n\n"
         "## Scratchpad (learnings from previous tasks)\n{scratchpad}\n\n"
         "## Code Context\n{code_context}\n\n"
-        "Output your changes as markdown code blocks with file paths."
+        "Modify the EXISTING files in scope. Do NOT create a new file that "
+        "re-implements functionality that already exists in the Code Context — "
+        "locate and edit the real file instead. Output your changes as markdown "
+        "code blocks with file paths."
     ),
     "error_correction_instruction": (
         "## Previous Attempt Failed\n{error_logs}\n\n"
