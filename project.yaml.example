@@ -211,9 +211,15 @@ environment:
 #                                 # --network none. CONTAINER-ONLY (environment.type:
 #                                 # docker); host execution and git keep their network.
 
+# Empirical probe discovery (SMART/CREATE Phase 1.5) grounds the spec with an
+# LLM call + ephemeral script runs before planning. On by default; set false for
+# a cheaper/faster run that skips that pre-work.
+# orchestrator:
+#   enable_probes: false
+
 # Build workflow settings (6-phase autonomous builder)
 build:
-  max_tasks: 30
+  max_tasks: 30   # also overridable per-run with the CLI flag --max-tasks N
   max_attempts_per_task: 3
   max_consecutive_failures: 3
   build_timeout: 120

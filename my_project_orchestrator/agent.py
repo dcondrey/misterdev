@@ -681,9 +681,12 @@ class ProjectOrchestrator:
         # at the pipeline level.
         # Sovereign Phase 1.5: Empirical Probes (only for SMART/CREATE modes).
         # Best-effort: probe discovery must never crash the build, so any
-        # failure here degrades to no verified facts rather than aborting.
+        # failure here degrades to no verified facts rather than aborting. Opt out
+        # via orchestrator.enable_probes for a cheaper/faster run (probes spend an
+        # LLM call plus ephemeral script runs before any task executes).
         verified_facts = ""
-        if mode in (BuildMode.SMART, BuildMode.CREATE):
+        probes_on = get_setting(project.config, "orchestrator", "enable_probes")
+        if probes_on and mode in (BuildMode.SMART, BuildMode.CREATE):
             logger.info("Phase 1.5: Empirical Probe Discovery")
             try:
                 probe_gen = ProbeGenerator(project.llm_client)
@@ -733,6 +736,11 @@ class ProjectOrchestrator:
 
         # Phase 3: Decompose
         max_tasks = get_setting(project.config, "build", "max_tasks")
+        # A --max-tasks flag is a per-run ceiling: the tighter of it and the
+        # config cap wins, so a focused/bounded run can't balloon into dozens of
+        # tasks (and exhaust the budget) the way a broad spec otherwise would.
+        if isinstance(flags.max_tasks, int) and flags.max_tasks > 0:
+            max_tasks = min(max_tasks, flags.max_tasks)
         tasks = decompose_spec(
             spec,
             assessment,

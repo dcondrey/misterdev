@@ -211,6 +211,10 @@ class OrchestratorSettings:
     # AB-MCTS spec refinement fires several serial LLM calls before any work;
     # off by default (marginal value, large latency/cost).
     enable_ab_mcts: bool = False
+    # Empirical probe discovery (SMART/CREATE Phase 1.5) runs an LLM call plus
+    # ephemeral scripts to verify facts before planning. On by default (it grounds
+    # the spec), but set false for a cheaper/faster run that skips the pre-work.
+    enable_probes: bool = True
     # "auto" (worktree isolation on a git repo, else shared), "shared" (one
     # working tree), or "worktree" (always isolate each parallel task).
     parallel_mode: str = "auto"

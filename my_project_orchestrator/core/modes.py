@@ -33,6 +33,7 @@ class BuildFlags:
         parallel: bool = False,
         no_rollback: bool = False,
         allow_dirty: bool = False,
+        max_tasks: Optional[int] = None,
     ):
         self.budget = budget
         self.commit = commit
@@ -44,6 +45,10 @@ class BuildFlags:
         self.parallel = parallel
         self.no_rollback = no_rollback
         self.allow_dirty = allow_dirty
+        # Per-run ceiling on decomposed tasks (CLI --max-tasks); None = use the
+        # config default. Bounds a focused run so a broad spec can't balloon into
+        # dozens of tasks and exhaust the budget.
+        self.max_tasks = max_tasks
 
     def __repr__(self) -> str:
         return (
@@ -88,6 +93,12 @@ def parse_flags(args: list[str]) -> tuple[list[str], BuildFlags]:
             i += 1
         elif arg == "--focus" and i + 1 < len(args):
             flags.focus = args[i + 1]
+            i += 2
+        elif arg == "--max-tasks" and i + 1 < len(args):
+            try:
+                flags.max_tasks = int(args[i + 1])
+            except ValueError:
+                flags.max_tasks = None
             i += 2
         else:
             remaining.append(arg)

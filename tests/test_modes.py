@@ -40,6 +40,22 @@ def test_parse_flags_all():
     assert flags.focus == "src/"
 
 
+def test_parse_flags_max_tasks():
+    remaining, flags = parse_flags(["complete", "--max-tasks", "3"])
+    assert remaining == ["complete"]
+    assert flags.max_tasks == 3
+
+
+def test_parse_flags_max_tasks_default_none():
+    _, flags = parse_flags(["complete"])
+    assert flags.max_tasks is None
+
+
+def test_parse_flags_max_tasks_invalid_is_none():
+    _, flags = parse_flags(["--max-tasks", "notanumber"])
+    assert flags.max_tasks is None
+
+
 def test_resolve_mode_keywords():
     p = Path(".")
     assert resolve_mode("debug", p) == BuildMode.DEBUG

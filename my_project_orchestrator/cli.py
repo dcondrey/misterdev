@@ -206,6 +206,12 @@ def main():
         action="store_true",
         help="Allow building on a working tree with uncommitted changes",
     )
+    build_parser.add_argument(
+        "--max-tasks",
+        type=int,
+        default=None,
+        help="Cap the number of tasks this run will plan/execute (bounds cost)",
+    )
 
     args = parser.parse_args()
 
@@ -289,6 +295,8 @@ def main():
             build_args.append("--allow-dirty")
         if args.focus:
             build_args.extend(["--focus", args.focus])
+        if args.max_tasks is not None:
+            build_args.extend(["--max-tasks", str(args.max_tasks)])
 
         report = orchestrator.build(args.project_path, " ".join(build_args))
         console.print("\n")
