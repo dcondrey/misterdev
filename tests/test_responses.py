@@ -5,7 +5,43 @@ from my_project_orchestrator.llm.responses import (
     LLMResponseParser,
     SearchReplaceEdit,
     apply_search_replace,
+    extract_balanced_span,
+    extract_json_object,
 )
+
+
+def test_extract_balanced_span_basic():
+    assert extract_balanced_span('{"a": 1}', 0) == '{"a": 1}'
+
+
+def test_extract_balanced_span_honors_braces_in_strings():
+    text = '{"k": "a}b{c"}'
+    assert extract_balanced_span(text, 0) == text
+
+
+def test_extract_balanced_span_nested():
+    text = '{"a": {"b": 2}}'
+    assert extract_balanced_span(text, 0) == text
+
+
+def test_extract_balanced_span_unbalanced_is_none():
+    assert extract_balanced_span('{"a": 1', 0) is None
+
+
+def test_extract_json_object_from_prose_and_fence():
+    text = 'sure:\n```json\n{"ok": true}\n```\ndone'
+    assert extract_json_object(text) == {"ok": True}
+
+
+def test_extract_json_object_skips_malformed_then_finds_valid():
+    # First {...} is not valid JSON; the scan advances to the next one.
+    text = '{not json} then {"good": 1}'
+    assert extract_json_object(text) == {"good": 1}
+
+
+def test_extract_json_object_none_when_absent():
+    assert extract_json_object("no object here") is None
+    assert extract_json_object("") is None
 
 
 def test_tagged_code_block():
@@ -67,13 +103,7 @@ def test_unified_diff_not_starting_at_line_one_rejected():
 
 def test_unified_diff_new_file_accepted():
     # A brand-new file is a single hunk from line 1 -> safe to reconstruct.
-    output = (
-        "--- /dev/null\n"
-        "+++ b/src/new.py\n"
-        "@@ -0,0 +1,2 @@\n"
-        "+x = 1\n"
-        "+y = 2\n"
-    )
+    output = "--- /dev/null\n+++ b/src/new.py\n@@ -0,0 +1,2 @@\n+x = 1\n+y = 2\n"
     edits = LLMResponseParser.parse_file_edits(output)
     assert edits.get("src/new.py") == "x = 1\ny = 2"
 

@@ -31,6 +31,9 @@ import re
 from typing import Callable, List, Optional, Tuple
 
 from my_project_orchestrator.core.mcp import MCPManager
+from my_project_orchestrator.llm.responses import (
+    extract_balanced_span as _extract_balanced_object,
+)
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -45,37 +48,6 @@ _CALL_RE = re.compile(
     r"\bCALL\b\s+([A-Za-z0-9_.\-]+)\.([A-Za-z0-9_\-]+)",
     re.IGNORECASE,
 )
-
-
-def _extract_balanced_object(text: str, start: int) -> Optional[str]:
-    """Return the ``{...}`` substring starting at ``start`` (a ``{``), or None.
-
-    Brace-counts while honoring braces inside double-quoted strings (with
-    escapes), so a JSON object containing ``{`` or ``}`` in a string value is
-    extracted whole. Tolerates the object spanning multiple lines.
-    """
-    depth = 0
-    in_str = False
-    escape = False
-    for i in range(start, len(text)):
-        c = text[i]
-        if in_str:
-            if escape:
-                escape = False
-            elif c == "\\":
-                escape = True
-            elif c == '"':
-                in_str = False
-            continue
-        if c == '"':
-            in_str = True
-        elif c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : i + 1]
-    return None
 
 _GATHER_HEADER = "## Information gathered via MCP tools\n"
 

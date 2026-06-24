@@ -20,11 +20,13 @@ concrete evidence the build produced (the diff/summary) rather than asked to
 self-report on intent.
 """
 
-import json
 from typing import Callable, List, Optional
 
 from my_project_orchestrator.core.bounded import run_bounded
 from my_project_orchestrator.core.independent import build_independent_call
+from my_project_orchestrator.llm.responses import (
+    extract_json_object as _extract_json_object,
+)
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -177,45 +179,6 @@ def _parse_verdict(text: str) -> GoalVerdict:
     if not gaps:
         gaps = ["goal not satisfied (no specific gap reported)"]
     return GoalVerdict(GAP, gaps=gaps, raw=text)
-
-
-def _extract_json_object(text: str) -> Optional[dict]:
-    """Return the first parseable top-level JSON object in ``text``, or None.
-
-    Scans for a balanced ``{...}`` span (respecting string literals so a brace
-    inside a string does not break balancing) and json-loads it. This survives
-    leading prose or a ```json fence around the object.
-    """
-    start = text.find("{")
-    while start != -1:
-        depth = 0
-        in_string = False
-        escaped = False
-        for i in range(start, len(text)):
-            ch = text[i]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif ch == "\\":
-                    escaped = True
-                elif ch == '"':
-                    in_string = False
-                continue
-            if ch == '"':
-                in_string = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    candidate = text[start : i + 1]
-                    try:
-                        parsed = json.loads(candidate)
-                    except ValueError:
-                        break
-                    return parsed if isinstance(parsed, dict) else None
-        start = text.find("{", start + 1)
-    return None
 
 
 def _default_judge_call(
