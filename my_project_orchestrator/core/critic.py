@@ -31,6 +31,7 @@ from typing import Callable, Dict, List, Optional
 
 from my_project_orchestrator.core.bounded import run_bounded
 from my_project_orchestrator.core.goal_check import _extract_json_object
+from my_project_orchestrator.core.independent import build_independent_call
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -307,31 +308,10 @@ def _default_critic_call(
     shape so an absent/limited client degrades to SKIP rather than raising. No
     network is touched until the returned callable is invoked in the worker.
     """
-    if llm_client is None or not hasattr(llm_client, "generate_code"):
-        return None
-
     system = (
         "You are a precise adversarial code reviewer. Output only the requested "
         "JSON object. Reject only for a concrete, nameable defect."
     )
-
-    use_independent = bool(critic_model) and hasattr(llm_client, "with_model")
-    if critic_model and not use_independent:
-        logger.warning(
-            "Adversarial critic: critic.model set but the client cannot switch "
-            "models; running on the generator's own model (weaker independence)."
-        )
-    elif not critic_model:
-        logger.info(
-            "Adversarial critic: no critic.model configured; running on the "
-            "generator's own model (weaker independence — set critic.model to a "
-            "different model for a true second component)."
-        )
-
-    def _call(prompt: str) -> str:
-        if use_independent:
-            with llm_client.with_model(critic_model):
-                return llm_client.generate_code(prompt, system) or ""
-        return llm_client.generate_code(prompt, system) or ""
-
-    return _call
+    return build_independent_call(
+        llm_client, system, critic_model, "Adversarial critic"
+    )

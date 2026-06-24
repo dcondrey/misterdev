@@ -24,6 +24,7 @@ import json
 from typing import Callable, List, Optional
 
 from my_project_orchestrator.core.bounded import run_bounded
+from my_project_orchestrator.core.independent import build_independent_call
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -229,28 +230,13 @@ def _default_judge_call(
     shape so an absent/limited client degrades to SKIP rather than raising. No
     network is touched until the returned callable is invoked inside the worker.
     """
-    if llm_client is None or not hasattr(llm_client, "generate_code"):
-        return None
-
     system = (
         "You are a precise acceptance reviewer. Output only the requested JSON "
         "object. Do not invent work that is not shown in the evidence."
     )
-
-    use_independent = bool(judge_model) and hasattr(llm_client, "with_model")
-    if judge_model and not use_independent:
-        logger.warning(
-            "Goal-completion check: judge.model set but the client cannot switch "
-            "models; judging on the generator's own model (weaker independence)."
-        )
-
-    def _call(prompt: str) -> str:
-        if use_independent:
-            with llm_client.with_model(judge_model):
-                return llm_client.generate_code(prompt, system) or ""
-        return llm_client.generate_code(prompt, system) or ""
-
-    return _call
+    return build_independent_call(
+        llm_client, system, judge_model, "Goal-completion check"
+    )
 
 
 def build_evidence(diff: str = "", summary: str = "") -> str:

@@ -1697,12 +1697,12 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         configured (so the judge doesn't share the generator's blind spots), else
         on the generator's own model. Routed through ``with_model`` when possible.
         """
-        client = project.llm_client
+        from my_project_orchestrator.core.independent import generate_independent
+
         judge_model = (project.config.get("judge") or {}).get("model")
-        if judge_model and hasattr(client, "with_model"):
-            with client.with_model(judge_model):
-                return client.generate_code(prompt, "")
-        return client.generate_code(prompt, "")
+        return generate_independent(
+            project.llm_client, prompt, "", model=judge_model
+        )
 
     def _llm_acceptance_judge(
         self, project: Project, task: Task, criteria: str
