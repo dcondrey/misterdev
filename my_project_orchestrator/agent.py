@@ -451,16 +451,51 @@ class ProjectOrchestrator:
 
         env_activate = self._setup_env(project)
 
-        # Phase 1: Analysis
-        assessment = self._analyze(project, env_activate)
+        # The budget ceiling is a graceful kill-switch, not a crash: a
+        # BudgetExceededError can surface from ANY model call (an analysis
+        # analyzer, probe discovery, spec generation, decomposition, or a task),
+        # so wrap the whole pipeline and degrade to a partial report instead of
+        # letting the CLI die with a traceback. (Found by dogfooding: a $2 cap was
+        # exhausted by pre-execution analysis+probes+spec and crashed the run.)
+        report = None
+        try:
+            # Phase 1: Analysis
+            assessment = self._analyze(project, env_activate)
 
-        report = BuildReport(mode, project.name, assessment, start_time)
-        report.health_before = assessment.health.model_copy()
-        _warn_if_baseline_broken(assessment, report)
+            report = BuildReport(mode, project.name, assessment, start_time)
+            report.health_before = assessment.health.model_copy()
+            _warn_if_baseline_broken(assessment, report)
 
-        return self._run_pipeline(
-            project, prompt, mode, flags, assessment, env_activate, report
-        )
+            return self._run_pipeline(
+                project, prompt, mode, flags, assessment, env_activate, report
+            )
+        except BudgetExceededError as e:
+            return self._halt_on_budget(project, report, e)
+
+    def _halt_on_budget(
+        self, project: Project, report: Optional[BuildReport], error: Exception
+    ) -> str:
+        """Degrade a budget-exhausted run to a partial report (never a traceback).
+
+        Records the halt, finalizes whatever work completed, and returns the
+        report markdown. When the cap is hit before the report exists (during
+        analysis), returns a concise message instead.
+        """
+        self.last_build_succeeded = False
+        logger.error(f"Build halted by budget ceiling: {error}")
+        if report is None:
+            return (
+                f"Build halted: {error}. The budget ceiling stopped the run during "
+                "analysis, before any task executed. Raise --budget to proceed."
+            )
+        report.key_decisions.append(f"Halted by budget ceiling: {error}")
+        report.finalize()
+        usage = project.llm_client.cumulative_usage
+        report.llm_calls = usage.call_count
+        report.llm_tokens = usage.total_tokens
+        report.llm_cost = usage.estimated_cost
+        report.save(project.path)
+        return report.to_markdown()
 
     def interactive_plan(self, project_path: str | Path, args: str = "") -> str:
         """Analyze the project, recommend work, and compose a plan with the user.
@@ -494,28 +529,34 @@ class ProjectOrchestrator:
 
         env_activate = self._setup_env(project)
 
-        console.print(f"[bold]Analyzing[/] {project.name} ...")
-        assessment = self._analyze(project, env_activate)
-        console.print(Panel(assessment.summary(), title="Current state", expand=False))
+        report = None
+        try:
+            console.print(f"[bold]Analyzing[/] {project.name} ...")
+            assessment = self._analyze(project, env_activate)
+            console.print(
+                Panel(assessment.summary(), title="Current state", expand=False)
+            )
 
-        recs = recommend_work(assessment, project.llm_client)
-        goal, mode = self._choose_goal(recs)
-        if goal is None:
-            return "Cancelled: no work selected."
+            recs = recommend_work(assessment, project.llm_client)
+            goal, mode = self._choose_goal(recs)
+            if goal is None:
+                return "Cancelled: no work selected."
 
-        report = BuildReport(mode, project.name, assessment, start_time)
-        report.health_before = assessment.health.model_copy()
-        _warn_if_baseline_broken(assessment, report)
-        return self._run_pipeline(
-            project,
-            goal,
-            mode,
-            flags,
-            assessment,
-            env_activate,
-            report,
-            confirm_plan=True,
-        )
+            report = BuildReport(mode, project.name, assessment, start_time)
+            report.health_before = assessment.health.model_copy()
+            _warn_if_baseline_broken(assessment, report)
+            return self._run_pipeline(
+                project,
+                goal,
+                mode,
+                flags,
+                assessment,
+                env_activate,
+                report,
+                confirm_plan=True,
+            )
+        except BudgetExceededError as e:
+            return self._halt_on_budget(project, report, e)
 
     def _choose_goal(self, recs: list) -> tuple[Optional[str], BuildMode]:
         """Present recommendations and return the chosen (goal, mode).
