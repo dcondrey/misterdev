@@ -1233,3 +1233,71 @@ def test_judge_generate_without_model_uses_generator():
     out = e._judge_generate(_Proj(client), "is it ok?")
     assert out == "PASS"
     assert client.critic_models == [None]
+
+
+# ----------------------------------------------------------------
+# Baseline-aware per-task test gate (incremental progress on a red baseline)
+# ----------------------------------------------------------------
+
+
+def test_gate_accepts_unit_cases():
+    g = MarkdownPlanExecutor._gate_accepts
+    assert g(True, "", 5) == (True, 0)            # green always passes
+    assert g(False, "# fail 3", 0) == (False, None)  # baseline 0 -> strict
+    assert g(False, "# tests 10\n# fail 3", 5) == (True, 3)   # improved
+    assert g(False, "# tests 10\n# fail 5", 5) == (True, 5)   # not worse
+    assert g(False, "# tests 10\n# fail 7", 5) == (False, 7)  # worse -> reject
+    assert g(False, "no countable output", 5) == (False, None)  # unparseable -> strict
+
+
+def _run_gated_task(td, test_command, baseline_failures):
+    task = _make_task()
+    task.processor_data["strategy"] = "surgical"
+    task.processor_data["test_command"] = test_command
+    task.files_to_modify = ["a.py"]
+    proj = _FakeProject(
+        td,
+        _edit_response("a.py", "x = 1\n"),
+        config_extra={
+            "orchestrator": {
+                "max_task_attempts": 1,
+                "llm_acceptance_judge": False,
+                "verify_acceptance": False,
+            }
+        },
+    )
+    proj.baseline_test_failures = baseline_failures
+    return MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
+
+
+def test_red_but_not_worse_task_completes():
+    # The headline fix: on a 5-failure baseline, a task that leaves 3 failing
+    # (an incremental fix) is accepted and completes instead of being discarded.
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "a.py").write_text("x = 0\n", encoding="utf-8")
+        result = _run_gated_task(
+            td, "echo '# tests 10'; echo '# fail 3'; exit 1", baseline_failures=5
+        )
+        assert result.status == "completed"
+
+
+def test_worse_than_baseline_task_does_not_complete():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "a.py").write_text("x = 0\n", encoding="utf-8")
+        result = _run_gated_task(
+            td, "echo '# tests 10'; echo '# fail 7'; exit 1", baseline_failures=5
+        )
+        assert result.status != "completed"
+
+
+def test_red_baseline_zero_is_strict():
+    # With no baseline failures (green project), a failing suite still rejects.
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "a.py").write_text("x = 0\n", encoding="utf-8")
+        result = _run_gated_task(
+            td, "echo '# tests 10'; echo '# fail 1'; exit 1", baseline_failures=0
+        )
+        assert result.status != "completed"

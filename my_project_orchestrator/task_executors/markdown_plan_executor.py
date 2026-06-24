@@ -644,6 +644,12 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         # the top of the next iteration (we only loop again when an attempt
         # failed) and at loop exit; recorded as a success at the success seams.
         pending_attempt: Optional[dict] = None
+        # Baseline full-suite failure count (from analysis), so a RED baseline
+        # doesn't reject every task. The test gate then accepts an attempt that
+        # leaves the suite no worse (failures <= baseline), letting a multi-failure
+        # project be reduced incrementally instead of demanding one task fix the
+        # whole suite. 0 (a green baseline) keeps the gate strictly green-only.
+        baseline_failures = int(getattr(project, "baseline_test_failures", 0) or 0)
         _selector = getattr(project, "model_selector", None)
         track_models = (
             _selector is not None
@@ -893,8 +899,23 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                 success, output = self._run_command(
                     project, test_command, timeout=test_timeout
                 )
-                if success:
-                    logger.info("Tests passed successfully.")
+                accepted, post_failures = self._gate_accepts(
+                    success, output, baseline_failures
+                )
+                if accepted:
+                    if success:
+                        logger.info("Tests passed successfully.")
+                    else:
+                        logger.info(
+                            f"Suite still red ({post_failures} failing) but not "
+                            f"worse than the baseline ({baseline_failures}); "
+                            "accepting incremental progress."
+                        )
+                        if post_failures < baseline_failures:
+                            # Ratchet the baseline down so a later task can't
+                            # re-introduce what this one fixed.
+                            project.baseline_test_failures = post_failures
+                            baseline_failures = post_failures
                     acc_ok, acc_output = self._verify_acceptance(
                         project,
                         task,
@@ -1668,6 +1689,30 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                 f"{past}\n\n"
             )
         return f"{history}{classified}\n\n{attributed_error}"
+
+    @staticmethod
+    def _gate_accepts(
+        success: bool, output: str, baseline_failures: int
+    ) -> Tuple[bool, Optional[int]]:
+        """Whether the test gate accepts this attempt, plus the parsed failure count.
+
+        A green suite always passes (returns ``(True, 0)``). On a RED baseline
+        (``baseline_failures`` > 0), an attempt that leaves the suite no worse —
+        parsed failures <= baseline — also passes, so a multi-failure project can
+        be reduced one task at a time instead of requiring a single task to make
+        the whole suite green. An unparseable red result stays strict (rejected),
+        since we will not accept on a number we cannot read.
+        """
+        if success:
+            return True, 0
+        if baseline_failures <= 0:
+            return False, None
+        from my_project_orchestrator.core.validator import _parse_test_counts
+
+        total, post = _parse_test_counts(output)
+        if total > 0 and post <= baseline_failures:
+            return True, post
+        return False, post if total > 0 else None
 
     def _verify_acceptance(
         self,

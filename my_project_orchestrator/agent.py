@@ -669,6 +669,13 @@ class ProjectOrchestrator:
         task executes.
         """
         _check_golden_config(project.config)
+        # Make the analysis baseline failure count available to the per-task test
+        # gate so a RED baseline doesn't reject every task: the gate then accepts a
+        # task that leaves the suite no worse, letting a multi-failure project be
+        # fixed incrementally. 0 on a green/unknown baseline keeps the gate strict.
+        project.baseline_test_failures = int(
+            getattr(assessment.health, "test_failures", 0) or 0
+        )
         # Record the pre-build HEAD so the optional goal-completion check can diff
         # the whole build's work (committed task commits + working tree) against
         # it. Best-effort: None outside a git repo or on error, which the check
