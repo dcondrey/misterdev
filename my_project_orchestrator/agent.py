@@ -676,6 +676,14 @@ class ProjectOrchestrator:
         project.baseline_test_failures = int(
             getattr(assessment.health, "test_failures", 0) or 0
         )
+        # Also surface the baseline failure OUTPUT so a fix task can see the real
+        # failures on its FIRST attempt (instead of editing blind and only learning
+        # what broke on retry). Empty on a green baseline.
+        project.baseline_test_output = (
+            getattr(assessment.health, "test_output", "") or ""
+            if project.baseline_test_failures
+            else ""
+        )
         # Record the pre-build HEAD so the optional goal-completion check can diff
         # the whole build's work (committed task commits + working tree) against
         # it. Best-effort: None outside a git repo or on error, which the check

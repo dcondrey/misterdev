@@ -1114,13 +1114,17 @@ class _CriticFakeLLMClient:
         return self._critic_verdict
 
 
-def _run_critic_task(td, file_path, content, critic_verdict, orchestrator_cfg, critic_cfg=None):
+def _run_critic_task(
+    td, file_path, content, critic_verdict, orchestrator_cfg, critic_cfg=None
+):
     task = _make_task()
     task.processor_data["strategy"] = "surgical"
     task.processor_data["test_command"] = "true"
     task.files_to_modify = [file_path]
     proj = _FakeProject(td, _edit_response(file_path, content))
-    proj.llm_client = _CriticFakeLLMClient(_edit_response(file_path, content), critic_verdict)
+    proj.llm_client = _CriticFakeLLMClient(
+        _edit_response(file_path, content), critic_verdict
+    )
     proj.config["orchestrator"] = orchestrator_cfg
     if critic_cfg is not None:
         proj.config["critic"] = critic_cfg
@@ -1242,10 +1246,10 @@ def test_judge_generate_without_model_uses_generator():
 
 def test_gate_accepts_unit_cases():
     g = MarkdownPlanExecutor._gate_accepts
-    assert g(True, "", 5) == (True, 0)            # green always passes
+    assert g(True, "", 5) == (True, 0)  # green always passes
     assert g(False, "# fail 3", 0) == (False, None)  # baseline 0 -> strict
-    assert g(False, "# tests 10\n# fail 3", 5) == (True, 3)   # improved
-    assert g(False, "# tests 10\n# fail 5", 5) == (True, 5)   # not worse
+    assert g(False, "# tests 10\n# fail 3", 5) == (True, 3)  # improved
+    assert g(False, "# tests 10\n# fail 5", 5) == (True, 5)  # not worse
     assert g(False, "# tests 10\n# fail 7", 5) == (False, 7)  # worse -> reject
     assert g(False, "no countable output", 5) == (False, None)  # unparseable -> strict
 
@@ -1301,3 +1305,55 @@ def test_red_baseline_zero_is_strict():
             td, "echo '# tests 10'; echo '# fail 1'; exit 1", baseline_failures=0
         )
         assert result.status != "completed"
+
+
+class _Capturing(_FakeLLMClient):
+    def __init__(self, response):
+        super().__init__(response)
+        self.prompts = []
+
+    def generate(self, prompt, system_prompt=""):
+        self.prompts.append(prompt)
+        return super().generate(prompt, system_prompt)
+
+
+def _seed_run(td, baseline_failures, baseline_output, error_template="fix the error"):
+    (td / "a.py").write_text("x = 0\n", encoding="utf-8")
+    task = _make_task()
+    task.processor_data["strategy"] = "surgical"
+    task.files_to_modify = ["a.py"]
+    proj = _FakeProject(td, _edit_response("a.py", "x = 1\n"))
+    proj.config["prompt_templates"]["error_correction_instruction"] = error_template
+    proj.llm_client = _Capturing(_edit_response("a.py", "x = 1\n"))
+    if baseline_failures:
+        proj.baseline_test_failures = baseline_failures
+        proj.baseline_test_output = baseline_output
+    MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
+    return proj.llm_client.prompts
+
+
+def test_first_attempt_uses_error_template_when_seeded():
+    # On a RED baseline, attempt 0 uses the error-correction template (which shows
+    # failures) instead of the plain task template — so the model isn't blind.
+    with tempfile.TemporaryDirectory() as td:
+        prompts = _seed_run(Path(td), 1, "FAIL: something broke")
+        assert prompts[0] == "fix the error"  # error_correction template selected
+
+
+def test_green_baseline_uses_task_template():
+    # No baseline failures -> attempt 0 uses the normal task template (unchanged).
+    with tempfile.TemporaryDirectory() as td:
+        prompts = _seed_run(Path(td), 0, "")
+        assert prompts[0] == "do the task"  # task_completion template
+
+
+def test_seed_content_reaches_prompt():
+    # The actual failure text is substituted into the first prompt.
+    with tempfile.TemporaryDirectory() as td:
+        prompts = _seed_run(
+            Path(td),
+            1,
+            "module does not provide export createRateLimiter",
+            error_template="FAILURES:\n{error_logs}",
+        )
+        assert "createRateLimiter" in prompts[0]

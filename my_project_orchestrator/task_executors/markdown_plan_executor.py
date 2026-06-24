@@ -604,7 +604,17 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         if not branch_name:
             snapshot = self._snapshot_files(project, target_files)
 
-        error_logs = None
+        # Seed the first attempt with the baseline test failures so a fix task
+        # debugs against the REAL errors from the start, not blindly. Empty on a
+        # green baseline -> error_logs stays None and attempt 0 uses the normal
+        # task template (unchanged behavior).
+        seed_output = getattr(project, "baseline_test_output", "") or ""
+        error_logs = (
+            f"The project's test suite is currently failing. Fix the failures "
+            f"below (focus on this task's files):\n{seed_output[:4000]}"
+            if seed_output.strip()
+            else None
+        )
         prior_errors: List[str] = []
         # Build the symbol graph now (idempotent, lazy): it isn't constructed at
         # project registration anymore, and task execution is the first consumer.
@@ -741,7 +751,10 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             }
 
             system_prompt = prompt_manager.format_prompt("system", context_dict)
-            if error_logs and attempt > 0:
+            # Use the error-correction template whenever failures are known —
+            # including a seeded attempt 0 on a red baseline — so the model always
+            # sees the actual failures to fix rather than editing blind.
+            if error_logs:
                 prompt = prompt_manager.format_prompt(
                     "error_correction_instruction", context_dict
                 )
