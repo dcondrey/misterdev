@@ -99,6 +99,19 @@ reports done.
   and logged but do not fail the build); set `block_on_goal_gap` to make an unmet
   goal fail. Daemon-threaded with a hard timeout; no goal/criteria/client, an
   unparseable verdict, or a timeout is a SKIP.
+- **Optional adversarial critic** (`orchestrator.adversarial_critic`, `critic.model`):
+  an **independent second component** that reviews each candidate edit *before it
+  is applied* and either approves it or returns concrete objections (misread
+  requirements, missed edge cases, leaks, swallowed errors, security holes). A
+  rejection feeds those objections back to the generator as the next attempt's
+  context — a generate→critique→regenerate loop. Independence is the point: set
+  `critic.model` to a **different** model so the reviewer doesn't share the
+  generator's blind spots (a same-model critic still runs but is weaker, and that
+  is logged). It is advisory, never authoritative — the build/test gates remain
+  ground truth, and `critic_max_rejections` (default 2) caps how many
+  regenerations it may force before deferring to those gates. Off by default and
+  byte-identical when off; daemon-threaded with a hard timeout, so no client / an
+  unparseable verdict / a timeout is a SKIP that lets the edit proceed.
 - **Spec-as-tests** (`orchestrator.spec_as_tests`, currently DEFERRED): a tested
   generator (`core/spec_tests.py`) turns a task's acceptance criteria into a
   failing pre-implementation test, but it is not yet wired into the build loop

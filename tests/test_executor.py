@@ -1073,3 +1073,133 @@ def test_is_truncated_helper():
     assert not _is_truncated("stop")
     assert not _is_truncated("")
     assert not _is_truncated(None)
+
+
+# ----------------------------------------------------------------
+# Adversarial critic (independent second component) — executor wiring
+# ----------------------------------------------------------------
+
+
+class _CriticFakeLLMClient:
+    """Generation goes through generate(); the critic uses generate_code(), so a
+    single client can drive the edit and return a separate critic verdict."""
+
+    def __init__(self, edit_response: str, critic_verdict: str):
+        self._edit_response = edit_response
+        self._critic_verdict = critic_verdict
+        self.generate_code_calls = 0
+        self.critic_models = []
+        self._active_model = None
+
+    @contextmanager
+    def track_task(self, task_id):
+        yield
+
+    @contextmanager
+    def with_model(self, model):
+        self._active_model = model
+        try:
+            yield self
+        finally:
+            self._active_model = None
+
+    def generate(self, prompt, system_prompt=""):
+        from my_project_orchestrator.llm.client import LLMResponse
+
+        return LLMResponse(content=self._edit_response, finish_reason="stop")
+
+    def generate_code(self, prompt, system_prompt=""):
+        self.generate_code_calls += 1
+        self.critic_models.append(self._active_model)
+        return self._critic_verdict
+
+
+def _run_critic_task(td, file_path, content, critic_verdict, orchestrator_cfg, critic_cfg=None):
+    task = _make_task()
+    task.processor_data["strategy"] = "surgical"
+    task.processor_data["test_command"] = "true"
+    task.files_to_modify = [file_path]
+    proj = _FakeProject(td, _edit_response(file_path, content))
+    proj.llm_client = _CriticFakeLLMClient(_edit_response(file_path, content), critic_verdict)
+    proj.config["orchestrator"] = orchestrator_cfg
+    if critic_cfg is not None:
+        proj.config["critic"] = critic_cfg
+    result = MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
+    return result, proj
+
+
+def test_critic_off_by_default_not_invoked():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        result, proj = _run_critic_task(
+            td,
+            "a.py",
+            "x = 1\n",
+            '{"approved": false, "objections": ["should not be consulted"]}',
+            {"max_task_attempts": 1},  # adversarial_critic absent -> off
+        )
+        assert result.status == "completed"
+        # Off path: the critic must never be called, so the rejection is ignored.
+        assert proj.llm_client.generate_code_calls == 0
+
+
+def test_critic_approve_applies_edit():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        result, proj = _run_critic_task(
+            td,
+            "a.py",
+            "x = 1\n",
+            '{"approved": true}',
+            {"max_task_attempts": 2, "adversarial_critic": True},
+        )
+        assert result.status == "completed"
+        assert proj.llm_client.generate_code_calls == 1
+        assert (td / "a.py").read_text().strip() == "x = 1"
+
+
+def test_critic_reject_then_defers_to_gates_after_bound():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        # Critic always rejects; max_rejections=1 means it rejects once (forcing a
+        # regenerate) then defers to the real gates, which pass -> completed.
+        result, proj = _run_critic_task(
+            td,
+            "a.py",
+            "x = 1\n",
+            '{"approved": false, "objections": ["missing edge case"]}',
+            {
+                "max_task_attempts": 3,
+                "adversarial_critic": True,
+                "critic_max_rejections": 1,
+            },
+        )
+        assert result.status == "completed"
+        # Consulted exactly once: the single allowed rejection, then it steps aside.
+        assert proj.llm_client.generate_code_calls == 1
+        assert (td / "a.py").read_text().strip() == "x = 1"
+
+
+def test_critic_uses_independent_model_from_config():
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        result, proj = _run_critic_task(
+            td,
+            "a.py",
+            "x = 1\n",
+            '{"approved": true}',
+            {"max_task_attempts": 2, "adversarial_critic": True},
+            critic_cfg={"model": "independent/critic-model"},
+        )
+        assert result.status == "completed"
+        # The critique ran under the configured INDEPENDENT model, not the
+        # generator's own — the whole point of the second component.
+        assert proj.llm_client.critic_models == ["independent/critic-model"]
+
+
+def test_build_critic_error_context_lists_objections():
+    e = MarkdownPlanExecutor()
+    ctx = e._build_critic_error_context(["no null check", "leaks a handle"])
+    assert "no null check" in ctx
+    assert "leaks a handle" in ctx
+    assert "independent reviewer" in ctx.lower()

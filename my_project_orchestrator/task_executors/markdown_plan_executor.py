@@ -618,6 +618,18 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         # edit isn't applied-then-orphaned by staging only the declared files.
         edited_files: set = set()
 
+        # Optional adversarial critic (independent second component): reviews each
+        # candidate edit before it is applied and can force a regeneration with
+        # concrete objections. Off by default. Bounded so it defers to the real
+        # gates after a few rejections rather than starving the attempt loop.
+        critic_enabled = get_setting(
+            project.config, "orchestrator", "adversarial_critic"
+        )
+        critic_max_rejections = get_setting(
+            project.config, "orchestrator", "critic_max_rejections"
+        )
+        critic_rejections = 0
+
         # The most recent attempt awaiting an outcome. Recorded as a failure at
         # the top of the next iteration (we only loop again when an attempt
         # failed) and at loop exit; recorded as a success at the success seams.
@@ -813,6 +825,26 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                         f"Detected: {tamper}"
                     )
                     continue
+
+                # Independent adversarial critique BEFORE applying. A rejection
+                # feeds concrete objections back as the next attempt's context
+                # (regenerate), bounded by critic_max_rejections so an
+                # over-zealous critic can't starve the loop — after that the edit
+                # flows to the authoritative build/test gates. SKIP/APPROVE fall
+                # through and apply as normal; off path is unchanged.
+                if critic_enabled and critic_rejections < critic_max_rejections:
+                    verdict = self._run_edit_critic(project, task, edits)
+                    if verdict.rejected:
+                        critic_rejections += 1
+                        logger.warning(
+                            f"Adversarial critic rejected the edit on attempt "
+                            f"{attempt + 1} ({critic_rejections}/"
+                            f"{critic_max_rejections}): {verdict.objections}"
+                        )
+                        error_logs = self._build_critic_error_context(
+                            verdict.objections
+                        )
+                        continue
 
                 self._apply_edits(project, edits)
                 self._run_formatters(project, edits.keys())
@@ -1713,6 +1745,42 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             f"{history}### Acceptance criterion not met\n"
             f"The build and tests passed, but the task's acceptance criterion "
             f"was not satisfied:\n{task.acceptance_criteria}\n\n{classified}"
+        )
+
+    def _run_edit_critic(self, project: Project, task: Task, edits: Dict[str, str]):
+        """Run the independent adversarial critic over a candidate edit.
+
+        Reads the (optional) independent ``critic.model`` and timeout from config
+        and delegates to the never-raising, timeout-bounded gate. Returns a
+        :class:`~my_project_orchestrator.core.critic.CritiqueVerdict`; a SKIP
+        (no client, unparseable, timeout) is treated by the caller as "proceed".
+        """
+        from my_project_orchestrator.core.critic import run_edit_critic
+
+        critic_cfg = project.config.get("critic") or {}
+        timeout = get_setting(project.config, "orchestrator", "critic_timeout")
+        return run_edit_critic(
+            task.description,
+            task.acceptance_criteria,
+            edits,
+            llm_client=project.llm_client,
+            critic_model=critic_cfg.get("model"),
+            timeout=timeout,
+        )
+
+    @staticmethod
+    def _build_critic_error_context(objections: List[str]) -> str:
+        """Format critic objections into the same retry context shape as a gate.
+
+        The next attempt sees the concrete problems an independent reviewer found
+        in the rejected change and is told to address each before resubmitting.
+        """
+        listed = "\n".join(f"- {o}" for o in objections)
+        return (
+            "An independent reviewer rejected your previous change BEFORE it was "
+            "applied. Each objection below is a concrete defect — address every "
+            "one in your next attempt, then resubmit the corrected edit:\n"
+            f"{listed}"
         )
 
     def _validate_edit_paths(

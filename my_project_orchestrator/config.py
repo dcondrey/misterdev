@@ -248,6 +248,21 @@ class OrchestratorSettings:
     # Default 2: a pure-win correctness fix that costs nothing on untruncated
     # responses and recovers files up to ~3x the single-shot output cap.
     max_continuations: int = 2
+    # Optional adversarial edit critic (independent second component). When on, a
+    # SECOND component reviews each CANDIDATE edit before it is applied — ideally
+    # a DIFFERENT model (``critic.model``) so it does not inherit the generator's
+    # blind spots — and either approves it or returns concrete objections that are
+    # fed back to the generator for the next attempt. Off by default and purely
+    # additive: when off the executor path is byte-identical to today. Best-effort
+    # and timeout-bounded (daemon thread); no client, an unparseable verdict, or a
+    # timeout is a SKIP that lets the edit proceed to the real gates. The critic is
+    # advisory, never authoritative — the build/test gates remain the ground
+    # truth; ``critic_max_rejections`` caps how many regenerations it may force per
+    # task before deferring to those gates. The independent model id lives under
+    # the top-level ``critic.model`` key.
+    adversarial_critic: bool = False
+    critic_timeout: int = 60
+    critic_max_rejections: int = 2
 
 
 PROMPT_TEMPLATES = {
@@ -312,6 +327,12 @@ DEFAULT_CONFIG = {
     # ("none"|"default", container egress control). Open dict like ``runtime``,
     # not schema-validated, so the pattern list and knobs stay free-form.
     "governance": {"network": "default"},
+    # Adversarial-critic spec (off unless orchestrator.adversarial_critic is
+    # true): ``model`` (an INDEPENDENT critic model id — different from the
+    # generator so it doesn't share its blind spots). Empty leaves the critic on
+    # the generator's own model with adversarial framing (weaker independence,
+    # logged). Open dict like ``runtime``, not schema-validated.
+    "critic": {},
     "prompt_templates": PROMPT_TEMPLATES,
     "build": asdict(BuildSettings()),
     "orchestrator": asdict(OrchestratorSettings()),

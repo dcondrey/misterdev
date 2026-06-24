@@ -141,6 +141,21 @@ environment:
 #   block_on_goal_gap: false   # true => a GAP verdict fails the build
 #   goal_check_timeout: 60
 
+# Adversarial critic (opt-in, off by default). An INDEPENDENT second component
+# reviews each candidate edit BEFORE it is applied; a rejection feeds concrete
+# objections back to the generator for the next attempt. Set critic.model to a
+# DIFFERENT model than the generator so the reviewer doesn't share its blind
+# spots (a same-model critic still runs but is weaker, and that is logged). It is
+# advisory — the build/test gates remain authoritative; critic_max_rejections
+# caps how many regenerations it may force before deferring to those gates.
+# Daemon thread + hard timeout; no client / unparseable verdict / timeout = SKIP.
+# orchestrator:
+#   adversarial_critic: true
+#   critic_max_rejections: 2   # regenerations the critic may force before deferring
+#   critic_timeout: 60
+# critic:
+#   model: "anthropic/claude-opus-4-8"   # independent reviewer model (optional)
+
 # Mutation-score gate (opt-in, off by default). Runs the project's configured
 # mutation-testing command and asserts the parsed score meets a floor — proving
 # the suite kills injected faults, not just passes. Tool-agnostic: supply any
