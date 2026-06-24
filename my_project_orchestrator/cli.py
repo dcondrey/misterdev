@@ -12,6 +12,73 @@ logger = setup_logger("cli")
 console = Console()
 
 
+def _print_report(project_path: str) -> None:
+    """Render the aggregated cost/model/audit summary for a project."""
+    from my_project_orchestrator.core.report_view import collect
+
+    data = collect(project_path)
+    rpt = data["latest_report"]
+    if rpt:
+        cost = rpt.get("llm_cost", 0.0) or 0.0
+        console.print(
+            f"[bold]Latest build[/] — {rpt.get('mode', '?')} on "
+            f"{rpt.get('project', '?')}  "
+            f"[{'green' if rpt.get('validation_passed') else 'red'}]"
+            f"{'PASSED' if rpt.get('validation_passed') else 'not green'}[/]"
+        )
+        console.print(
+            f"  ${cost:.4f} over {rpt.get('llm_calls', 0)} call(s), "
+            f"{rpt.get('llm_tokens', 0):,} tokens · "
+            f"completed {len(rpt.get('completed', []))}, "
+            f"failed {len(rpt.get('failed', []))}, "
+            f"deferred {len(rpt.get('deferred', []))}"
+        )
+    else:
+        console.print("[dim]No saved build report found.[/]")
+
+    models = data["models"]
+    if models:
+        table = Table(title="\nModel performance (from the ledger)")
+        table.add_column("Model", style="cyan")
+        table.add_column("Attempts", justify="right")
+        table.add_column("Pass rate", justify="right")
+        table.add_column("First-try", justify="right")
+        table.add_column("Avg $/success", justify="right")
+        for m in models:
+            table.add_row(
+                m["model"],
+                str(m["attempts"]),
+                f"{m['success_rate'] * 100:.0f}%",
+                f"{m['first_try_rate'] * 100:.0f}%",
+                f"${m['avg_cost']:.4f}",
+            )
+        console.print(table)
+    else:
+        console.print("[dim]No model ledger yet.[/]")
+
+    audit = data["audit"]
+    if audit["total_events"]:
+        cmds = audit["commands"]
+        gov = audit["governance"]
+        console.print(
+            f"\n[bold]Audit trail[/] — {audit['total_events']} event(s): "
+            f"{cmds['ok']} command(s) ok / {cmds['failed']} failed, "
+            f"{audit['edits']['total']} edit(s)"
+            + (
+                f", {gov['escalated']} governance escalation(s)"
+                if gov["escalated"]
+                else ""
+            )
+        )
+        top = sorted(
+            audit["edits"]["by_file"].items(), key=lambda kv: kv[1], reverse=True
+        )[:5]
+        for path, n in top:
+            console.print(f"  [dim]{n}×[/] {path}")
+    else:
+        console.print("[dim]No audit trail yet.[/]")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Project Orchestrator CLI")
     parser.add_argument(
@@ -29,6 +96,15 @@ def main():
     # 'status' command
     status_parser = subparsers.add_parser("status", help="Show status of a project")
     status_parser.add_argument(
+        "project_path", type=str, nargs="?", default=".", help="Path to the project"
+    )
+
+    # 'report' command (aggregated cost/audit/model view)
+    report_parser = subparsers.add_parser(
+        "report",
+        help="Summarize cost, model performance, and the audit trail for a project",
+    )
+    report_parser.add_argument(
         "project_path", type=str, nargs="?", default=".", help="Path to the project"
     )
 
@@ -174,6 +250,8 @@ def main():
                         task["id"], f"[{style}]{task['status']}[/]", task["description"]
                     )
                 console.print(table)
+    elif args.command == "report":
+        _print_report(args.project_path)
     elif args.command == "run":
         if args.task:
             logger.info(

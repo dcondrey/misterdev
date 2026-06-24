@@ -54,6 +54,7 @@ def _decay_factor(elapsed: float, half_life: float) -> float:
         return 1.0
     return 0.5 ** (elapsed / half_life)
 
+
 # Field separator for the composite stat key. Unit-separator char: never
 # appears in a model id, category, or complexity.
 _SEP = "␟"
@@ -278,3 +279,8 @@ class ModelLedger:
     def known_models(self) -> List[str]:
         with self._lock:
             return sorted({s.model for s in self._stats.values()})
+
+    def all_stats(self) -> List[ModelStat]:
+        """A snapshot of every stat cell (for reporting/inspection)."""
+        with self._lock:
+            return list(self._stats.values())

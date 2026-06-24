@@ -171,7 +171,14 @@ project-orchestrator scan ./projects                  # discover & register
 project-orchestrator build ./projects/my-app "add OAuth2 login"
 project-orchestrator build ./projects/my-app --dry-run "..."   # plan only
 project-orchestrator                                  # interactive planning
+project-orchestrator report ./projects/my-app         # cost + model + audit summary
 ```
+
+`report` aggregates the project's `.orchestrator/` artifacts into one view: the
+latest build's cost/tokens/tasks, per-model performance from the ledger (attempts,
+gate-pass rate, first-try rate, mean $/success — so a model choice is legible),
+and the audit trail (commands ok/failed, edits per file, governance escalations).
+Read-only; nothing is re-run.
 
 ---
 
