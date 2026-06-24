@@ -107,7 +107,11 @@ reports done.
   context — a generate→critique→regenerate loop. Independence is the point: set
   `critic.model` to a **different** model so the reviewer doesn't share the
   generator's blind spots (a same-model critic still runs but is weaker, and that
-  is logged). It is advisory, never authoritative — the build/test gates remain
+  is logged). It reviews the **unified diff** of each change (what actually
+  changed), and `critic.panel` > 1 runs that many reviewers concurrently through
+  different perspective lenses (correctness / edge-cases / safety / requirements),
+  rejecting only on a **majority** so a lone false rejection can't block. It is
+  advisory, never authoritative — the build/test gates remain
   ground truth, and `critic_max_rejections` (default 2) caps how many
   regenerations it may force before deferring to those gates. Off by default and
   byte-identical when off; daemon-threaded with a hard timeout, so no client / an

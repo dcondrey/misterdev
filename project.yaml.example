@@ -155,6 +155,14 @@ environment:
 #   critic_timeout: 60
 # critic:
 #   model: "anthropic/claude-opus-4-8"   # independent reviewer model (optional)
+#   panel: 3                             # reviewers run concurrently; majority rejects
+
+# Independent JUDGE model for the post-build goal-completion check and the LLM
+# acceptance judge (distinct from critic.model, which is edit-time). Optional;
+# set to a model different from the generator so those judgments don't share its
+# blind spots. Unset => each judge runs on the generator's own model.
+# judge:
+#   model: "anthropic/claude-opus-4-8"
 
 # Mutation-score gate (opt-in, off by default). Runs the project's configured
 # mutation-testing command and asserts the parsed score meets a floor — proving

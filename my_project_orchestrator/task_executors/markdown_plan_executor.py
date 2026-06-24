@@ -1777,8 +1777,39 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             edits,
             llm_client=project.llm_client,
             critic_model=critic_cfg.get("model"),
+            candidate_diffs=self._critic_diffs(project, edits),
+            panel=critic_cfg.get("panel", 1),
             timeout=timeout,
         )
+
+    @staticmethod
+    def _critic_diffs(project: Project, edits: Dict[str, str]) -> Dict[str, str]:
+        """Unified diff of each candidate edit vs its current on-disk content.
+
+        Lets the critic review WHAT CHANGED (with a little context) instead of
+        whole files — sharper and far smaller for a small edit to a large file.
+        A new file (no original) diffs against empty, i.e. all-additions. Reading
+        the original is best-effort: an unreadable file falls back to empty.
+        """
+        import difflib
+
+        diffs: Dict[str, str] = {}
+        for path, new_content in edits.items():
+            fp = project.path / path
+            try:
+                original = fp.read_text(encoding="utf-8") if fp.exists() else ""
+            except OSError:
+                original = ""
+            diff = "".join(
+                difflib.unified_diff(
+                    original.splitlines(keepends=True),
+                    (new_content or "").splitlines(keepends=True),
+                    fromfile=f"a/{path}",
+                    tofile=f"b/{path}",
+                )
+            )
+            diffs[path] = diff or "(no textual change)"
+        return diffs
 
     @staticmethod
     def _build_critic_error_context(objections: List[str]) -> str:

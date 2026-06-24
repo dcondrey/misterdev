@@ -9,6 +9,7 @@ from my_project_orchestrator.core.critic import (
     _parse_verdict,
     _render_candidate,
     _default_critic_call,
+    _aggregate_panel,
 )
 
 
@@ -110,7 +111,7 @@ def test_render_candidate_includes_paths_sorted():
 def test_render_candidate_truncates_large_files():
     big = {"big.py": "x" * 50000}
     out = _render_candidate(big)
-    assert "file truncated" in out
+    assert "truncated" in out
     assert len(out) < 50000
 
 
@@ -183,3 +184,96 @@ def test_critic_model_set_but_client_cannot_switch_still_runs():
 def test_verdict_repr_is_compact():
     v = CritiqueVerdict(REJECTED, objections=["a", "b"])
     assert "rejected" in repr(v) and "2" in repr(v)
+
+
+# --- diff-aware rendering ---------------------------------------------------
+
+
+def test_render_candidate_uses_diffs_when_given():
+    diffs = {"a.py": "@@ -1 +1 @@\n-x = 1\n+x = 2\n"}
+    out = _render_candidate({"a.py": "x = 2\n"}, diffs)
+    assert "unified diffs" in out
+    assert "+x = 2" in out
+
+
+def test_render_candidate_falls_back_to_content():
+    out = _render_candidate({"a.py": "x = 1\n"})
+    assert "full content" in out
+    assert "x = 1" in out
+
+
+def test_run_edit_critic_with_diffs_passes_them_to_call():
+    seen = {}
+
+    def call(prompt):
+        seen["prompt"] = prompt
+        return '{"approved": true}'
+
+    res = run_edit_critic(
+        "t",
+        "c",
+        {"a.py": "x = 2\n"},
+        critic_call=call,
+        candidate_diffs={"a.py": "@@ -1 +1 @@\n-x = 1\n+x = 2\n"},
+    )
+    assert res.status == APPROVED
+    assert "+x = 2" in seen["prompt"]
+
+
+# --- panel aggregation ------------------------------------------------------
+
+
+def test_aggregate_panel_majority_rejects():
+    verdicts = [
+        CritiqueVerdict(REJECTED, objections=["bug A"]),
+        CritiqueVerdict(REJECTED, objections=["bug B"]),
+        CritiqueVerdict(APPROVED),
+    ]
+    out = _aggregate_panel(verdicts)
+    assert out.status == REJECTED
+    assert set(out.objections) == {"bug A", "bug B"}
+
+
+def test_aggregate_panel_tie_approves():
+    verdicts = [CritiqueVerdict(REJECTED, objections=["x"]), CritiqueVerdict(APPROVED)]
+    assert _aggregate_panel(verdicts).status == APPROVED
+
+
+def test_aggregate_panel_all_skip_is_skip():
+    assert _aggregate_panel([CritiqueVerdict(SKIP), CritiqueVerdict(SKIP)]).status == SKIP
+
+
+def test_aggregate_panel_dedupes_objections():
+    verdicts = [
+        CritiqueVerdict(REJECTED, objections=["dup", "a"]),
+        CritiqueVerdict(REJECTED, objections=["dup", "b"]),
+    ]
+    out = _aggregate_panel(verdicts)
+    assert out.objections.count("dup") == 1
+
+
+def test_panel_runs_multiple_members_and_rejects_on_majority():
+    # Three members, all reject (the fake returns a rejection regardless of lens).
+    calls = {"n": 0}
+
+    def call(prompt):
+        calls["n"] += 1
+        return '{"approved": false, "objections": ["leak"]}'
+
+    res = run_edit_critic("t", "c", {"a.py": "x"}, critic_call=call, panel=3)
+    assert res.status == REJECTED
+    assert calls["n"] == 3
+
+
+def test_panel_member_error_is_abstention_not_failure():
+    # Two reject, one raises -> abstention -> majority still rejects.
+    state = {"n": 0}
+
+    def call(prompt):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise RuntimeError("flaky member")
+        return '{"approved": false, "objections": ["bug"]}'
+
+    res = run_edit_critic("t", "c", {"a.py": "x"}, critic_call=call, panel=3)
+    assert res.status == REJECTED
