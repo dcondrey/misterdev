@@ -41,7 +41,10 @@ from my_project_orchestrator.core.change_tracker import ChangeTracker
 from my_project_orchestrator.core.report import BuildReport
 from my_project_orchestrator.core.project import Project
 from my_project_orchestrator.core.models import Task
-from my_project_orchestrator.analyzers.project_analyzer import analyze_project
+from my_project_orchestrator.analyzers.project_analyzer import (
+    analyze_project,
+    has_test_files,
+)
 from my_project_orchestrator.core.advisor import recommend_work
 from my_project_orchestrator.llm.client import BudgetExceededError
 from my_project_orchestrator.task_executors.markdown_plan_executor import (
@@ -122,6 +125,29 @@ def _warn_if_baseline_broken(assessment, report) -> None:
     console.print(f"[red]Baseline build is failing.[/] {head[:200]}")
     report.key_decisions.append(
         "WARNING: baseline build was failing at start; gates degraded for this run"
+    )
+
+
+def _warn_if_no_test_gate(assessment, project, report) -> None:
+    """Loudly surface that a run will proceed with NO test gate while the project
+    has a test suite — the safety hole that let an ungated run rewrite existing
+    tests while reporting build OK. Detection covers most layouts; this catches
+    the residual case where a suite exists but no command was resolved.
+    """
+    if assessment.structure.test_command:
+        return
+    if not has_test_files(project.path):
+        return
+    msg = (
+        "No test command was detected, but this project HAS test files. The run "
+        "will proceed with only a build/syntax gate, so existing tests will NOT "
+        "protect against regressions and edits to them will not be caught. Set "
+        "`test_command` in project.yaml to enable the test gate."
+    )
+    logger.warning(msg)
+    console.print(f"[yellow]No test gate:[/] {msg}")
+    report.degraded_subsystems.append(
+        "No test gate: test files exist but no test command was detected"
     )
 
 
@@ -465,6 +491,7 @@ class ProjectOrchestrator:
             report = BuildReport(mode, project.name, assessment, start_time)
             report.health_before = assessment.health.model_copy()
             _warn_if_baseline_broken(assessment, report)
+            _warn_if_no_test_gate(assessment, project, report)
 
             return self._run_pipeline(
                 project, prompt, mode, flags, assessment, env_activate, report
@@ -545,6 +572,7 @@ class ProjectOrchestrator:
             report = BuildReport(mode, project.name, assessment, start_time)
             report.health_before = assessment.health.model_copy()
             _warn_if_baseline_broken(assessment, report)
+            _warn_if_no_test_gate(assessment, project, report)
             return self._run_pipeline(
                 project,
                 goal,

@@ -227,20 +227,21 @@ def detect_test_command(project_path: Path) -> Optional[str]:
     blind (reporting tests=none on a project with a passing suite).
     """
     p = project_path
-    uv_lock = (p / "uv.lock").exists()
-    has_pytest = (
-        (p / "tests").is_dir()
-        or (p / "pytest.ini").exists()
-        or (p / "conftest.py").exists()
-        or _file_mentions(p / "pyproject.toml", "pytest")
-        or _file_mentions(p / "setup.cfg", "pytest")
-    )
-    if has_pytest:
-        return "uv run pytest -q" if uv_lock else "pytest -q"
-    if _json_has_test_script(p / "package.json"):
-        return "npm test"
+    # Python FIRST, but only on a genuine Python signal — a bare ``tests/`` dir
+    # is NOT pytest (Rust uses tests/ for integration tests, Node for its own
+    # runner), so it must not shadow the language-specific runners below.
+    if _has_python_tests(p):
+        return "uv run pytest -q" if (p / "uv.lock").exists() else "pytest -q"
     if (p / "Cargo.toml").exists():
         return "cargo test"
+    # Node: an explicit `test` script wins; otherwise the built-in node test
+    # runner over a discoverable *.test.* suite (the case that, when missed, left
+    # a real suite ungated and silently rewritten).
+    if (p / "package.json").exists():
+        if _json_has_test_script(p / "package.json"):
+            return "npm test"
+        if _has_node_tests(p):
+            return "node --test"
     if (p / "Package.swift").exists():
         return "swift test"
     # .NET: a solution runs every test project; a bare test csproj runs itself.
@@ -251,7 +252,69 @@ def detect_test_command(project_path: Path) -> Optional[str]:
         return "meson test -C build"
     if (p / "CMakeLists.txt").exists():
         return "ctest --test-dir build --output-on-failure"
+    if (p / "go.mod").exists():
+        return "go test ./..."
     return None
+
+
+def _has_python_tests(p: Path) -> bool:
+    """True when ``p`` looks like a Python project with a pytest-runnable suite.
+
+    Explicit pytest config is definitive. A ``tests/`` directory only counts when
+    it holds Python test files OR the project is clearly Python (uv.lock /
+    pyproject.toml / setup.py / setup.cfg) — so a Node or Rust project that merely
+    uses ``tests/`` for its own framework is never misrouted to pytest.
+    """
+    if (
+        (p / "pytest.ini").exists()
+        or (p / "conftest.py").exists()
+        or _file_mentions(p / "pyproject.toml", "pytest")
+        or _file_mentions(p / "setup.cfg", "pytest")
+    ):
+        return True
+    is_python_project = (
+        (p / "uv.lock").exists()
+        or (p / "pyproject.toml").exists()
+        or (p / "setup.py").exists()
+        or (p / "setup.cfg").exists()
+    )
+    for d in (p / "tests", p / "test"):
+        if d.is_dir():
+            if any(d.rglob("test_*.py")) or any(d.rglob("*_test.py")):
+                return True
+            if is_python_project:
+                return True
+    return False
+
+
+def _has_node_tests(p: Path) -> bool:
+    """True when a ``test/``/``tests/`` dir holds node-runner test files.
+
+    Looks only for the unambiguous ``*.test.{js,mjs,cjs}`` naming the built-in
+    ``node --test`` runner discovers, and only inside conventional test dirs so
+    ``node_modules`` is never scanned.
+    """
+    for d in (p / "test", p / "tests"):
+        if d.is_dir():
+            for pat in ("*.test.js", "*.test.mjs", "*.test.cjs"):
+                if any(d.rglob(pat)):
+                    return True
+    return False
+
+
+def has_test_files(project_path: Path) -> bool:
+    """True when the project appears to contain a test suite of any kind.
+
+    Used to warn when a build is about to run with no test gate even though tests
+    exist — the safety hole behind a real run that rewrote an ungated suite.
+    """
+    p = project_path
+    if _has_python_tests(p) or _has_node_tests(p):
+        return True
+    for d in (p / "tests", p / "test"):
+        if d.is_dir() and any(d.rglob("*")):
+            return True
+    return False
 
 
 def detect_build_command(project_path: Path) -> Optional[str]:

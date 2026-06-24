@@ -1117,6 +1117,126 @@ def test_detect_test_command_npm_and_cargo_and_none():
         assert detect_test_command(Path(td)) is None
 
 
+def test_detect_test_command_node_test_runner():
+    # The rideshare bug: package.json with no `test` script but a *.test.js suite
+    # must resolve to `node --test`, not be left ungated.
+    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "package.json").write_text('{"type": "module"}', encoding="utf-8")
+        (root / "tests" / "unit").mkdir(parents=True)
+        (root / "tests" / "unit" / "crypto.test.js").write_text("", encoding="utf-8")
+        assert detect_test_command(root) == "node --test"
+
+
+def test_detect_test_command_rust_with_tests_dir_uses_cargo():
+    # Regression: Rust uses tests/ for integration tests; a bare tests/ dir must
+    # NOT shadow cargo with pytest.
+    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "Cargo.toml").write_text("[package]\n", encoding="utf-8")
+        (root / "tests").mkdir()
+        (root / "tests" / "integration.rs").write_text("", encoding="utf-8")
+        assert detect_test_command(root) == "cargo test"
+
+
+def test_detect_test_command_bare_tests_dir_is_not_pytest():
+    # A tests/ dir with no Python signal and no python test files -> not pytest.
+    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "tests").mkdir()
+        (root / "tests" / "data.txt").write_text("", encoding="utf-8")
+        assert detect_test_command(root) is None
+
+
+def test_detect_test_command_pytest_from_py_test_files():
+    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "tests").mkdir()
+        (root / "tests" / "test_foo.py").write_text(
+            "def test_x():\n    pass\n", encoding="utf-8"
+        )
+        assert detect_test_command(root) == "pytest -q"
+
+
+def test_detect_test_command_go():
+    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "go.mod").write_text("module x\n", encoding="utf-8")
+        assert detect_test_command(root) == "go test ./..."
+
+
+def test_has_test_files():
+    from my_project_orchestrator.analyzers.project_analyzer import has_test_files
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        assert has_test_files(root) is False
+        (root / "tests").mkdir()
+        (root / "tests" / "x.test.js").write_text("", encoding="utf-8")
+        assert has_test_files(root) is True
+
+
+def test_warn_if_no_test_gate_records_when_tests_exist_without_command():
+    import types
+    from my_project_orchestrator.agent import _warn_if_no_test_gate
+    from my_project_orchestrator.core.report import BuildReport
+    from my_project_orchestrator.core.assessment import (
+        ProjectAssessment,
+        HealthCheck,
+        ProjectStructure,
+        TechnicalDebt,
+        RiskAssessment,
+    )
+    from my_project_orchestrator.core.modes import BuildMode
+    from datetime import datetime, timezone
+
+    def _assessment(test_command):
+        return ProjectAssessment(
+            structure=ProjectStructure(
+                project_type="web-app",
+                languages=["javascript"],
+                test_command=test_command,
+            ),
+            health=HealthCheck(builds=True),
+            tech_debt=TechnicalDebt(score=10),
+            risk=RiskAssessment(level="low"),
+        )
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "tests").mkdir()
+        (root / "tests" / "a.test.js").write_text("", encoding="utf-8")
+        proj = types.SimpleNamespace(path=root)
+        # No test command + tests exist -> recorded as a degraded subsystem.
+        rep = BuildReport(
+            BuildMode.SMART,
+            "x",
+            _assessment(None),
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        _warn_if_no_test_gate(_assessment(None), proj, rep)
+        assert any("No test gate" in d for d in rep.degraded_subsystems)
+        # Command present -> no warning.
+        rep2 = BuildReport(
+            BuildMode.SMART,
+            "x",
+            _assessment("node --test"),
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        _warn_if_no_test_gate(_assessment("node --test"), proj, rep2)
+        assert not any("No test gate" in d for d in rep2.degraded_subsystems)
+
+
 def test_analyze_project_fills_test_command_when_llm_returns_null():
     """The real regression: LLM left test_command null -> tests=none. The
     deterministic fallback must populate the assessment so the suite runs."""
