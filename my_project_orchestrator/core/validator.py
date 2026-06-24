@@ -115,8 +115,10 @@ def _audit_command(audit: Optional[object], cmd: str, ok: bool, cwd: Path) -> No
         return
     try:
         audit.record_command(cmd, ok=ok, cwd=str(cwd))
-    except Exception:  # audit is observability; it must never break execution
-        pass
+    except Exception as e:  # audit is observability; it must never break execution
+        # Swallow so a broken audit sink can't fail a command, but leave a trace
+        # so silently-vanishing audit records are diagnosable.
+        logger.debug(f"Audit record_command failed (ignored): {e}")
 
 
 def run_validation(

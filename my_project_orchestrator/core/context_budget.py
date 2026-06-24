@@ -48,8 +48,10 @@ def estimate_tokens(text: str) -> int:
     if enc is not None:
         try:
             return max(1, len(enc.encode(text, disallowed_special=())))
-        except Exception:  # pragma: no cover - encoder edge cases
-            pass
+        except Exception as e:  # pragma: no cover - encoder edge cases
+            # Fall back to the heuristic, but leave a trace: a systematic encoder
+            # failure would otherwise silently mis-size every prompt.
+            logger.debug(f"tiktoken encode failed; using char heuristic: {e}")
     return max(1, int(len(text) / CHARS_PER_TOKEN))
 
 
