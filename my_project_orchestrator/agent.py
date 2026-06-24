@@ -1075,6 +1075,61 @@ class ProjectOrchestrator:
                 f"Regression from {culprit} auto-reverted (bisect)"
             )
 
+    def _suite_failures(
+        self,
+        project: Project,
+        executor: MarkdownPlanExecutor,
+        test_cmd: str,
+        timeout: int,
+    ) -> Optional[int]:
+        """Full-suite failure count: 0 when green, the parsed count when red, or
+        None when the count can't be parsed (caller then can't count-compare)."""
+        from my_project_orchestrator.core.validator import _parse_test_counts
+
+        ok, output = executor._run_command(project, test_cmd, timeout=timeout)
+        if ok:
+            return 0
+        total, failures = _parse_test_counts(output)
+        return failures if total > 0 else None
+
+    def _integration_gate_count(
+        self,
+        project: Project,
+        executor: MarkdownPlanExecutor,
+        test_cmd: str,
+        wave_tasks: list[Task],
+        timeout: int,
+        baseline_failures: int,
+    ) -> list[str]:
+        """Count-mode gate for a RED baseline: revert wave commits (newest first)
+        only when the wave RAISED the full-suite failure count above the baseline.
+
+        This closes the gap where, with the binary gate disabled by a red
+        baseline, a task gated on its own scoped tests could worsen the overall
+        suite and still commit. An unparseable post-wave count is left alone (we
+        do not revert on a number we can't read).
+        """
+        after = self._suite_failures(project, executor, test_cmd, timeout)
+        if after is None or after <= baseline_failures:
+            return []
+        logger.warning(
+            f"Integration gate (count): failures rose {baseline_failures} -> "
+            f"{after}; reverting wave commits until restored."
+        )
+        commits = []
+        for t in wave_tasks:
+            sha = executor.find_task_commit(project, t.id)
+            if sha:
+                commits.append((t.id, sha))
+        reverted: list[str] = []
+        for tid, sha in reversed(commits):
+            if executor.revert_task_commit(project, sha):
+                reverted.append(tid)
+            now = self._suite_failures(project, executor, test_cmd, timeout)
+            if now is not None and now <= baseline_failures:
+                break
+        return reverted
+
     def _integration_gate(
         self,
         project: Project,
@@ -1082,14 +1137,21 @@ class ProjectOrchestrator:
         test_cmd: str,
         wave_tasks: list[Task],
         timeout: int,
+        baseline_failures: int = 0,
     ) -> list[str]:
         """Run the full suite after a wave; revert task commits that regressed it.
 
         Returns the task_ids whose commits were reverted (empty if the suite
         still passes). Bisects to the single culprit when possible; if that
         can't isolate it or the tree is still red afterward, reverts the
-        remaining wave commits (newest first) to restore a green baseline.
+        remaining wave commits (newest first) to restore a green baseline. When
+        ``baseline_failures`` > 0 (a red baseline that could still be counted),
+        runs in count mode instead — reverting only a wave that raises the count.
         """
+        if baseline_failures > 0:
+            return self._integration_gate_count(
+                project, executor, test_cmd, wave_tasks, timeout, baseline_failures
+            )
         ok, _ = executor._run_command(project, test_cmd, timeout=timeout)
         if ok:
             return []
@@ -1187,15 +1249,32 @@ class ProjectOrchestrator:
             and bool(test_cmd)
             and (Path(project.path) / ".git").exists()
         )
+        baseline_failures = 0
         if gate_active:
-            baseline_ok, _ = executor._run_command(
+            baseline_ok, baseline_out = executor._run_command(
                 project, test_cmd, timeout=test_timeout
             )
             if not baseline_ok:
-                logger.info(
-                    "Integration gate disabled: baseline suite already failing."
-                )
-                gate_active = False
+                # A red baseline used to fully disable the gate, so a task could
+                # WORSEN the suite (more failures than at the start) and still
+                # commit. Instead, run the gate in COUNT mode against the baseline
+                # failure count when it is parseable — reverting only a wave that
+                # increases failures. Unparseable count -> disable as before.
+                from my_project_orchestrator.core.validator import _parse_test_counts
+
+                total, fails = _parse_test_counts(baseline_out)
+                if total > 0 and fails > 0:
+                    baseline_failures = fails
+                    logger.info(
+                        f"Integration gate in COUNT mode: baseline has {fails} "
+                        "failing test(s); a wave that raises the count is reverted."
+                    )
+                else:
+                    logger.info(
+                        "Integration gate disabled: baseline failing and test "
+                        "count unparseable."
+                    )
+                    gate_active = False
 
         while remaining and not aborted:
             # Graceful budget stop: if the global budget is exhausted, do not
@@ -1380,7 +1459,12 @@ class ProjectOrchestrator:
             # regressed the full suite before the next wave builds on top of it.
             if gate_active and wave_completed:
                 reverted = self._integration_gate(
-                    project, executor, test_cmd, wave_completed, test_timeout
+                    project,
+                    executor,
+                    test_cmd,
+                    wave_completed,
+                    test_timeout,
+                    baseline_failures=baseline_failures,
                 )
                 for tid in reverted:
                     completed_ids.discard(tid)

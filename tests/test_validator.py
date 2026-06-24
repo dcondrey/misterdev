@@ -98,6 +98,16 @@ def test_parse_test_counts_dotnet_alt_format():
     assert _parse_test_counts(out) == (25, 2)
 
 
+def test_parse_test_counts_node_test_runner():
+    out = "ℹ tests 169\nℹ suites 20\nℹ pass 163\nℹ fail 6\nℹ cancelled 0"
+    assert _parse_test_counts(out) == (169, 6)
+
+
+def test_parse_test_counts_node_tap_format():
+    out = "# tests 169\n# pass 169\n# fail 0"
+    assert _parse_test_counts(out) == (169, 0)
+
+
 def test_code_validator_valid_python():
     valid, err = CodeValidator.validate_code("x = 1 + 2\ndef f(): pass")
     assert valid and err is None

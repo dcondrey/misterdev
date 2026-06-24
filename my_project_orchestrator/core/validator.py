@@ -275,6 +275,12 @@ def _parse_test_counts(output: str) -> Tuple[int, int]:
     m = re.search(r"Total tests:\s*(\d+)\..*?Failed:\s*(\d+)", output, re.DOTALL)
     if m:
         return int(m.group(1)), int(m.group(2))
+    # node --test: "ℹ tests N" / "ℹ fail K" (default reporter) or the TAP
+    # equivalent "# tests N" / "# fail K".
+    tm = re.search(r"(?:ℹ|#)\s*tests\s+(\d+)", output)
+    fm = re.search(r"(?:ℹ|#)\s*fail\s+(\d+)", output)
+    if tm and fm:
+        return int(tm.group(1)), int(fm.group(1))
     return 0, 0
 
 

@@ -128,7 +128,10 @@ reports done.
   when off. Scoped runs support pytest/jest-style suites; other languages SKIP.
 - **Regression safety:** branch-per-task, integration gate per wave with
   `git bisect`-style revert of the culprit, test-tamper detection, dirty-tree
-  guard.
+  guard. On a **red baseline** (suite already failing) the gate runs in *count
+  mode* instead of disabling: it reverts any wave that **raises** the full-suite
+  failure count, so a task gated only on its own scoped tests can't worsen the
+  overall suite and still commit.
 
 ### Model & context orchestration
 - Providers: **OpenRouter** and **Anthropic**, with failover, cost/budget
