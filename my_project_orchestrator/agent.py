@@ -25,6 +25,7 @@ from my_project_orchestrator.core.decomposer import (
 )
 from my_project_orchestrator.core.validator import ValidationResult
 from my_project_orchestrator.core.gatekeeper import GateKeeper
+from my_project_orchestrator.core.gitcmd import run_git
 from my_project_orchestrator.core.sovereign import (
     StrategyOptimizer,
     RealTimeAligner,
@@ -851,16 +852,8 @@ class ProjectOrchestrator:
         """Best-effort current HEAD sha, or None outside a git repo / on error."""
         if not (project.path / ".git").exists():
             return None
-        try:
-            proc = subprocess.run(
-                "git rev-parse HEAD",
-                shell=True,
-                cwd=project.path,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except Exception:
+        proc = run_git("git rev-parse HEAD", project.path)
+        if proc is None:
             return None
         sha = proc.stdout.strip()
         return sha if proc.returncode == 0 and sha else None
@@ -876,18 +869,8 @@ class ProjectOrchestrator:
         if not (project.path / ".git").exists():
             return ""
         cmd = f"git diff {base}" if base else "git diff HEAD"
-        try:
-            proc = subprocess.run(
-                cmd,
-                shell=True,
-                cwd=project.path,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except Exception:
-            return ""
-        return proc.stdout if proc.returncode == 0 else ""
+        proc = run_git(cmd, project.path)
+        return proc.stdout if proc and proc.returncode == 0 else ""
 
     def _run_goal_check(
         self,

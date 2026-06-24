@@ -1,9 +1,9 @@
-import subprocess
 from pathlib import Path
 from typing import Callable, List, Optional, Dict, Tuple, TYPE_CHECKING
 
 from my_project_orchestrator.logging_setup import setup_logger
 from my_project_orchestrator.core.assessment import HealthCheck
+from my_project_orchestrator.core.gitcmd import run_git
 from my_project_orchestrator.core.validator import _run_cmd
 
 if TYPE_CHECKING:
@@ -468,9 +468,7 @@ class GateKeeper:
         # the multi-line / per-line secret detection stays identical.
         by_file: Dict[str, List[str]] = {}
         for path, line in added:
-            if not _path_in_scope(
-                path, SECRET_SCAN_EXTENSIONS, SECRET_SCAN_FILENAMES
-            ):
+            if not _path_in_scope(path, SECRET_SCAN_EXTENSIONS, SECRET_SCAN_FILENAMES):
                 continue
             by_file.setdefault(path, []).append(line)
         flagged = []
@@ -482,7 +480,9 @@ class GateKeeper:
     def _scan_secrets_whole_tree(self) -> List[str]:
         """Non-git fallback for G6: scan every source and config/env file."""
         flagged = []
-        for path in self._iter_source_files(SECRET_SCAN_EXTENSIONS, SECRET_SCAN_FILENAMES):
+        for path in self._iter_source_files(
+            SECRET_SCAN_EXTENSIONS, SECRET_SCAN_FILENAMES
+        ):
             try:
                 content = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -502,34 +502,16 @@ class GateKeeper:
         type; the diff header lines (``+++``) are skipped. Callers apply their
         own per-gate scope (code-only for G5/G9, code+config for G6).
         """
-        try:
-            check = subprocess.run(
-                "git rev-parse --is-inside-work-tree",
-                shell=True,
-                cwd=self.project_path,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except Exception:
-            return None
-        if check.returncode != 0 or check.stdout.strip() != "true":
+        check = run_git("git rev-parse --is-inside-work-tree", self.project_path)
+        if check is None or check.returncode != 0 or check.stdout.strip() != "true":
             return None
         added: List[Tuple[str, str]] = []
         for cmd in (
             "git diff --cached --diff-filter=ACMR -U0",
             "git diff --diff-filter=ACMR -U0",
         ):
-            try:
-                proc = subprocess.run(
-                    cmd,
-                    shell=True,
-                    cwd=self.project_path,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-            except Exception:
+            proc = run_git(cmd, self.project_path)
+            if proc is None:
                 continue
             current_file = ""
             for line in proc.stdout.splitlines():
@@ -543,17 +525,7 @@ class GateKeeper:
         # every line was introduced by this build. Enumerate untracked files
         # (honoring .gitignore via --exclude-standard, so build artifacts are
         # skipped) and treat their whole content as added lines.
-        try:
-            others = subprocess.run(
-                "git ls-files --others --exclude-standard",
-                shell=True,
-                cwd=self.project_path,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except Exception:
-            others = None
+        others = run_git("git ls-files --others --exclude-standard", self.project_path)
         if others is not None and others.returncode == 0:
             for rel in others.stdout.splitlines():
                 rel = rel.strip()

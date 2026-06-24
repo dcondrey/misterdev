@@ -7,7 +7,6 @@ calls (or concurrent via threading if desired).
 """
 
 import json
-import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
@@ -16,6 +15,7 @@ from my_project_orchestrator.core.assessment import (
     FeatureInfo,
     ProjectAssessment,
 )
+from my_project_orchestrator.core.gitcmd import run_git
 from my_project_orchestrator.core.validator import run_health_check
 from my_project_orchestrator.llm.client import BaseLLMClient
 from my_project_orchestrator.logging_setup import setup_logger
@@ -556,18 +556,10 @@ def _get_source_overview(project_path: Path, max_chars: int = 8000) -> str:
 
 def _get_git_log(project_path: Path, count: int = 20) -> str:
     """Get recent git log."""
-    try:
-        proc = subprocess.run(
-            f"git log --oneline -n {count}",
-            shell=True,
-            cwd=project_path,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        return proc.stdout.strip() if proc.returncode == 0 else "(not a git repo)"
-    except Exception:
+    proc = run_git(f"git log --oneline -n {count}", project_path, timeout=10)
+    if proc is None:
         return "(git log unavailable)"
+    return proc.stdout.strip() if proc.returncode == 0 else "(not a git repo)"
 
 
 def _read_file_safe(path: Path, max_lines: int = 500) -> str:

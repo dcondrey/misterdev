@@ -5,6 +5,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from pathlib import Path
 
 from my_project_orchestrator.core.assessment import HealthCheck
+from my_project_orchestrator.core.gitcmd import run_git
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -171,18 +172,8 @@ def run_validation(
     else:
         result.lint_ok = True
 
-    try:
-        proc = subprocess.run(
-            "git diff --stat",
-            shell=True,
-            cwd=project_path,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        result.diff_stats = proc.stdout.strip()
-    except Exception:
-        result.diff_stats = "(unable to get diff stats)"
+    proc = run_git("git diff --stat", project_path)
+    result.diff_stats = proc.stdout.strip() if proc else "(unable to get diff stats)"
 
     return result
 
