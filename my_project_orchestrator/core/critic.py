@@ -26,10 +26,10 @@ block a build. No client, no candidate edit, an unparseable verdict, or a timeou
 is a SKIP (no opinion) that lets the edit proceed untouched.
 """
 
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, List, Optional
 
+from my_project_orchestrator.core.bounded import run_bounded
 from my_project_orchestrator.core.goal_check import _extract_json_object
 from my_project_orchestrator.logging_setup import setup_logger
 
@@ -162,27 +162,18 @@ def run_edit_critic(
     )
     members = max(1, int(panel))
 
-    box = {"result": CritiqueVerdict(SKIP, reason="not started")}
-
-    def _run() -> None:
+    def _work() -> CritiqueVerdict:
         try:
             if members == 1:
-                box["result"] = _parse_verdict(call(prompt) or "")
-            else:
-                box["result"] = _aggregate_panel(_run_panel(call, prompt, members))
+                return _parse_verdict(call(prompt) or "")
+            return _aggregate_panel(_run_panel(call, prompt, members))
         except Exception as e:  # any model/IO failure is non-fatal -> skip
             logger.debug(f"Adversarial critic unavailable: {e}")
-            box["result"] = CritiqueVerdict(SKIP, reason=f"error: {e}")
+            return CritiqueVerdict(SKIP, reason=f"error: {e}")
 
-    worker = threading.Thread(target=_run, daemon=True)
-    worker.start()
-    worker.join(timeout)
-    if worker.is_alive():
-        logger.warning(
-            f"Adversarial critic exceeded {timeout}s; skipping (never blocks)."
-        )
-        return CritiqueVerdict(SKIP, reason="timed out")
-    return box["result"]
+    return run_bounded(
+        _work, timeout, CritiqueVerdict(SKIP, reason="timed out"), "Adversarial critic"
+    )
 
 
 def _run_panel(call: CriticCall, base_prompt: str, members: int) -> List["CritiqueVerdict"]:

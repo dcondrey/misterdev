@@ -21,9 +21,9 @@ self-report on intent.
 """
 
 import json
-import threading
 from typing import Callable, List, Optional
 
+from my_project_orchestrator.core.bounded import run_bounded
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -129,25 +129,16 @@ def run_goal_check(
         ],
     )
 
-    box = {"result": GoalVerdict(SKIP, reason="not started")}
-
-    def _run() -> None:
+    def _work() -> GoalVerdict:
         try:
-            raw = call(prompt) or ""
-            box["result"] = _parse_verdict(raw)
+            return _parse_verdict(call(prompt) or "")
         except Exception as e:  # any model/IO failure is non-fatal -> skip
             logger.debug(f"Goal-completion check unavailable: {e}")
-            box["result"] = GoalVerdict(SKIP, reason=f"error: {e}")
+            return GoalVerdict(SKIP, reason=f"error: {e}")
 
-    worker = threading.Thread(target=_run, daemon=True)
-    worker.start()
-    worker.join(timeout)
-    if worker.is_alive():
-        logger.warning(
-            f"Goal-completion check exceeded {timeout}s; skipping (never blocks)."
-        )
-        return GoalVerdict(SKIP, reason="timed out")
-    return box["result"]
+    return run_bounded(
+        _work, timeout, GoalVerdict(SKIP, reason="timed out"), "Goal-completion check"
+    )
 
 
 def _parse_verdict(text: str) -> GoalVerdict:

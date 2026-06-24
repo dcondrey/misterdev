@@ -22,10 +22,10 @@ no-op. stdio transport is supported (the SDK launches the server as a
 subprocess); other transports degrade to "server absent".
 """
 
-import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from my_project_orchestrator.core.bounded import run_bounded
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -55,35 +55,6 @@ class MCPTool:
     def qualified_name(self) -> str:
         """``server.tool`` — unique across servers, used in awareness text."""
         return f"{self.server}.{self.name}"
-
-
-def _run_bounded(fn, timeout: float, default, what: str):
-    """Run ``fn()`` in a daemon thread, returning its result or ``default``.
-
-    Any exception inside ``fn`` is swallowed (logged at debug) and a hung call
-    is abandoned to the daemon thread (which dies with the process) once the
-    timeout fires — so the caller is guaranteed to get control back within
-    ``timeout`` seconds and is never handed an exception. ``what`` names the
-    operation for log context.
-    """
-    box: Dict[str, Any] = {"result": default}
-
-    def _worker() -> None:
-        try:
-            box["result"] = fn()
-        except Exception as e:  # missing SDK / server crash / protocol error
-            logger.debug(f"MCP {what} unavailable: {e}")
-            box["result"] = default
-
-    worker = threading.Thread(target=_worker, daemon=True)
-    worker.start()
-    worker.join(timeout)
-    if worker.is_alive():
-        logger.warning(
-            f"MCP {what} timed out after {timeout}s; skipping (never blocks)."
-        )
-        return default
-    return box["result"]
 
 
 def _normalize_servers(servers: Any) -> List[Dict[str, Any]]:
@@ -169,11 +140,11 @@ class MCPManager:
         tools: List[MCPTool] = []
         for server in self.servers:
             name = server["name"]
-            discovered = _run_bounded(
+            discovered = run_bounded(
                 lambda s=server: _list_tools(s),
                 self.connect_timeout,
                 default=[],
-                what=f"tool discovery ({name})",
+                what=f"MCP tool discovery ({name})",
             )
             for t in discovered:
                 tools.append(
@@ -213,11 +184,11 @@ class MCPManager:
         logger.info(
             f"MCP call_tool: {server}.{name} args={list((arguments or {}).keys())}"
         )
-        return _run_bounded(
+        return run_bounded(
             lambda: _call_tool(cfg, name, arguments or {}),
             self.call_timeout,
             default=None,
-            what=f"tool call ({server}.{name})",
+            what=f"MCP tool call ({server}.{name})",
         )
 
     def describe_tools(self, cap: int = 25) -> str:

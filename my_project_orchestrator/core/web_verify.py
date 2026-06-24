@@ -26,11 +26,11 @@ beyond threshold) is a RED.
 """
 
 import subprocess
-import threading
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from my_project_orchestrator.core.bounded import run_bounded
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -108,26 +108,18 @@ def run_web_gate(
         return WebResult(SKIP, reason="no runtime.web config")
 
     timeout = float(web_config.get("timeout", 60))
-    box = {"result": WebResult(SKIP, reason="not started")}
-
-    def _run() -> None:
+    def _work() -> WebResult:
         try:
-            box["result"] = _verify(project_root, web_config, timeout)
+            return _verify(project_root, web_config, timeout)
         except Exception as e:  # any browser/server/IO failure is non-fatal
             logger.debug(f"Web verify gate unavailable: {e}")
-            box["result"] = WebResult(SKIP, reason=f"error: {e}")
+            return WebResult(SKIP, reason=f"error: {e}")
 
-    worker = threading.Thread(target=_run, daemon=True)
-    worker.start()
-    # Give the worker a small margin over the inner timeout so a clean inner
-    # teardown is preferred, but the outer join still guarantees we return.
-    worker.join(timeout + 5)
-    if worker.is_alive():
-        logger.warning(
-            f"Web verify gate exceeded {timeout + 5}s; skipping (never blocks)."
-        )
-        return WebResult(SKIP, reason="timed out")
-    return box["result"]
+    # A small margin over the inner timeout so a clean inner teardown is
+    # preferred, but the outer bound still guarantees we return.
+    return run_bounded(
+        _work, timeout + 5, WebResult(SKIP, reason="timed out"), "Web verify gate"
+    )
 
 
 def _playwright_sync():

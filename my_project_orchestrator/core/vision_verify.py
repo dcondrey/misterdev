@@ -20,10 +20,10 @@ build produced) rather than letting the model self-report on code it wrote.
 
 import base64
 import re
-import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+from my_project_orchestrator.core.bounded import run_bounded
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -106,24 +106,16 @@ def run_vision_gate(
     if call is None:
         return VisionResult(SKIP, reason="no vision model available")
 
-    box = {"result": VisionResult(SKIP, reason="not started")}
-
-    def _run() -> None:
+    def _work() -> VisionResult:
         try:
-            box["result"] = _verify(capture, assertion, call)
+            return _verify(capture, assertion, call)
         except Exception as e:  # any model/IO failure is non-fatal -> skip
             logger.debug(f"Vision verify gate unavailable: {e}")
-            box["result"] = VisionResult(SKIP, reason=f"error: {e}")
+            return VisionResult(SKIP, reason=f"error: {e}")
 
-    worker = threading.Thread(target=_run, daemon=True)
-    worker.start()
-    worker.join(timeout)
-    if worker.is_alive():
-        logger.warning(
-            f"Vision verify gate exceeded {timeout}s; skipping (never blocks)."
-        )
-        return VisionResult(SKIP, reason="timed out")
-    return box["result"]
+    return run_bounded(
+        _work, timeout, VisionResult(SKIP, reason="timed out"), "Vision verify gate"
+    )
 
 
 def _verify(capture: Path, assertion: str, call: VlmCall) -> VisionResult:

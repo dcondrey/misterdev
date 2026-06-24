@@ -9,10 +9,10 @@ never block or slow a build. It is off unless ``orchestrator.lsp_diagnostics``
 is enabled, and even then a timeout silently skips the check rather than failing.
 """
 
-import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from my_project_orchestrator.core.bounded import run_bounded
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -103,32 +103,21 @@ def collect_diagnostics(
     if code_lang is None or not rel_files:
         return None
 
-    box: Dict[str, Optional[List[dict]]] = {"result": None}
     # Bound the in-server settle time to a fraction of the hard timeout so the
     # per-file waits can't sum past it and force a blanket SKIP (the old fixed
     # 1.5s * N did exactly that for ~20+ files at the 30s default).
     settle_budget = max(timeout * 0.7, _MIN_FILE_WAIT)
 
-    def _run() -> None:
+    def _work() -> Optional[List[dict]]:
         try:
-            box["result"] = _collect(
-                project_root, code_lang, rel_files, settle_budget
-            )
+            return _collect(project_root, code_lang, rel_files, settle_budget)
         except Exception as e:  # multilspy/server failures are non-fatal
             logger.debug(f"LSP diagnostics unavailable ({language}): {e}")
-            box["result"] = None
+            return None
 
-    worker = threading.Thread(target=_run, daemon=True)
-    worker.start()
-    worker.join(timeout)
-    if worker.is_alive():
-        # The server hung. Abandon the daemon thread (it dies with the process)
-        # and skip the gate so the build is never blocked.
-        logger.warning(
-            f"LSP diagnostics timed out after {timeout}s ({language}); skipping."
-        )
-        return None
-    return box["result"]
+    # A hung server is abandoned to its daemon thread and the gate skips (None),
+    # so the build is never blocked.
+    return run_bounded(_work, timeout, None, f"LSP diagnostics ({language})")
 
 
 def _collect(

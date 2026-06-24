@@ -22,10 +22,10 @@ floor is a RED.
 
 import re
 import subprocess
-import threading
 from pathlib import Path
 from typing import Optional
 
+from my_project_orchestrator.core.bounded import run_bounded
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -117,26 +117,18 @@ def run_mutation_gate(
     min_score = _normalize_floor(mutation_config.get("min_score", 0.0))
     timeout = float(mutation_config.get("timeout", 1800))
 
-    box = {"result": MutationResult(SKIP, reason="not started")}
-
-    def _run() -> None:
+    def _work() -> MutationResult:
         try:
-            box["result"] = _mutation(project_root, command, min_score, timeout, runner)
+            return _mutation(project_root, command, min_score, timeout, runner)
         except Exception as e:  # any launch/IO failure is non-fatal -> skip
             logger.debug(f"Mutation gate unavailable: {e}")
-            box["result"] = MutationResult(SKIP, reason=f"error: {e}")
+            return MutationResult(SKIP, reason=f"error: {e}")
 
-    worker = threading.Thread(target=_run, daemon=True)
-    worker.start()
     # A small margin over the inner timeout so a clean inner teardown is
-    # preferred, but the outer join still guarantees we return.
-    worker.join(timeout + 5)
-    if worker.is_alive():
-        logger.warning(
-            f"Mutation gate exceeded {timeout + 5}s; skipping (never blocks)."
-        )
-        return MutationResult(SKIP, reason="timed out")
-    return box["result"]
+    # preferred, but the outer bound still guarantees we return.
+    return run_bounded(
+        _work, timeout + 5, MutationResult(SKIP, reason="timed out"), "Mutation gate"
+    )
 
 
 def _mutation(

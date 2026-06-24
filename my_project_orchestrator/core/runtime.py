@@ -14,10 +14,11 @@ code are captured as evidence.
 """
 
 import subprocess
-import threading
 import time
 from pathlib import Path
 from typing import Optional
+
+from my_project_orchestrator.core.bounded import run_bounded
 
 from my_project_orchestrator.logging_setup import setup_logger
 
@@ -91,26 +92,18 @@ def run_smoke_gate(
     expect = smoke_config.get("expect")
     timeout = float(smoke_config.get("timeout", 30))
 
-    box = {"result": SmokeResult(SKIP, reason="not started")}
-
-    def _run() -> None:
+    def _work() -> SmokeResult:
         try:
-            box["result"] = _smoke(project_root, launch, ready, probe, expect, timeout)
+            return _smoke(project_root, launch, ready, probe, expect, timeout)
         except Exception as e:  # any launch/IO failure is non-fatal -> skip
             logger.debug(f"Runtime smoke gate unavailable: {e}")
-            box["result"] = SmokeResult(SKIP, reason=f"error: {e}")
+            return SmokeResult(SKIP, reason=f"error: {e}")
 
-    worker = threading.Thread(target=_run, daemon=True)
-    worker.start()
-    # Give the worker a small margin over the inner timeout so a clean inner
-    # teardown is preferred, but the outer join still guarantees we return.
-    worker.join(timeout + 5)
-    if worker.is_alive():
-        logger.warning(
-            f"Runtime smoke gate exceeded {timeout + 5}s; skipping (never blocks)."
-        )
-        return SmokeResult(SKIP, reason="timed out")
-    return box["result"]
+    # A small margin over the inner timeout so a clean inner teardown is
+    # preferred, but the outer bound still guarantees we return.
+    return run_bounded(
+        _work, timeout + 5, SmokeResult(SKIP, reason="timed out"), "Runtime smoke gate"
+    )
 
 
 def _smoke(
