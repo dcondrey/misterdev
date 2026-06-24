@@ -27,6 +27,33 @@ logger = setup_logger(__name__)
 # (conservative quality) and the UCB exploration bonus (optimistic).
 _Z = 1.96
 
+# Half-life for time-decaying accumulated outcomes (seconds). Models drift —
+# yesterday's strong model can regress after a provider update — so older
+# observations are exponentially down-weighted toward zero, letting recent
+# outcomes dominate quality/selection. 30 days balances stability against
+# responsiveness; <= 0 disables decay (all history weighed equally).
+_DEFAULT_HALF_LIFE_SECONDS = 30 * 86400.0
+
+# Dead-band below which no decay is applied. Decay is meant to fade data ACROSS
+# runs (hours/days apart), not within a single build where the same model is
+# scored several times seconds apart. Holding the factor at exactly 1.0 below an
+# hour keeps the within-build effective counts whole integers, so the selector's
+# integer sample thresholds (e.g. "proven after >= 3 first tries") aren't tripped
+# by sub-second drift. At a 30-day half-life an hour's decay is negligible anyway.
+_MIN_DECAY_ELAPSED_SECONDS = 3600.0
+
+
+def _decay_factor(elapsed: float, half_life: float) -> float:
+    """Exponential decay multiplier for ``elapsed`` seconds at ``half_life``.
+
+    1.0 for non-positive elapsed (no time passed, or a clock that went backward),
+    for elapsed within the sub-hour dead-band, or when decay is disabled
+    (``half_life`` <= 0); else ``0.5 ** (elapsed / half_life)`` in (0, 1).
+    """
+    if half_life <= 0 or elapsed < _MIN_DECAY_ELAPSED_SECONDS:
+        return 1.0
+    return 0.5 ** (elapsed / half_life)
+
 # Field separator for the composite stat key. Unit-separator char: never
 # appears in a model id, category, or complexity.
 _SEP = "␟"
@@ -39,11 +66,13 @@ class ModelStat:
     model: str
     category: str = ""
     complexity: str = ""
-    attempts: int = 0
-    successes: int = 0  # attempts that passed the validation gates
-    first_try_attempts: int = 0
-    first_try_successes: int = 0
-    aborts: int = 0
+    # Effective (time-decayed) counts: floats, not raw integers, because older
+    # observations are exponentially down-weighted on each new record.
+    attempts: float = 0.0
+    successes: float = 0.0  # attempts that passed the validation gates
+    first_try_attempts: float = 0.0
+    first_try_successes: float = 0.0
+    aborts: float = 0.0
     total_cost: float = 0.0
     total_latency: float = 0.0
     last_seen: float = 0.0  # epoch seconds of the most recent record
@@ -94,8 +123,11 @@ class ModelStat:
 class ModelLedger:
     """Thread-safe, file-backed store of per-model outcome statistics."""
 
-    def __init__(self, path: Path):
+    def __init__(
+        self, path: Path, half_life_seconds: float = _DEFAULT_HALF_LIFE_SECONDS
+    ):
         self.path = Path(path)
+        self.half_life_seconds = half_life_seconds
         self._lock = threading.Lock()
         self._stats: Dict[str, ModelStat] = {}
         self.load()
@@ -175,6 +207,11 @@ class ModelLedger:
             if s is None:
                 s = ModelStat(model=model, category=category, complexity=complexity)
                 self._stats[key] = s
+            else:
+                # Down-weight everything accumulated before this record so older
+                # outcomes fade. Same-instant records (elapsed 0) don't decay, so
+                # a tight burst of attempts behaves exactly like raw counting.
+                self._decay_stat(s, ts)
             s.attempts += 1
             if success:
                 s.successes += 1
@@ -189,6 +226,27 @@ class ModelLedger:
             s.last_seen = ts
         self.save()
         return s
+
+    def _decay_stat(self, s: ModelStat, now: float) -> None:
+        """Scale a cell's accumulated counts by the time-decay since last_seen.
+
+        Decays the effective counts and the cost/latency sums together, so every
+        rate (success_rate, avg_cost, ...) is preserved while the *confidence*
+        (effective sample size) shrinks for a model not seen recently — which
+        correctly widens its Wilson interval and lowers its quality score.
+        """
+        if s.last_seen <= 0:
+            return
+        factor = _decay_factor(now - s.last_seen, self.half_life_seconds)
+        if factor >= 1.0:
+            return
+        s.attempts *= factor
+        s.successes *= factor
+        s.first_try_attempts *= factor
+        s.first_try_successes *= factor
+        s.aborts *= factor
+        s.total_cost *= factor
+        s.total_latency *= factor
 
     def selection_score(
         self, model: str, category: str, complexity: str, total_observations: int

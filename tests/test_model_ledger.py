@@ -133,3 +133,77 @@ def test_context_scoped_keys_are_distinct(ledger_path):
     ledger.record("m", "test", "small", success=False)
     assert ledger.stat("m", "feature", "large").successes == 1
     assert ledger.stat("m", "test", "small").successes == 0
+
+
+# --- recency decay ----------------------------------------------------------
+
+
+def test_decay_factor_dead_band_and_half_life():
+    from my_project_orchestrator.core.model_ledger import (
+        _decay_factor,
+        _DEFAULT_HALF_LIFE_SECONDS,
+    )
+
+    hl = _DEFAULT_HALF_LIFE_SECONDS
+    # No time / sub-hour / backward clock / disabled -> exactly 1.0.
+    assert _decay_factor(0.0, hl) == 1.0
+    assert _decay_factor(60.0, hl) == 1.0
+    assert _decay_factor(-5.0, hl) == 1.0
+    assert _decay_factor(10 * 86400, 0) == 1.0
+    # One half-life elapsed -> ~0.5; two -> ~0.25.
+    assert abs(_decay_factor(hl, hl) - 0.5) < 1e-9
+    assert abs(_decay_factor(2 * hl, hl) - 0.25) < 1e-9
+
+
+def test_within_build_records_are_not_decayed(ledger_path):
+    # Several attempts seconds apart (a single build) stay whole integers, so
+    # the selector's integer sample thresholds aren't tripped by tiny drift.
+    ledger = ModelLedger(ledger_path)
+    for i in range(3):
+        ledger.record("m", "feature", "medium", success=True, timestamp=1000.0 + i)
+    s = ledger.stat("m", "feature", "medium")
+    assert s.attempts == 3
+    assert s.successes == 3
+
+
+def test_stale_outcomes_decay_on_new_record(ledger_path):
+    from my_project_orchestrator.core.model_ledger import _DEFAULT_HALF_LIFE_SECONDS
+
+    ledger = ModelLedger(ledger_path)
+    # Two successes far in the past, then one fresh success a half-life later.
+    ledger.record("m", "feature", "medium", success=True, timestamp=0.0)
+    ledger.record("m", "feature", "medium", success=True, timestamp=1.0)
+    s_before = ledger.stat("m", "feature", "medium")
+    assert s_before.attempts == 2
+    ledger.record(
+        "m", "feature", "medium", success=True, timestamp=_DEFAULT_HALF_LIFE_SECONDS
+    )
+    s = ledger.stat("m", "feature", "medium")
+    # Prior 2 decayed by ~0.5 -> ~1.0, plus the new one -> ~2.0 effective.
+    assert 1.9 < s.attempts < 2.1
+    assert 1.9 < s.successes < 2.1
+
+
+def test_decay_preserves_success_rate(ledger_path):
+    from my_project_orchestrator.core.model_ledger import _DEFAULT_HALF_LIFE_SECONDS
+
+    ledger = ModelLedger(ledger_path)
+    ledger.record("m", "feature", "medium", success=True, timestamp=0.0)
+    ledger.record("m", "feature", "medium", success=False, timestamp=1.0)
+    # A later record decays both numerator and denominator equally.
+    ledger.record(
+        "m", "feature", "medium", success=False, timestamp=_DEFAULT_HALF_LIFE_SECONDS
+    )
+    s = ledger.stat("m", "feature", "medium")
+    # 1 success out of ~3 effective attempts -> rate near 1/3 (was 1/2 of 2 old
+    # plus a fresh failure), proving the ratio tracks recent outcomes.
+    assert 0.0 < s.success_rate < 0.5
+
+
+def test_decay_disabled_keeps_raw_counts(ledger_path):
+    ledger = ModelLedger(ledger_path, half_life_seconds=0)
+    ledger.record("m", "feature", "medium", success=True, timestamp=0.0)
+    ledger.record(
+        "m", "feature", "medium", success=True, timestamp=10 * 365 * 86400.0
+    )
+    assert ledger.stat("m", "feature", "medium").attempts == 2
