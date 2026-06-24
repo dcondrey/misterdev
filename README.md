@@ -214,6 +214,11 @@ project-orchestrator                                  # interactive planning
   with `--network none`. *Honest limit:* this constrains **containerized**
   execution only (`environment.type: docker`); host execution and git keep their
   normal network.
+- **Container sandbox limits** (all opt-in, container-only, off path unchanged):
+  `environment.memory` / `cpus` / `pids_limit` bound a runaway gate (fork bomb,
+  memory hog); `cap_drop: ["ALL"]` drops Linux capabilities and `security_opt`
+  (`no-new-privileges`, a `seccomp=` profile) hardens running model-generated
+  code. The bind-mounted repo stays writable so build/test still work.
 
 ---
 

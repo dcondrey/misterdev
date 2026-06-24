@@ -123,6 +123,8 @@ class ContainerEngine:
         memory: Optional[str] = None,
         cpus: Optional[str] = None,
         pids_limit: Optional[int] = None,
+        cap_drop: Optional[List[str]] = None,
+        security_opt: Optional[List[str]] = None,
     ):
         self.engine = engine
         self.image = image
@@ -140,6 +142,15 @@ class ContainerEngine:
         self.memory = memory
         self.cpus = cpus
         self.pids_limit = pids_limit
+        # Optional sandbox hardening for running model-generated code with less
+        # trust: cap_drop (e.g. ["ALL"]) drops Linux capabilities; security_opt
+        # (e.g. ["no-new-privileges", "seccomp=/path/profile.json"]) passes
+        # --security-opt. Both emitted only when set; a bare string is accepted
+        # and wrapped, so ``cap_drop: ALL`` in YAML works too.
+        self.cap_drop = [cap_drop] if isinstance(cap_drop, str) else (cap_drop or [])
+        self.security_opt = (
+            [security_opt] if isinstance(security_opt, str) else (security_opt or [])
+        )
 
     def is_available(self) -> bool:
         return bool(self.engine)
@@ -178,6 +189,10 @@ class ContainerEngine:
             argv.extend(["--cpus", str(self.cpus)])
         if self.pids_limit:
             argv.extend(["--pids-limit", str(self.pids_limit)])
+        for cap in self.cap_drop:
+            argv.extend(["--cap-drop", str(cap)])
+        for opt in self.security_opt:
+            argv.extend(["--security-opt", str(opt)])
         argv.extend(self._user_args())
         argv.extend([self.image, "sh", "-c", command])
         return argv

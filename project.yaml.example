@@ -49,6 +49,8 @@ environment:
 #   memory: "512m"              # optional; cap container memory (docker --memory)
 #   cpus: "1.5"                 # optional; cap container CPUs (docker --cpus)
 #   pids_limit: 2048            # optional; cap process count (fork-bomb guard)
+#   cap_drop: ["ALL"]           # optional; drop Linux capabilities (--cap-drop)
+#   security_opt: ["no-new-privileges"]  # optional; --security-opt (seccomp etc.)
 
 # Runtime smoke gate (opt-in, off by default). Set orchestrator.runtime_smoke
 # true and describe how to launch/probe the built artifact. Runs in a daemon

@@ -132,6 +132,57 @@ def test_wrap_command_emits_resource_limits_when_set(monkeypatch):
     assert argv.index("--memory") < argv.index("img")
 
 
+def test_wrap_command_omits_hardening_flags_by_default(monkeypatch):
+    monkeypatch.setattr(container.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(container.os, "getgid", lambda: 20, raising=False)
+    eng = ContainerEngine("docker", "img", Path("/repo"))
+    argv = eng.wrap_command("pytest -q", timeout=60)
+    assert "--cap-drop" not in argv
+    assert "--security-opt" not in argv
+
+
+def test_wrap_command_emits_cap_drop_and_security_opt(monkeypatch):
+    monkeypatch.setattr(container.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(container.os, "getgid", lambda: 20, raising=False)
+    eng = ContainerEngine(
+        "docker",
+        "img",
+        Path("/repo"),
+        cap_drop=["ALL"],
+        security_opt=["no-new-privileges", "seccomp=/p.json"],
+    )
+    argv = eng.wrap_command("pytest -q", timeout=60)
+    assert argv[argv.index("--cap-drop") + 1] == "ALL"
+    opts = [argv[i + 1] for i, a in enumerate(argv) if a == "--security-opt"]
+    assert opts == ["no-new-privileges", "seccomp=/p.json"]
+    # Hardening precedes the image/command.
+    assert argv.index("--cap-drop") < argv.index("img")
+
+
+def test_cap_drop_string_is_coerced_to_list(monkeypatch):
+    monkeypatch.setattr(container.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(container.os, "getgid", lambda: 20, raising=False)
+    eng = ContainerEngine("docker", "img", Path("/repo"), cap_drop="ALL")
+    argv = eng.wrap_command("pytest -q", timeout=60)
+    assert argv[argv.index("--cap-drop") + 1] == "ALL"
+
+
+def test_env_manager_passes_hardening_to_engine(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "my_project_orchestrator.environments.container_env.detect_engine",
+        lambda preferred=None: "docker",
+    )
+    mgr = ContainerEnvironmentManager(
+        {"type": "docker", "cap_drop": ["ALL"], "security_opt": ["no-new-privileges"]},
+        tmp_path,
+        language="python",
+    )
+    mgr.setup()
+    eng = mgr.engine()
+    assert eng.cap_drop == ["ALL"]
+    assert eng.security_opt == ["no-new-privileges"]
+
+
 def test_env_manager_passes_resource_limits_to_engine(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "my_project_orchestrator.environments.container_env.detect_engine",

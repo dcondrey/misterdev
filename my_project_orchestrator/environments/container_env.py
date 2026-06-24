@@ -45,6 +45,9 @@ class ContainerEnvironmentManager(BaseEnvironmentManager):
         self.memory = config.get("memory")
         self.cpus = config.get("cpus")
         self.pids_limit = config.get("pids_limit")
+        # Optional sandbox hardening; unset -> no flag (off path unchanged).
+        self.cap_drop = config.get("cap_drop")
+        self.security_opt = config.get("security_opt")
         self._engine: Optional[ContainerEngine] = None
 
     def setup(self) -> bool:
@@ -69,6 +72,8 @@ class ContainerEnvironmentManager(BaseEnvironmentManager):
             memory=self.memory,
             cpus=self.cpus,
             pids_limit=self.pids_limit,
+            cap_drop=self.cap_drop,
+            security_opt=self.security_opt,
         )
         return True
 
