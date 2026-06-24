@@ -333,6 +333,13 @@ DEFAULT_CONFIG = {
     # the generator's own model with adversarial framing (weaker independence,
     # logged). Open dict like ``runtime``, not schema-validated.
     "critic": {},
+    # Shared INDEPENDENT judge model for the post-gate goal-completion check and
+    # the LLM acceptance judge: ``model`` (an id different from the generator so
+    # those judgments don't share its blind spots). Empty leaves each judge on the
+    # generator's own model (weaker independence, logged). Open dict like
+    # ``runtime``, not schema-validated. (The edit-time critic has its own
+    # ``critic.model``; this covers the two post-implementation judges.)
+    "judge": {},
     "prompt_templates": PROMPT_TEMPLATES,
     "build": asdict(BuildSettings()),
     "orchestrator": asdict(OrchestratorSettings()),

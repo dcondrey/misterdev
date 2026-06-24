@@ -923,11 +923,13 @@ class ProjectOrchestrator:
             )
             evidence = build_evidence(diff=diff, summary=summary)
             timeout = get_setting(project.config, "orchestrator", "goal_check_timeout")
+            judge_model = (project.config.get("judge") or {}).get("model")
             verdict = run_goal_check(
                 prompt,
                 criteria,
                 evidence,
                 llm_client=project.llm_client,
+                judge_model=judge_model,
                 timeout=timeout,
             )
         except Exception as e:

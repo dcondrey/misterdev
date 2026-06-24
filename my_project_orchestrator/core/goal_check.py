@@ -100,21 +100,24 @@ def run_goal_check(
     evidence: Optional[str],
     judge_call: Optional[JudgeCall] = None,
     llm_client=None,
+    judge_model: Optional[str] = None,
     timeout: float = 60,
 ) -> GoalVerdict:
     """Judge whether ``evidence`` satisfies ``goal`` + ``criteria``.
 
     The model call is performed by ``judge_call`` when supplied (the test seam);
-    otherwise one is built from ``llm_client`` if provided. With neither, the
-    check SKIPs (no model). SKIP also when there is no goal AND no criteria (no
-    target to judge against), on an unparseable verdict, on any judge error, or
-    on the hard timeout (never blocks). ``timeout`` is the hard ceiling for the
-    whole run.
+    otherwise one is built from ``llm_client`` if provided. ``judge_model``, when
+    given, routes the judgment through an INDEPENDENT model so it does not share
+    the generator's blind spots (its absence is logged — the same-model judge is
+    weaker). With neither a callable nor a client, the check SKIPs (no model).
+    SKIP also when there is no goal AND no criteria (no target to judge against),
+    on an unparseable verdict, on any judge error, or on the hard timeout (never
+    blocks). ``timeout`` is the hard ceiling for the whole run.
     """
     if not (goal or "").strip() and not (criteria or "").strip():
         return GoalVerdict(SKIP, reason="no goal or acceptance criteria")
 
-    call = judge_call or _default_judge_call(llm_client)
+    call = judge_call or _default_judge_call(llm_client, judge_model)
     if call is None:
         return GoalVerdict(SKIP, reason="no LLM judge available")
 
@@ -223,13 +226,17 @@ def _extract_json_object(text: str) -> Optional[dict]:
     return None
 
 
-def _default_judge_call(llm_client) -> Optional[JudgeCall]:
+def _default_judge_call(
+    llm_client, judge_model: Optional[str] = None
+) -> Optional[JudgeCall]:
     """Build a judge call from the project's LLM client, or None if unusable.
 
-    Uses the client's ``generate_code(prompt, system)`` text interface. Kept
-    tolerant of client shape so an absent/limited client degrades to SKIP rather
-    than raising. No network is touched until the returned callable is invoked
-    inside the worker thread.
+    Uses the client's ``generate_code(prompt, system)`` text interface. When
+    ``judge_model`` is given and the client supports ``with_model``, the call is
+    routed through that INDEPENDENT model; otherwise it runs on the generator's
+    own model and the weaker independence is logged. Kept tolerant of client
+    shape so an absent/limited client degrades to SKIP rather than raising. No
+    network is touched until the returned callable is invoked inside the worker.
     """
     if llm_client is None or not hasattr(llm_client, "generate_code"):
         return None
@@ -239,7 +246,17 @@ def _default_judge_call(llm_client) -> Optional[JudgeCall]:
         "object. Do not invent work that is not shown in the evidence."
     )
 
+    use_independent = bool(judge_model) and hasattr(llm_client, "with_model")
+    if judge_model and not use_independent:
+        logger.warning(
+            "Goal-completion check: judge.model set but the client cannot switch "
+            "models; judging on the generator's own model (weaker independence)."
+        )
+
     def _call(prompt: str) -> str:
+        if use_independent:
+            with llm_client.with_model(judge_model):
+                return llm_client.generate_code(prompt, system) or ""
         return llm_client.generate_code(prompt, system) or ""
 
     return _call

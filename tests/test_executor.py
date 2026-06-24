@@ -1203,3 +1203,33 @@ def test_build_critic_error_context_lists_objections():
     assert "no null check" in ctx
     assert "leaks a handle" in ctx
     assert "independent reviewer" in ctx.lower()
+
+
+def test_judge_generate_uses_independent_model():
+    # The LLM acceptance judge runs on judge.model when configured, not the
+    # generator's own model — independence propagated to the post-impl judge.
+    client = _CriticFakeLLMClient("", '{"approved": true}')
+
+    class _Proj:
+        def __init__(self, c):
+            self.llm_client = c
+            self.config = {"judge": {"model": "independent/judge"}}
+
+    e = MarkdownPlanExecutor()
+    out = e._judge_generate(_Proj(client), "is it ok?")
+    assert out == '{"approved": true}'
+    assert client.critic_models == ["independent/judge"]
+
+
+def test_judge_generate_without_model_uses_generator():
+    client = _CriticFakeLLMClient("", "PASS")
+
+    class _Proj:
+        def __init__(self, c):
+            self.llm_client = c
+            self.config = {}
+
+    e = MarkdownPlanExecutor()
+    out = e._judge_generate(_Proj(client), "is it ok?")
+    assert out == "PASS"
+    assert client.critic_models == [None]

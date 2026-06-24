@@ -1692,6 +1692,18 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             return True
         return remaining > total * JUDGE_MIN_BUDGET_FRACTION
 
+    def _judge_generate(self, project: Project, prompt: str) -> str:
+        """Run an acceptance-judge prompt, on the INDEPENDENT ``judge.model`` when
+        configured (so the judge doesn't share the generator's blind spots), else
+        on the generator's own model. Routed through ``with_model`` when possible.
+        """
+        client = project.llm_client
+        judge_model = (project.config.get("judge") or {}).get("model")
+        if judge_model and hasattr(client, "with_model"):
+            with client.with_model(judge_model):
+                return client.generate_code(prompt, "")
+        return client.generate_code(prompt, "")
+
     def _llm_acceptance_judge(
         self, project: Project, task: Task, criteria: str
     ) -> Tuple[bool, str]:
@@ -1710,7 +1722,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                 f"Task: {task.description}\n"
                 f"Acceptance criterion: {criteria}\n"
             )
-            verdict = project.llm_client.generate_code(prompt, "")
+            verdict = self._judge_generate(project, prompt)
         except Exception as e:
             logger.warning(f"LLM acceptance judge failed, passing open: {e}")
             return True, ""

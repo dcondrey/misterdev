@@ -1,4 +1,5 @@
 import time
+from contextlib import contextmanager
 
 from my_project_orchestrator.core.goal_check import (
     GAP,
@@ -246,3 +247,40 @@ def test_goal_verdict_repr_and_flags():
     v = GoalVerdict(SATISFIED)
     assert v.satisfied and not v.skipped and not v.has_gap
     assert "satisfied" in repr(v)
+
+
+# --- independent judge model ------------------------------------------------
+
+
+class _JudgeClient:
+    def __init__(self):
+        self.active_model = None
+        self.judged_under = None
+
+    @contextmanager
+    def with_model(self, model):
+        self.active_model = model
+        try:
+            yield self
+        finally:
+            self.active_model = None
+
+    def generate_code(self, prompt, system=""):
+        self.judged_under = self.active_model
+        return '{"satisfied": true}'
+
+
+def test_goal_check_uses_independent_judge_model():
+    client = _JudgeClient()
+    res = run_goal_check(
+        "goal", "criteria", "diff", llm_client=client, judge_model="independent/judge"
+    )
+    assert res.status == SATISFIED
+    assert client.judged_under == "independent/judge"
+
+
+def test_goal_check_without_judge_model_uses_generator():
+    client = _JudgeClient()
+    res = run_goal_check("goal", "criteria", "diff", llm_client=client)
+    assert res.status == SATISFIED
+    assert client.judged_under is None
