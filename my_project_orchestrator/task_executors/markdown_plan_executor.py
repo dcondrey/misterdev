@@ -630,6 +630,16 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         )
         critic_rejections = 0
 
+        # Spec-as-tests (opt-in): generate a failing test from the acceptance
+        # criteria BEFORE implementation, written under .orchestrator/spec_tests/
+        # (outside the project suite, so it never flips the integration-gate
+        # baseline). After the task's gates pass, it is run scoped and must now
+        # pass (red -> green). Advisory unless spec_as_tests_block.
+        spec_test_path = self._maybe_generate_spec_test(project, task)
+        spec_test_block = get_setting(
+            project.config, "orchestrator", "spec_as_tests_block"
+        )
+
         # The most recent attempt awaiting an outcome. Recorded as a failure at
         # the top of the next iteration (we only loop again when an attempt
         # failed) and at loop exit; recorded as a success at the success seams.
@@ -901,6 +911,31 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                             prior_errors, attempt, task, classified
                         )
                         continue
+                    # Spec-as-tests: the pre-written failing test must now pass.
+                    spec_status, spec_detail = self._run_spec_test(
+                        project, spec_test_path, test_timeout
+                    )
+                    if spec_status == "red" and spec_test_block:
+                        logger.warning(
+                            f"Spec test still fails on attempt {attempt + 1}; "
+                            "implementation does not satisfy the spec."
+                        )
+                        error_logs = self._build_acceptance_error_context(
+                            prior_errors,
+                            attempt,
+                            task,
+                            format_classified_error(spec_detail),
+                        )
+                        continue
+                    if spec_status == "red":
+                        logger.warning(
+                            f"Spec test for {task.id} still fails (advisory; not "
+                            "blocking). The implementation may not fully satisfy "
+                            "the acceptance criterion."
+                        )
+                        task.processor_data.setdefault("spec_test_gaps", []).append(
+                            spec_detail[:200]
+                        )
                     self._ledger_record(project, task, pending_attempt, success=True)
                     self._cache_store(
                         project,
@@ -1700,9 +1735,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         from my_project_orchestrator.core.independent import generate_independent
 
         judge_model = (project.config.get("judge") or {}).get("model")
-        return generate_independent(
-            project.llm_client, prompt, "", model=judge_model
-        )
+        return generate_independent(project.llm_client, prompt, "", model=judge_model)
 
     def _llm_acceptance_judge(
         self, project: Project, task: Task, criteria: str
@@ -1810,6 +1843,72 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             )
             diffs[path] = diff or "(no textual change)"
         return diffs
+
+    def _maybe_generate_spec_test(self, project: Project, task: Task) -> Optional[str]:
+        """Generate + write a failing spec test for the task, or return None.
+
+        Off unless ``orchestrator.spec_as_tests`` and the task has acceptance
+        criteria. The test is written under ``.orchestrator/spec_tests/`` — NOT
+        the project's own test directory — so it is never collected by the
+        project suite and so cannot flip the integration-gate baseline red. Run
+        scoped later by :meth:`_run_spec_test`. Best-effort: any failure (no
+        client, model error, unwritable path) yields None.
+        """
+        if not get_setting(project.config, "orchestrator", "spec_as_tests"):
+            return None
+        if not getattr(task, "acceptance_criteria", ""):
+            return None
+        from my_project_orchestrator.core.spec_tests import generate_spec_test
+
+        language = (project.config.get("language") or "python").lower()
+        try:
+            source = generate_spec_test(task, project.llm_client, language=language)
+        except Exception as e:  # generation is best-effort
+            logger.debug(f"Spec-test generation skipped: {e}")
+            return None
+        if not source:
+            return None
+        ext = {
+            "python": ".py",
+            "javascript": ".test.js",
+            "typescript": ".test.ts",
+        }.get(language, ".txt")
+        safe_id = re.sub(r"[^A-Za-z0-9_]", "_", str(getattr(task, "id", "task")))
+        path = project.path / ".orchestrator" / "spec_tests" / f"spec_{safe_id}{ext}"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(source, encoding="utf-8")
+        except OSError as e:
+            logger.debug(f"Spec-test write skipped: {e}")
+            return None
+        logger.info(f"Spec-as-test written (run scoped after gates): {path}")
+        return str(path)
+
+    def _run_spec_test(
+        self, project: Project, spec_path: Optional[str], timeout: int
+    ) -> Tuple[str, str]:
+        """Run the generated spec test scoped to its file. Returns (status, detail).
+
+        ``status`` is ``green`` (passes — the spec is satisfied), ``red`` (still
+        fails), or ``skip`` (no spec test, or no scoped runner for this project's
+        language — we only run a single file for pytest/jest-style suites). Never
+        raises.
+        """
+        if not spec_path:
+            return "skip", ""
+        test_cmd = project.config.get("test_command") or ""
+        if "pytest" in test_cmd or spec_path.endswith(".py"):
+            runner = f"pytest -q {shlex.quote(spec_path)}"
+        elif "jest" in test_cmd:
+            runner = f"jest {shlex.quote(spec_path)}"
+        else:
+            return "skip", "no scoped spec-test runner for this project"
+        try:
+            ok, out = self._run_command(project, runner, timeout=timeout)
+        except Exception as e:  # a runner failure must not sink the task
+            logger.debug(f"Spec-test run skipped: {e}")
+            return "skip", ""
+        return ("green" if ok else "red"), out
 
     @staticmethod
     def _build_critic_error_context(objections: List[str]) -> str:

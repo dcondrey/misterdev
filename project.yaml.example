@@ -179,15 +179,17 @@ environment:
 #   min_score: 0.8        # floor; a fraction (0.8) or a percentage (80)
 #   timeout: 1800         # seconds (mutation runs are slow)
 
-# Spec-as-tests (opt-in, off by default; currently DEFERRED). Would generate a
-# failing test from a task's acceptance criteria before it is implemented. The
-# generator (core/spec_tests.py) is built and tested, but it is NOT wired into
-# the build loop yet: writing a failing test inside the wave loop would flip the
-# integration-gate baseline red and silently disable that gate. Enabling the flag
-# today only logs a deferral notice; it never alters the build. See the seam in
-# core/spec_tests.py.
+# Spec-as-tests (opt-in, off by default). Generates a failing test from a task's
+# acceptance criteria before it is implemented, then requires it to pass once the
+# task is built (red->green TDD per task). The generated test is written under
+# .orchestrator/spec_tests/ (OUTSIDE the project suite, so it never flips the
+# integration-gate baseline) and run scoped to its file after the task's gates
+# pass. ADVISORY by default (a still-red spec test is logged, not fatal — the
+# generated test may be imperfect); set spec_as_tests_block for strict TDD.
+# Scoped runs support pytest/jest-style suites; other languages SKIP.
 # orchestrator:
-#   spec_as_tests: true   # staged but DEFERRED; logs a notice, generates nothing
+#   spec_as_tests: true
+#   spec_as_tests_block: false   # true => a still-failing spec test fails the task
 
 # Governance layer (opt-in, off by default). A precise risk classifier gates
 # executor commands that are destructive/irreversible/paid (rm -rf, git push

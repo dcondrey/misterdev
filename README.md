@@ -116,12 +116,16 @@ reports done.
   regenerations it may force before deferring to those gates. Off by default and
   byte-identical when off; daemon-threaded with a hard timeout, so no client / an
   unparseable verdict / a timeout is a SKIP that lets the edit proceed.
-- **Spec-as-tests** (`orchestrator.spec_as_tests`, currently DEFERRED): a tested
-  generator (`core/spec_tests.py`) turns a task's acceptance criteria into a
-  failing pre-implementation test, but it is not yet wired into the build loop
-  (doing so would flip the integration-gate baseline red and disable that gate).
-  Enabling the flag logs a deferral notice and changes nothing; the wiring seam
-  is documented in `core/spec_tests.py`.
+- **Spec-as-tests** (`orchestrator.spec_as_tests`, `spec_as_tests_block`): turns a
+  task's acceptance criteria into a failing pre-implementation test, then requires
+  it to pass once the task is built (real red→green TDD per task). The generated
+  test is written under `.orchestrator/spec_tests/` — **outside** the project
+  suite — so it is never collected by the project tests and can never flip the
+  integration-gate baseline; it is run scoped to its own file after the task's
+  gates pass. ADVISORY by default (a still-red spec test is logged/recorded but
+  doesn't fail the task, since the generated test may itself be imperfect); set
+  `spec_as_tests_block` for strict enforcement. Off by default and byte-identical
+  when off. Scoped runs support pytest/jest-style suites; other languages SKIP.
 - **Regression safety:** branch-per-task, integration gate per wave with
   `git bisect`-style revert of the culprit, test-tamper detection, dirty-tree
   guard.

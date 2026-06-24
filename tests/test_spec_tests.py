@@ -1,10 +1,13 @@
-"""Tests for the spec-as-tests helper (standalone; DEFERRED from the loop).
+"""Tests for the spec-as-tests helper and its per-task wiring.
 
 The generation + write + path logic is unit-tested with a monkeypatched
-generator (no network). A separate test asserts the helper is NOT wired into the
-build loop and that enabling the flag only logs a deferral notice — proving the
-default build loop is unchanged.
+generator (no network). Further tests assert the feature is now WIRED into the
+executor: a generated test is written under ``.orchestrator/spec_tests/`` (not
+the project suite, so the integration-gate baseline is unaffected) and run scoped
+after a task's gates pass — and that the off path leaves the loop unchanged.
 """
+
+from pathlib import Path
 
 from my_project_orchestrator.core.models import Task
 from my_project_orchestrator.core.spec_tests import (
@@ -137,16 +140,14 @@ def test_write_spec_test_creates_dir_and_file(tmp_path):
     assert path == tmp_path / "tests" / "spec_t3.py"
 
 
-# --- deferral: not wired into the loop --------------------------------------
+# --- wiring into the executor (per-task) ------------------------------------
 
 
-def test_spec_as_tests_flag_is_readable_and_off_by_default():
-    # The flag exists, defaults off, and is read via get_setting (so the
-    # config-wiring guard test is satisfied) — but reading it never generates a
-    # test (the loop is unchanged; see the source-level guard below).
+def test_spec_as_tests_flags_readable_and_off_by_default():
     from my_project_orchestrator.config import get_setting, DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG["orchestrator"]["spec_as_tests"] is False
+    assert DEFAULT_CONFIG["orchestrator"]["spec_as_tests_block"] is False
     assert (
         get_setting(
             {"orchestrator": {"spec_as_tests": True}}, "orchestrator", "spec_as_tests"
@@ -155,26 +156,113 @@ def test_spec_as_tests_flag_is_readable_and_off_by_default():
     )
 
 
-def test_spec_tests_helper_is_not_wired_into_the_execute_loop():
-    # DEFERRED contract: the generator must NOT be invoked from the executor's
-    # task loop. Guard at the source level so a future accidental wiring of
-    # generate_spec_test/write_spec_test into _execute_tasks fails this test.
-    import inspect
-    from my_project_orchestrator.agent import ProjectOrchestrator
-
-    src = inspect.getsource(ProjectOrchestrator._execute_tasks)
-    assert "generate_spec_test" not in src
-    assert "write_spec_test" not in src
-    assert "spec_tests" not in src
-
-
-def test_enabling_flag_only_logs_deferral_notice():
-    # When the flag is on, _run_pipeline emits a DEFERRED warning rather than
-    # generating tests. Verify the exact notice the pipeline source carries.
+def test_pipeline_no_longer_carries_deferral_notice():
     import inspect
     from my_project_orchestrator.agent import ProjectOrchestrator
 
     src = inspect.getsource(ProjectOrchestrator._run_pipeline)
-    assert "spec_as_tests is enabled but DEFERRED" in src
-    # And nothing in the pipeline calls the generator.
-    assert "generate_spec_test" not in src
+    assert "DEFERRED" not in src
+
+
+def test_generator_is_wired_into_the_executor():
+    import inspect
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+
+    src = inspect.getsource(MarkdownPlanExecutor._maybe_generate_spec_test)
+    assert "generate_spec_test" in src
+
+
+class _SpecClient:
+    def generate_code(self, prompt, system=""):
+        return "```python\ndef test_spec():\n    assert False\n```"
+
+
+def test_maybe_generate_writes_outside_project_suite(tmp_path):
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+
+    class _Proj:
+        path = tmp_path
+        config = {"orchestrator": {"spec_as_tests": True}, "language": "python"}
+        llm_client = _SpecClient()
+
+    path = MarkdownPlanExecutor()._maybe_generate_spec_test(_Proj(), _task(tid="t9"))
+    assert path is not None
+    p = Path(path)
+    assert p.exists()
+    # Lives under .orchestrator/spec_tests/ — NOT the project's tests/ dir, so it
+    # can never be collected by the project suite or flip the integration gate.
+    assert ".orchestrator" in p.parts and "spec_tests" in p.parts
+
+
+def test_maybe_generate_off_by_default(tmp_path):
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+
+    class _Proj:
+        path = tmp_path
+        config = {}
+        llm_client = _SpecClient()
+
+    assert (
+        MarkdownPlanExecutor()._maybe_generate_spec_test(_Proj(), _task(tid="t1"))
+        is None
+    )
+
+
+def test_run_spec_test_skip_without_path(tmp_path):
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+
+    class _Proj:
+        path = tmp_path
+        config = {}
+        env_manager = None
+
+    assert MarkdownPlanExecutor()._run_spec_test(_Proj(), None, 30)[0] == "skip"
+
+
+def test_run_spec_test_red_then_green(tmp_path):
+    # End-to-end: a failing spec file -> red, a passing one -> green, via real
+    # scoped pytest. Proves the red->green TDD signal actually works.
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+
+    spec_dir = tmp_path / ".orchestrator" / "spec_tests"
+    spec_dir.mkdir(parents=True)
+    failing = spec_dir / "spec_fail.py"
+    failing.write_text("def test_x():\n    assert False\n", encoding="utf-8")
+    passing = spec_dir / "spec_pass.py"
+    passing.write_text("def test_x():\n    assert True\n", encoding="utf-8")
+
+    class _Proj:
+        path = tmp_path
+        config = {"test_command": "pytest -q"}
+        env_manager = None
+
+    e = MarkdownPlanExecutor()
+    assert e._run_spec_test(_Proj(), str(failing), 60)[0] == "red"
+    assert e._run_spec_test(_Proj(), str(passing), 60)[0] == "green"
+
+
+def test_run_spec_test_skip_for_non_python_suite(tmp_path):
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+
+    class _Proj:
+        path = tmp_path
+        config = {"test_command": "cargo test"}
+        env_manager = None
+
+    # A .rs spec can't be run as a standalone file -> skip, never a false red.
+    status, _ = MarkdownPlanExecutor()._run_spec_test(
+        _Proj(), str(tmp_path / "spec.rs"), 30
+    )
+    assert status == "skip"

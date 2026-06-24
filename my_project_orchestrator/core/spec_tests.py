@@ -1,54 +1,31 @@
-"""Spec-as-tests helper (CONSERVATIVE, opt-in, DEFERRED from the build loop).
+"""Spec-as-tests helper (opt-in, wired per-task in the executor).
 
 Idea: before a task is implemented, turn its acceptance criteria into a failing
 test (an executable spec), so "done" means "this test now passes" rather than a
 model's self-report. This is the strongest possible oracle for a single task.
 
-Status — DEFERRED, NOT wired into the build loop. This module is a standalone,
-tested helper plus a documented seam. The generation + write + fail-expectation
-path is implemented and tested here, but :func:`generate_spec_test` is NOT called
-from ``ProjectOrchestrator._execute_tasks``.
+This module is the generation primitive (generate + extract + path). The wiring
+lives in :meth:`MarkdownPlanExecutor._maybe_generate_spec_test` /
+``_run_spec_test``: when ``orchestrator.spec_as_tests`` is on, the generated test
+is written under ``.orchestrator/spec_tests/`` — deliberately OUTSIDE the
+project's own test directory, so it is never collected by the project suite and
+therefore can never flip the integration-gate baseline red. After the task's own
+gates pass, it is run scoped to that one file (pytest/jest-style); a red result
+is advisory by default and blocking under ``orchestrator.spec_as_tests_block``.
 
-Why deferred (per Phase-4 scope discipline — additive or not at all):
-  The natural injection point is the per-task "Prepare tasks with context" block
-  inside the wave loop of ``_execute_tasks``. Writing a *failing* test there is
-  not control-flow-neutral: the integration gate first runs the suite to
-  establish a green baseline (``baseline_ok``) and DISABLES itself if the suite
-  is red. A freshly written failing spec test would flip that baseline red and
-  silently turn off the per-wave regression gate for the rest of the build —
-  changing default behavior of an unrelated gate. Cleanly wiring it therefore
-  requires teaching the integration-gate baseline (and the end-of-build gate) to
-  exclude or expect these pending spec tests, which is a change to the existing
-  loop's control flow, not a pure pre-step. Rather than risk that regression, the
-  generation primitive ships tested and the wiring is left as the seam below.
-
-Seam to wire later (additively, once the baseline-exclusion is handled):
-  In ``_execute_tasks``, inside the per-task ``for task in ready:`` preparation
-  block, when ``get_setting(config, "orchestrator", "spec_as_tests")`` is true
-  and the task has acceptance_criteria, call ::
-
-      from my_project_orchestrator.core.spec_tests import (
-          generate_spec_test, write_spec_test,
-      )
-      gen = generate_spec_test(task, project.llm_client, language=lang)
-      if gen is not None:
-          path = write_spec_test(project.path, task, gen, language=lang)
-          task.processor_data["spec_test_path"] = str(path)
-          task.processor_data["spec_test_expected_fail"] = True
-
-  AND extend the integration-gate baseline so a known-pending spec test does not
-  count against ``baseline_ok`` (e.g. run the spec test separately, or mark it
-  skipped until its task completes). Only then is the addition control-flow-safe.
+``write_spec_test``/``spec_test_path`` remain for callers that want the test in
+the conventional location; the executor does NOT use them (it writes to the
+baseline-safe ``.orchestrator/`` lane instead).
 
 Everything here is best-effort and timeout-bounded: a missing client, an empty
 criterion, or a model error yields ``None`` (no test generated), never a raise.
 """
 
 import re
-import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+from my_project_orchestrator.core.bounded import run_bounded
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -118,23 +95,14 @@ def generate_spec_test(
         language=language,
     )
 
-    box: dict = {"source": None}
-
-    def _run() -> None:
+    def _work() -> Optional[str]:
         try:
-            raw = call(prompt) or ""
-            box["source"] = extract_code(raw)
+            return extract_code(call(prompt) or "")
         except Exception as e:  # any model/IO failure is non-fatal -> no test
             logger.debug(f"Spec-test generation unavailable: {e}")
-            box["source"] = None
+            return None
 
-    worker = threading.Thread(target=_run, daemon=True)
-    worker.start()
-    worker.join(timeout)
-    if worker.is_alive():
-        logger.warning(f"Spec-test generation exceeded {timeout}s; skipping (no test).")
-        return None
-    return box["source"]
+    return run_bounded(_work, timeout, None, "Spec-test generation")
 
 
 def extract_code(text: str) -> Optional[str]:

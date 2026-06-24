@@ -198,6 +198,12 @@ class OrchestratorSettings:
     # only logs that the feature is staged-but-not-wired (see the seam in
     # core/spec_tests.py); it never alters the build loop.
     spec_as_tests: bool = False
+    # When spec_as_tests is on, a per-task generated spec test is run (scoped,
+    # from .orchestrator/spec_tests/) after the task's gates pass. ADVISORY by
+    # default: a still-failing spec test is logged/recorded but does not fail the
+    # task (the generated test may itself be imperfect). Set this true to make a
+    # red spec test fail acceptance and force a retry — strict TDD.
+    spec_as_tests_block: bool = False
     # Golden suite: files the model never sees and may never edit, plus a
     # blocking-gate command. Empty/None = feature off.
     golden_paths: List[str] = field(default_factory=list)
