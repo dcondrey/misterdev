@@ -31,16 +31,13 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from my_project_orchestrator.core.bounded import run_bounded
+from my_project_orchestrator.core.outcomes import GREEN, RED, SKIP, GateOutcome
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
 
 # Outcome constants. SKIP means "no opinion" (no config, missing dependency, or
 # timeout) and must never be treated as a pass/fail signal by callers.
-SKIP = "skip"
-GREEN = "green"
-RED = "red"
-
 # Filename of the captured evidence screenshot, written under ``baseline_dir``
 # (or a temp dir) so a human can inspect what the gate actually saw.
 _EVIDENCE_NAME = "web_verify_evidence.png"
@@ -51,7 +48,7 @@ _BASELINE_NAME = "web_verify_baseline.png"
 _DEFAULT_SCREENSHOT_THRESHOLD = 0.02
 
 
-class WebResult:
+class WebResult(GateOutcome):
     """Outcome of a web verification run. ``status`` is SKIP/GREEN/RED;
     ``evidence`` is the path to the captured screenshot (or ""); ``checks`` is
     the per-check outcome list; ``reason`` explains a SKIP/RED."""
@@ -63,18 +60,9 @@ class WebResult:
         checks: Optional[List[Tuple[str, str]]] = None,
         reason: str = "",
     ):
-        self.status = status
+        super().__init__(status, reason)
         self.evidence = evidence
         self.checks = checks or []
-        self.reason = reason
-
-    @property
-    def passed(self) -> bool:
-        return self.status == GREEN
-
-    @property
-    def skipped(self) -> bool:
-        return self.status == SKIP
 
     def __repr__(self) -> str:
         return f"WebResult(status={self.status!r}, reason={self.reason!r})"

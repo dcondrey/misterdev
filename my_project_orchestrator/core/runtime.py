@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from my_project_orchestrator.core.bounded import run_bounded
+from my_project_orchestrator.core.outcomes import GREEN, RED, SKIP, GateOutcome
 
 from my_project_orchestrator.logging_setup import setup_logger
 
@@ -26,16 +27,12 @@ logger = setup_logger(__name__)
 
 # Outcome constants. SKIP means "no opinion" (no config, timed out, or launch
 # unavailable) and must never be treated as a pass/fail signal by callers.
-SKIP = "skip"
-GREEN = "green"
-RED = "red"
-
 # A hard ceiling on probe-output reading so a chatty process can't grow the
 # evidence buffer without bound.
 _MAX_EVIDENCE_CHARS = 16384
 
 
-class SmokeResult:
+class SmokeResult(GateOutcome):
     """Outcome of a smoke run. ``status`` is SKIP/GREEN/RED; ``evidence`` is the
     captured stdout/stderr (truncated); ``exit_code`` is the process exit code
     when it terminated, else ``None``."""
@@ -47,18 +44,9 @@ class SmokeResult:
         exit_code: Optional[int] = None,
         reason: str = "",
     ):
-        self.status = status
+        super().__init__(status, reason)
         self.evidence = evidence
         self.exit_code = exit_code
-        self.reason = reason
-
-    @property
-    def passed(self) -> bool:
-        return self.status == GREEN
-
-    @property
-    def skipped(self) -> bool:
-        return self.status == SKIP
 
     def __repr__(self) -> str:
         return f"SmokeResult(status={self.status!r}, exit_code={self.exit_code!r})"

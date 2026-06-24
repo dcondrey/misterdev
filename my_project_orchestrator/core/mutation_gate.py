@@ -26,16 +26,13 @@ from pathlib import Path
 from typing import Optional
 
 from my_project_orchestrator.core.bounded import run_bounded
+from my_project_orchestrator.core.outcomes import GREEN, RED, SKIP, GateOutcome
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
 
 # Outcome constants. SKIP means "no opinion" (no config, unparseable score, or
 # timeout) and must never be treated as a pass/fail signal by callers.
-SKIP = "skip"
-GREEN = "green"
-RED = "red"
-
 _MAX_EVIDENCE_CHARS = 16384
 
 # Score patterns, tried in order. Each captures a number normalized to a 0..1
@@ -59,7 +56,7 @@ _SCORE_PATTERNS = (
 )
 
 
-class MutationResult:
+class MutationResult(GateOutcome):
     """Outcome of a mutation-score gate run.
 
     ``status`` is SKIP/GREEN/RED; ``score`` is the parsed mutation score as a
@@ -74,18 +71,9 @@ class MutationResult:
         evidence: str = "",
         reason: str = "",
     ):
-        self.status = status
+        super().__init__(status, reason)
         self.score = score
         self.evidence = evidence
-        self.reason = reason
-
-    @property
-    def passed(self) -> bool:
-        return self.status == GREEN
-
-    @property
-    def skipped(self) -> bool:
-        return self.status == SKIP
 
     def __repr__(self) -> str:
         return f"MutationResult(status={self.status!r}, score={self.score!r})"

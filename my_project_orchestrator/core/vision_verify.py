@@ -24,16 +24,13 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from my_project_orchestrator.core.bounded import run_bounded
+from my_project_orchestrator.core.outcomes import GREEN, RED, SKIP, GateOutcome
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
 
 # Outcome constants. SKIP means "no opinion" (no config, no model/network, or
 # timeout) and must never be treated as a pass/fail signal by callers.
-SKIP = "skip"
-GREEN = "green"
-RED = "red"
-
 _PROMPT = (
     "You are a strict visual acceptance checker. Look at the attached screenshot "
     "and answer ONLY whether it satisfies this requirement:\n\n"
@@ -46,22 +43,13 @@ _PROMPT = (
 VlmCall = Callable[[str, str], str]
 
 
-class VisionResult:
+class VisionResult(GateOutcome):
     """Outcome of a vision check. ``status`` is SKIP/GREEN/RED; ``verdict`` is
     the raw model text (evidence); ``reason`` explains a SKIP/RED."""
 
     def __init__(self, status: str, verdict: str = "", reason: str = ""):
-        self.status = status
+        super().__init__(status, reason)
         self.verdict = verdict
-        self.reason = reason
-
-    @property
-    def passed(self) -> bool:
-        return self.status == GREEN
-
-    @property
-    def skipped(self) -> bool:
-        return self.status == SKIP
 
     def __repr__(self) -> str:
         return f"VisionResult(status={self.status!r}, reason={self.reason!r})"
