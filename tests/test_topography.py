@@ -388,6 +388,36 @@ def test_resolve_references_no_self_edge():
     assert "a.py:rec" not in g.symbols["a.py:rec"].outgoing_calls
 
 
+def test_resolve_references_prefers_same_file_definition():
+    # Two files each define `run`; a caller in a.py that calls run() must resolve
+    # to a.py's run, NOT b.py's (the old name-global map collapsed them).
+    run_a = SymbolNode("run", "a.py", "function", 1, 2, "def run():\n    return 1")
+    run_b = SymbolNode("run", "b.py", "function", 1, 2, "def run():\n    return 2")
+    caller = SymbolNode(
+        "caller", "a.py", "function", 4, 5, "def caller():\n    return run()"
+    )
+    g = _graph_with_symbols(run_a, run_b, caller)
+    c = g.symbols["a.py:caller"]
+    assert "a.py:run" in c.outgoing_calls
+    assert "b.py:run" not in c.outgoing_calls
+    assert "a.py:caller" in g.symbols["a.py:run"].incoming_calls
+    assert "a.py:caller" not in g.symbols["b.py:run"].incoming_calls
+
+
+def test_resolve_references_ambiguous_cross_file_adds_no_edge():
+    # `run` defined in two files, caller in a THIRD file: ambiguous without import
+    # resolution, so we must add NO edge rather than misattribute to one of them.
+    run_a = SymbolNode("run", "a.py", "function", 1, 2, "def run():\n    return 1")
+    run_b = SymbolNode("run", "b.py", "function", 1, 2, "def run():\n    return 2")
+    caller = SymbolNode(
+        "caller", "c.py", "function", 1, 2, "def caller():\n    return run()"
+    )
+    g = _graph_with_symbols(run_a, run_b, caller)
+    c = g.symbols["c.py:caller"]
+    assert "a.py:run" not in c.outgoing_calls
+    assert "b.py:run" not in c.outgoing_calls
+
+
 def test_resolve_references_recomputed_each_build():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)

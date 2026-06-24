@@ -809,12 +809,34 @@ class SymbolGraph:
         )
 
     def _resolve_references(self):
-        name_to_key = {s.name: key for key, s in self.symbols.items()}
+        # Names can collide across files (two functions both named ``run``).
+        # Keying by name alone collapsed them, so every ``run()`` call resolved to
+        # one arbitrary definition — a misattributed edge. Resolve scope-aware
+        # instead: prefer a definition in the caller's OWN file, then a
+        # globally-unique definition; when several files define the name and none
+        # is local, the call is genuinely ambiguous without import resolution, so
+        # we add no edge rather than guess wrong.
+        name_to_keys: Dict[str, List[str]] = {}
+        for key, s in self.symbols.items():
+            name_to_keys.setdefault(s.name, []).append(key)
         for key, symbol in self.symbols.items():
             called = {m.group(1) for m in _CALL_PATTERN.finditer(symbol.content)}
-            for name in called & name_to_key.keys():
-                other_key = name_to_key[name]
-                if other_key != key:
+            for name in called:
+                candidates = name_to_keys.get(name)
+                if not candidates:
+                    continue
+                same_file = [
+                    k
+                    for k in candidates
+                    if k != key and self.symbols[k].file_path == symbol.file_path
+                ]
+                if same_file:
+                    targets = same_file
+                elif len(candidates) == 1 and candidates[0] != key:
+                    targets = candidates
+                else:
+                    continue
+                for other_key in targets:
                     symbol.outgoing_calls.add(other_key)
                     self.symbols[other_key].incoming_calls.add(key)
 
