@@ -272,6 +272,20 @@ def test_golden_command_blocks_when_failing():
     assert health.tests_pass is False
 
 
+def test_golden_failure_output_does_not_leak_to_model_field():
+    # The golden suite is model-blind; its failure output must NOT land in
+    # health.test_output, which the convergence fix-spec feeds back to the model.
+    root = _make_project()
+    gk = GateKeeper(root)
+    success, issues, health = gk.run_gates(
+        {"golden_command": "echo GOLDEN_SECRET_ASSERTION_XYZ; exit 1"}
+    )
+    assert not success
+    assert any("G3.5" in i for i in issues)
+    assert "GOLDEN_SECRET_ASSERTION_XYZ" not in (health.test_output or "")
+    assert "withheld" in (health.test_output or "")
+
+
 def test_golden_command_passes_when_succeeding():
     root = _make_project()
     gk = GateKeeper(root)

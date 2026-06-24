@@ -264,7 +264,20 @@ class GateKeeper:
             if not success:
                 issues.append("G3.5: Golden suite failed")
                 health.tests_pass = False
-                health.test_output = output
+                # Golden tests are model-blind by design; their failure output
+                # must stay blind too. Otherwise the convergence fix-spec
+                # (_build_fix_spec) would feed golden assertions/values back to
+                # the model, letting it target the very tests it can't see. Keep
+                # the detail in the log (human-debuggable) and expose only a
+                # generic signal in the model-facing health output.
+                logger.warning(
+                    "G3.5 golden suite failed; output withheld from the model "
+                    "(model-blind). Detail:\n" + (output or "")[:2000]
+                )
+                health.test_output = (
+                    "Golden suite failed (details withheld — the golden suite is "
+                    "model-blind; see orchestrator logs)."
+                )
                 return False, issues, health
 
         # G3.6: Mutation-score gate (optional, off by default). Runs the project's
