@@ -1486,7 +1486,7 @@ def test_tamper_swift_test_removed_and_skip_added():
     assert _diagnose_tampering(before, after_removed) is not None
     # A skip added -> tamper.
     after_skipped = before.replace(
-        "func testClose() {", "func testClose() throws { throw XCTSkip(\"x\");"
+        "func testClose() {", 'func testClose() throws { throw XCTSkip("x");'
     )
     assert _diagnose_tampering(before, after_skipped) is not None
 
@@ -1554,3 +1554,29 @@ def test_unverified_low_certainty_still_refused_without_build():
         )
         result = MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
         assert result.status != "completed"
+
+
+def test_full_file_fallback_after_repeated_apply_failures():
+    # A SEARCH/REPLACE block whose SEARCH never matches -> repeated apply
+    # failures -> the executor escalates the next attempt to a full-file rewrite
+    # (no anchoring), breaking the stall instead of looping on the same failure.
+    bad = (
+        "```ts:a.ts\n<<<<<<< SEARCH\nDOES NOT EXIST IN FILE\n"
+        "=======\nconst y = 9;\n>>>>>>> REPLACE\n```"
+    )
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "a.ts").write_text("const x = 0;\n", encoding="utf-8")
+        task = _make_task()
+        task.processor_data["strategy"] = "surgical"
+        task.files_to_modify = ["a.ts"]
+        proj = _FakeProject(td, bad)
+        proj.llm_client = _Capturing(bad)
+        proj.config["orchestrator"] = {"max_task_attempts": 3}
+        proj.config["llm"] = {"use_tools": False}  # text SEARCH/REPLACE path
+        MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
+        ps = proj.llm_client.prompts
+        assert len(ps) >= 3
+        assert "SEARCH/REPLACE" in ps[0]  # first attempt: anchored format
+        assert "COMPLETE," not in ps[0]
+        assert "COMPLETE," in ps[2]  # third: full-file fallback engaged

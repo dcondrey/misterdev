@@ -69,6 +69,26 @@ Rules:
   full file contents in the REPLACE section.
 """
 
+# Used after anchored SEARCH/REPLACE edits repeatedly fail to APPLY (the model's
+# SEARCH text doesn't match the file). A full-file rewrite needs no anchoring, so
+# it always applies — converting a no-progress stall into an applied edit the
+# real gates can then give feedback on.
+FULL_FILE_FALLBACK_INSTRUCTIONS = """
+
+## Output format (required)
+Your anchored SEARCH/REPLACE edits failed to apply because the SEARCH text did
+not match the file. STOP using SEARCH/REPLACE. Instead output the COMPLETE,
+updated content of each file you change, as a single fenced code block per file
+with the file path on the fence line:
+
+```<lang>:<path>
+<the entire file, from the first line to the last, with your changes integrated>
+```
+
+Reproduce the whole file verbatim except for your intended change. Do not omit,
+summarize, or elide any existing code.
+"""
+
 # Maps file extensions to language identifiers for syntax validation and
 # contract extraction. Unknown extensions fall back to "text".
 _LANG_MAP = {
@@ -648,6 +668,10 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             else None
         )
         prior_errors: List[str] = []
+        # Count anchored-edit application failures so we can fall back to a
+        # full-file rewrite when SEARCH/REPLACE keeps not matching (a stall that
+        # otherwise makes no progress across attempts).
+        apply_failures = 0
         # Build the symbol graph now (idempotent, lazy): it isn't constructed at
         # project registration anymore, and task execution is the first consumer.
         try:
@@ -805,7 +829,12 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             # tool call; the SEARCH/REPLACE contract applies only to the plain
             # text-generation path, where the parser expects anchored hunks.
             if not get_setting(project.config, "llm", "use_tools"):
-                prompt += EDIT_FORMAT_INSTRUCTIONS
+                # After repeated anchor-match failures, switch to a full-file
+                # rewrite (no anchoring → always applies), breaking the stall.
+                if apply_failures >= 2:
+                    prompt += FULL_FILE_FALLBACK_INSTRUCTIONS
+                else:
+                    prompt += EDIT_FORMAT_INSTRUCTIONS
 
             routed_model = self._select_model(
                 project, task, strategy, attempt, max_retries
@@ -852,12 +881,25 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
 
             edits, resolve_error = self._resolve_edits(project, llm_response)
             if resolve_error:
-                logger.warning(f"Surgical edit could not be applied: {resolve_error}")
-                error_logs = (
-                    "ERROR: a SEARCH/REPLACE edit did not apply cleanly. "
-                    f"{resolve_error} Re-read the file and emit a corrected "
-                    "SEARCH block that matches the current content verbatim."
+                apply_failures += 1
+                logger.warning(
+                    f"Surgical edit could not be applied (#{apply_failures}): "
+                    f"{resolve_error}"
                 )
+                # Two strikes -> next attempt is told to emit the whole file
+                # (FULL_FILE_FALLBACK_INSTRUCTIONS), which can't miss an anchor.
+                if apply_failures >= 2:
+                    error_logs = (
+                        "ERROR: anchored SEARCH/REPLACE edits keep failing to "
+                        "match the file. Output the COMPLETE updated file instead "
+                        "(full contents in one code block with the file path)."
+                    )
+                else:
+                    error_logs = (
+                        "ERROR: a SEARCH/REPLACE edit did not apply cleanly. "
+                        f"{resolve_error} Re-read the file and emit a corrected "
+                        "SEARCH block that matches the current content verbatim."
+                    )
                 continue
             edits = self._validate_edit_paths(project, task, edits)
             if not edits:
