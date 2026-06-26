@@ -269,6 +269,7 @@ _SYNTAX_CHECK_LANGS = {
     "cpp",
     "csharp",
     "swift",
+    "kotlin",
     "javascript",
     "typescript",
     "tsx",

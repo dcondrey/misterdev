@@ -78,9 +78,18 @@ def test_check_syntax_tsx_jsx_not_false_flagged():
 
 
 def test_check_syntax_unsupported_returns_none():
-    # No trustworthy grammar (Kotlin excluded, Java unsupported) -> defer.
+    # No trustworthy grammar (Java grammar not loaded) -> defer to lighter check.
     assert check_syntax("class A {}", "java") is None
-    assert check_syntax("fun x() {}", "kotlin") is None
+
+
+def test_check_syntax_valid_and_invalid_kotlin():
+    # Kotlin is the Android client's language; its edits must be syntax-validated
+    # (regression: the parser was loaded but omitted from the allowlist).
+    if check_syntax("fun f(): Int { return 1 }", "kotlin") is None:
+        return  # grammar not available in this environment
+    assert check_syntax("fun f(): Int { return 1 }", "kotlin") == (True, None)
+    ok, msg = check_syntax("fun f(: Int { return ", "kotlin")
+    assert ok is False and "syntax error" in msg
 
 
 def _symbols_for(filename: str, source: str):
