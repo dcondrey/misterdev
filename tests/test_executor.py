@@ -1453,3 +1453,54 @@ def test_target_gate_runs_in_target_directory():
         result = MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
         # Passes only if `test -f marker.txt` ran inside web/ (marker is not at root).
         assert result.status == "completed"
+
+
+# ----------------------------------------------------------------
+# Frontend test-file recognition + tamper protection (Swift / C# / Kotlin)
+# ----------------------------------------------------------------
+
+
+def test_is_test_file_frontend_languages():
+    assert _is_test_file("clients/apple/Tests/EngineTests.swift")
+    assert _is_test_file("ParserTest.kt")
+    assert _is_test_file("Interop/EmathyEngineTests.cs")
+    assert _is_test_file("clients/apple/Tests/Foo.swift")  # Tests/ dir (capital T)
+    assert not _is_test_file("clients/apple/Sources/App/ContentView.swift")
+
+
+def test_tamper_swift_test_removed_and_skip_added():
+    before = (
+        "import XCTest\n"
+        "final class EngineTests: XCTestCase {\n"
+        "  func testOpen() { XCTAssertEqual(open(), 1) }\n"
+        "  func testClose() { XCTAssertEqual(close(), 0) }\n"
+        "}\n"
+    )
+    # One test deleted -> tamper.
+    after_removed = (
+        "import XCTest\n"
+        "final class EngineTests: XCTestCase {\n"
+        "  func testOpen() { XCTAssertEqual(open(), 1) }\n"
+        "}\n"
+    )
+    assert _diagnose_tampering(before, after_removed) is not None
+    # A skip added -> tamper.
+    after_skipped = before.replace(
+        "func testClose() {", "func testClose() throws { throw XCTSkip(\"x\");"
+    )
+    assert _diagnose_tampering(before, after_skipped) is not None
+
+
+def test_tamper_csharp_ignore_added():
+    before = "[Fact]\npublic void Works() { Assert.Equal(1, F()); }\n"
+    after = "[Fact]\n[Ignore]\npublic void Works() { Assert.Equal(1, F()); }\n"
+    assert _diagnose_tampering(before, after) is not None
+
+
+def test_frontend_test_additions_allowed():
+    before = "[Fact]\npublic void A() { Assert.Equal(1, F()); }\n"
+    after = (
+        "[Fact]\npublic void A() { Assert.Equal(1, F()); }\n"
+        "[Fact]\npublic void B() { Assert.Equal(2, G()); }\n"
+    )
+    assert _diagnose_tampering(before, after) is None  # pure addition is fine

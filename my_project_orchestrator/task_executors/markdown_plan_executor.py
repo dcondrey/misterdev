@@ -212,7 +212,9 @@ _TEST_FILE_PATTERNS = (
     re.compile(r"_test\.(rs|rb)$"),
     re.compile(r"(^|/)test_[^/]+\.(rb|c|cpp|cc)$"),
     re.compile(r"Test[^/]*\.java$"),
-    re.compile(r"(^|/)tests?/"),
+    # Swift XCTest, Kotlin/JUnit, C# (xUnit/NUnit/MSTest) test files.
+    re.compile(r"Tests?\.(swift|kt|cs)$"),
+    re.compile(r"(^|/)[Tt]ests?/"),
 )
 
 # Skip/ignore markers per language. Their COUNT must not grow across an edit:
@@ -228,6 +230,9 @@ _SKIP_PATTERNS = (
     re.compile(r"\bt\.Skip(?:Now)?\b|\bt\.SkipNow\b"),
     re.compile(r"@(?:Ignore|Disabled)\b"),
     re.compile(r"\.skip\s*\(|\.todo\s*\("),
+    # Swift XCTest skip; C# xUnit/NUnit/MSTest skip+ignore.
+    re.compile(r"\bXCTSkip\b|\btry\s+XCTSkip"),
+    re.compile(r"\[Ignore\b|\bSkip\s*=\s*[\"']"),
 )
 
 # Things that count as a "test" definition per language. We compare the total
@@ -239,6 +244,9 @@ _TEST_DEF_PATTERNS = (
     re.compile(r"#\[test\]"),
     re.compile(r"(?m)^\s*func\s+Test\w*\s*\("),
     re.compile(r"@Test\b"),
+    # Swift XCTest methods (func testFoo) and C# attribute-based tests.
+    re.compile(r"(?m)^\s*func\s+test\w*\s*\("),
+    re.compile(r"\[(?:Fact|Theory|Test|TestMethod)\b"),
 )
 
 # Assertion-ish forms. Weakening a test often keeps the function but guts its
