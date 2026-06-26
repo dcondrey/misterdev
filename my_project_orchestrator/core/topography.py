@@ -352,11 +352,21 @@ class SymbolGraph:
         supported_exts = {
             ext for ext, lang in _EXT_TO_LANG.items() if lang in self.parsers
         }
+
+        def _under_hidden_dir(f: Path) -> bool:
+            # Skip files inside any hidden directory (.claude tooling, .github,
+            # .vscode, .build, …). Without this, a large dot-dir like .claude can
+            # fill the outline's file cap and crowd out ALL real source — the
+            # decomposer then sees no actual code to ground tasks against.
+            rel = f.relative_to(self.project_path)
+            return any(part.startswith(".") for part in rel.parts[:-1])
+
         source_files = [
             f
             for f in self.project_path.rglob("*")
             if f.suffix in supported_exts
             and not (_skip & set(f.parts))
+            and not _under_hidden_dir(f)
             and not is_golden_path(
                 str(f.relative_to(self.project_path)), self.golden_paths
             )

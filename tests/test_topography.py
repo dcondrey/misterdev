@@ -447,3 +447,25 @@ def test_resolve_references_recomputed_each_build():
         g2.build()
         assert helper_key in g2.symbols[run_key].outgoing_calls
         assert run_key in g2.symbols[helper_key].incoming_calls
+
+
+def test_symbol_graph_skips_hidden_and_vendor_dirs(tmp_path):
+    # A large hidden dir (.claude) or vendor dir must not crowd real source out
+    # of the symbol graph / outline.
+    from my_project_orchestrator.core.topography import SymbolGraph
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "real.py").write_text("def hello():\n    return 1\n")
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "tool.py").write_text("def hidden():\n    return 2\n")
+    (tmp_path / "node_modules" / "dep").mkdir(parents=True)
+    (tmp_path / "node_modules" / "dep" / "v.py").write_text("def vendored():\n    return 3\n")
+
+    g = SymbolGraph(tmp_path)
+    g.build()
+    if not g.symbols:
+        return  # tree-sitter unavailable in this environment
+    outline = g.project_outline()
+    assert "src/real.py" in outline
+    assert ".claude" not in outline
+    assert "node_modules" not in outline
