@@ -295,3 +295,56 @@ def test_report_to_dict_includes_degraded_subsystems():
 def test_report_to_dict_degraded_empty_by_default():
     r = _make_report()
     assert r.to_dict()["degraded_subsystems"] == []
+
+
+def test_failure_reason_surfaces_logs_first_line():
+    from my_project_orchestrator.core.report import _failure_reason
+    from my_project_orchestrator.core.models import Task, ExecutionResult
+
+    t = Task(id="T-1", description="x", project_ref="p", status="failed")
+    t.execution_history.append(
+        ExecutionResult(
+            status="failed",
+            message="Task failed after 3 attempts + escalation.",
+            logs="SYNTAX ERROR in src/a.ts:\nUnexpected token at line 4\nmore",
+        )
+    )
+    reason = _failure_reason(t)
+    assert reason == "SYNTAX ERROR in src/a.ts:"
+
+
+def test_failure_reason_escapes_pipes_and_falls_back():
+    from my_project_orchestrator.core.report import _failure_reason
+    from my_project_orchestrator.core.models import Task, ExecutionResult
+
+    t = Task(id="T-2", description="x", project_ref="p", status="failed")
+    assert _failure_reason(t) == "failed"  # no history -> status fallback
+    t.execution_history.append(
+        ExecutionResult(status="failed", message="a | b", logs="")
+    )
+    assert "\\|" in _failure_reason(t)  # pipe escaped for the table
+
+
+def test_failed_tasks_table_includes_reason(tmp_path):
+    from my_project_orchestrator.core.report import BuildReport
+    from my_project_orchestrator.core.models import Task, ExecutionResult
+    from my_project_orchestrator.core.assessment import (
+        ProjectAssessment, HealthCheck, ProjectStructure, TechnicalDebt, RiskAssessment,
+    )
+    from my_project_orchestrator.core.modes import BuildMode
+    from datetime import datetime, timezone
+
+    a = ProjectAssessment(
+        structure=ProjectStructure(project_type="web-app"),
+        health=HealthCheck(builds=True),
+        tech_debt=TechnicalDebt(score=1),
+        risk=RiskAssessment(level="low"),
+    )
+    rep = BuildReport(BuildMode.SMART, "x", a, datetime(2026, 1, 1, tzinfo=timezone.utc))
+    t = Task(id="T-9", description="d", project_ref="p", status="failed", title="Do thing")
+    t.execution_history.append(
+        ExecutionResult(status="failed", message="m", logs="Build failed: cannot find module")
+    )
+    rep.failed_tasks.append(t)
+    md = rep.to_markdown() if hasattr(rep, "to_markdown") else rep.render()
+    assert "Build failed: cannot find module" in md and "Reason" in md

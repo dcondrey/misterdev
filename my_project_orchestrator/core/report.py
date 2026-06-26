@@ -18,6 +18,28 @@ from my_project_orchestrator.logging_setup import setup_logger
 logger = setup_logger(__name__)
 
 
+def _failure_reason(task: Task) -> str:
+    """A concise, table-safe reason a task failed, from its last execution result.
+
+    Surfaces WHY a task failed (gate error, acceptance, low certainty, …) in the
+    report instead of forcing a dig through logs. Falls back to the status when no
+    result detail is available.
+    """
+    history = getattr(task, "execution_history", None) or []
+    detail = ""
+    if history:
+        last = history[-1]
+        detail = (
+            getattr(last, "logs", "") or getattr(last, "message", "") or ""
+        ).strip()
+    if not detail:
+        return getattr(task, "status", "failed") or "failed"
+    # First non-empty line, flattened and escaped for a markdown table cell.
+    line = next((ln.strip() for ln in detail.splitlines() if ln.strip()), detail)
+    line = line.replace("|", "\\|")
+    return line[:120] + ("…" if len(line) > 120 else "")
+
+
 class BuildReport:
     def __init__(
         self,
@@ -249,11 +271,12 @@ class BuildReport:
         # Failed tasks
         if self.failed_tasks:
             lines.append("### Failed Tasks")
-            lines.append("| ID | Title | Status |")
+            lines.append("| ID | Title | Reason |")
             lines.append("|------|-------|--------|")
             for t in self.failed_tasks:
                 lines.append(
-                    f"| {t.id} | {t.title or t.description[:60]} | {t.status} |"
+                    f"| {t.id} | {t.title or t.description[:50]} | "
+                    f"{_failure_reason(t)} |"
                 )
             lines.append("")
 
