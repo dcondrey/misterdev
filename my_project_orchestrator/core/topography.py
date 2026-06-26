@@ -14,6 +14,7 @@ Features:
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Any
@@ -353,24 +354,25 @@ class SymbolGraph:
             ext for ext, lang in _EXT_TO_LANG.items() if lang in self.parsers
         }
 
-        def _under_hidden_dir(f: Path) -> bool:
-            # Skip files inside any hidden directory (.claude tooling, .github,
-            # .vscode, .build, …). Without this, a large dot-dir like .claude can
-            # fill the outline's file cap and crowd out ALL real source — the
-            # decomposer then sees no actual code to ground tasks against.
-            rel = f.relative_to(self.project_path)
-            return any(part.startswith(".") for part in rel.parts[:-1])
-
-        source_files = [
-            f
-            for f in self.project_path.rglob("*")
-            if f.suffix in supported_exts
-            and not (_skip & set(f.parts))
-            and not _under_hidden_dir(f)
-            and not is_golden_path(
-                str(f.relative_to(self.project_path)), self.golden_paths
-            )
-        ]
+        # Walk with in-place directory pruning so we never DESCEND into skipped
+        # or hidden dirs (node_modules, .git, .claude, …). rglob would walk all
+        # of node_modules before filtering — slow on a real frontend repo — and a
+        # large dot-dir like .claude could otherwise crowd real source out of the
+        # outline's file cap, leaving the decomposer with no code to ground on.
+        source_files: List[Path] = []
+        for dirpath, dirnames, filenames in os.walk(self.project_path):
+            dirnames[:] = [
+                d for d in dirnames if d not in _skip and not d.startswith(".")
+            ]
+            for fn in filenames:
+                f = Path(dirpath) / fn
+                if f.suffix not in supported_exts:
+                    continue
+                if is_golden_path(
+                    str(f.relative_to(self.project_path)), self.golden_paths
+                ):
+                    continue
+                source_files.append(f)
 
         if not source_files:
             logger.info("No supported source files found; symbol graph will be empty")
