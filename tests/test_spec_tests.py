@@ -266,3 +266,42 @@ def test_run_spec_test_skip_for_non_python_suite(tmp_path):
         _Proj(), str(tmp_path / "spec.rs"), 30
     )
     assert status == "skip"
+
+
+def test_run_spec_test_node_test_red_then_green(tmp_path):
+    # Node's built-in runner (TS stripped) gives the red->green TDD signal for a
+    # typecheck-only frontend target — previously skipped (pytest/jest only).
+    import shutil
+    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+
+    if shutil.which("node") is None:
+        return  # node unavailable in this environment
+
+    spec_dir = tmp_path / ".orchestrator" / "spec_tests"
+    spec_dir.mkdir(parents=True)
+    failing = spec_dir / "spec_fail.test.ts"
+    failing.write_text(
+        'import { test } from "node:test";\n'
+        'import assert from "node:assert/strict";\n'
+        'test("x", () => assert.equal((1 as number) + 1, 3));\n',
+        encoding="utf-8",
+    )
+    passing = spec_dir / "spec_pass.test.ts"
+    passing.write_text(
+        'import { test } from "node:test";\n'
+        'import assert from "node:assert/strict";\n'
+        'test("x", () => assert.equal((1 as number) + 1, 2));\n',
+        encoding="utf-8",
+    )
+
+    class _Proj:
+        path = tmp_path
+        config = {"test_command": "npm test"}  # not pytest/jest -> node --test branch
+        env_manager = None
+
+    e = MarkdownPlanExecutor()
+    # Falls into the node --test branch via the .test.ts suffix.
+    assert e._run_spec_test(_Proj(), str(failing), 60)[0] == "red"
+    assert e._run_spec_test(_Proj(), str(passing), 60)[0] == "green"

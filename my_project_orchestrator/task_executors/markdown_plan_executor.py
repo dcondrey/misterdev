@@ -2018,6 +2018,15 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             runner = f"pytest -q {shlex.quote(spec_path)}"
         elif "jest" in test_cmd:
             runner = f"jest {shlex.quote(spec_path)}"
+        elif "vitest" in test_cmd:
+            runner = f"npx --yes vitest run {shlex.quote(spec_path)}"
+        elif "node --test" in test_cmd or spec_path.endswith(
+            (".test.ts", ".test.js", ".test.mjs")
+        ):
+            # Node's built-in runner strips TS at runtime, so a generated
+            # `.test.ts` spec runs with no extra toolchain — this is what makes
+            # TDD spec-as-tests work for a typecheck-only frontend target.
+            runner = f"node --test {shlex.quote(spec_path)}"
         else:
             return "skip", "no scoped spec-test runner for this project"
         try:
