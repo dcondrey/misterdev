@@ -586,11 +586,16 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
 
         routed_target = select_target(project.config.get("targets") or [], target_files)
         target_cmds = target_commands(routed_target, project.config)
+        # Routed gates run in the TARGET's directory (so `npm run typecheck`
+        # resolves under clients/web, not the repo root). None -> project.path.
+        task_cwd = None
         if routed_target is not None:
+            tp = (routed_target.get("path") or "").strip("/")
+            task_cwd = project.path / tp if tp else project.path
             logger.info(
                 f"Task routed to target "
-                f"'{routed_target.get('name') or routed_target.get('path')}': "
-                f"build={target_cmds['build_command']!r}, "
+                f"'{routed_target.get('name') or routed_target.get('path')}' "
+                f"(cwd={tp or '.'}): build={target_cmds['build_command']!r}, "
                 f"test={target_cmds['test_command']!r}"
             )
 
@@ -679,6 +684,13 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         # project be reduced incrementally instead of demanding one task fix the
         # whole suite. 0 (a green baseline) keeps the gate strictly green-only.
         baseline_failures = int(getattr(project, "baseline_test_failures", 0) or 0)
+        if routed_target is not None:
+            # Never apply the top-level (e.g. core) baseline to a DIFFERENT
+            # target's gate. Use that target's own measured baseline if present,
+            # else 0 (strict green-only) — far safer than inheriting core's count.
+            per_target = getattr(project, "target_baselines", None) or {}
+            key = routed_target.get("name") or routed_target.get("path")
+            baseline_failures = int(per_target.get(key, 0) or 0)
         _selector = getattr(project, "model_selector", None)
         track_models = (
             _selector is not None
@@ -901,7 +913,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             build_cmd = task_build_command
             if build_cmd:
                 success, output = self._run_command(
-                    project, build_cmd, timeout=build_timeout
+                    project, build_cmd, timeout=build_timeout, cwd=task_cwd
                 )
                 if not success:
                     logger.warning(f"Build failed on attempt {attempt + 1}")
@@ -915,7 +927,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
 
             if typecheck_command:
                 success, output = self._run_command(
-                    project, typecheck_command, timeout=build_timeout
+                    project, typecheck_command, timeout=build_timeout, cwd=task_cwd
                 )
                 if not success:
                     logger.warning(f"Type check failed on attempt {attempt + 1}")
@@ -929,7 +941,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
 
             if test_command:
                 success, output = self._run_command(
-                    project, test_command, timeout=test_timeout
+                    project, test_command, timeout=test_timeout, cwd=task_cwd
                 )
                 accepted, post_failures = self._gate_accepts(
                     success, output, baseline_failures
@@ -954,6 +966,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                         verify_acceptance,
                         llm_acceptance_judge,
                         test_timeout,
+                        cwd=task_cwd,
                     )
                     if not acc_ok:
                         logger.warning(
@@ -1039,6 +1052,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                     verify_acceptance,
                     llm_acceptance_judge,
                     test_timeout,
+                    cwd=task_cwd,
                 )
                 if not acc_ok:
                     logger.warning(
@@ -1265,8 +1279,14 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
     # Command execution and file operations
     # ----------------------------------------------------------------
 
-    def _run_command(self, project: Project, command: str, timeout: int = 120) -> tuple:
-        logger.info(f"Running: {command} (timeout={timeout}s)")
+    def _run_command(
+        self, project: Project, command: str, timeout: int = 120, cwd=None
+    ) -> tuple:
+        # cwd lets a routed multi-target task run its gate in the TARGET's
+        # directory (e.g. `npm run typecheck` under clients/web), not the repo
+        # root where that command would not resolve. Defaults to project.path.
+        run_dir = cwd or project.path
+        logger.info(f"Running: {command} (cwd={run_dir}, timeout={timeout}s)")
         activation = (
             project.env_manager.activate_command() if project.env_manager else None
         )
@@ -1276,7 +1296,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         # still executes commands unchanged.
         return _run_cmd(
             command,
-            project.path,
+            run_dir,
             activation,
             timeout,
             policy=getattr(project, "governance_policy", None),
@@ -1753,6 +1773,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         verify_acceptance: bool,
         llm_acceptance_judge: bool,
         timeout: int,
+        cwd=None,
     ) -> Tuple[bool, str]:
         """Verify the task's acceptance_criteria after build/test gates pass.
 
@@ -1772,7 +1793,9 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         command = _extract_acceptance_command(criteria)
         if command:
             logger.info(f"Verifying acceptance criteria via command: {command}")
-            success, output = self._run_command(project, command, timeout=timeout)
+            success, output = self._run_command(
+                project, command, timeout=timeout, cwd=cwd
+            )
             if success:
                 logger.info("Acceptance criteria command passed.")
                 return True, ""

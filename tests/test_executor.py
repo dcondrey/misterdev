@@ -1417,3 +1417,39 @@ def test_non_target_file_uses_top_level_build():
         )
         result = MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
         assert result.status != "completed"  # top-level "false" build fails
+
+
+def test_target_gate_runs_in_target_directory():
+    # The routed gate must execute in the TARGET's dir. Proof: a build command
+    # that only succeeds when run from web/ (a marker file lives only there).
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "web").mkdir()
+        (td / "web" / "x.ts").write_text("const x = 0;\n", encoding="utf-8")
+        (td / "web" / "marker.txt").write_text("ok\n", encoding="utf-8")
+        task = _make_task()
+        task.processor_data["strategy"] = "surgical"
+        task.files_to_modify = ["web/x.ts"]
+        proj = _FakeProject(
+            td,
+            _edit_response("web/x.ts", "const x = 1;\n"),
+            config_extra={
+                "build_command": "false",
+                "targets": [
+                    {
+                        "name": "web",
+                        "path": "web",
+                        "build_command": "test -f marker.txt",
+                        "test_command": "true",
+                    }
+                ],
+                "orchestrator": {
+                    "max_task_attempts": 1,
+                    "verify_acceptance": False,
+                    "llm_acceptance_judge": False,
+                },
+            },
+        )
+        result = MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
+        # Passes only if `test -f marker.txt` ran inside web/ (marker is not at root).
+        assert result.status == "completed"

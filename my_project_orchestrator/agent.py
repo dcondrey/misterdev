@@ -1853,6 +1853,8 @@ class ProjectOrchestrator:
         results: list[dict] = []
         for t in targets:
             name = t.get("name") or t.get("path") or "?"
+            tp = (t.get("path") or "").strip("/")
+            run_dir = project.path / tp if tp else project.path
             ok = True
             failed: list[str] = []
             for key, timeout in (
@@ -1863,7 +1865,7 @@ class ProjectOrchestrator:
                 if not cmd:
                     continue
                 cok, _ = _run_cmd(
-                    cmd, project.path, env_activate, timeout=timeout, runner=runner
+                    cmd, run_dir, env_activate, timeout=timeout, runner=runner
                 )
                 if not cok:
                     ok = False
