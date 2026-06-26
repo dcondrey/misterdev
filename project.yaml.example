@@ -217,6 +217,20 @@ environment:
 # orchestrator:
 #   enable_probes: false
 
+# Multi-target (polyglot) gate routing. For a monorepo with sub-projects in
+# different languages, declare each with its own toolchain; a task's gate is
+# routed to the target that owns its files (the top-level build/test/lint are the
+# fallback for files outside every target). Omit entirely for a single-language
+# project — the path is then unchanged.
+# targets:
+#   - name: core
+#     path: emathy-core
+#     build_command: "cargo build -p emathy-core"
+#     test_command: "cargo test -p emathy-core --lib"
+#   - name: web
+#     path: clients/web
+#     build_command: "npm run typecheck"   # tsc --noEmit; no unit tests yet
+
 # Build workflow settings (6-phase autonomous builder)
 build:
   max_tasks: 30   # also overridable per-run with the CLI flag --max-tasks N

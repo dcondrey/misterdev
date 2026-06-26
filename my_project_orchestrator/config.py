@@ -346,6 +346,12 @@ DEFAULT_CONFIG = {
     # the generator's own model with adversarial framing (weaker independence,
     # logged). Open dict like ``runtime``, not schema-validated.
     "critic": {},
+    # Multi-target (polyglot) gate routing. Each entry declares a sub-project
+    # with its own toolchain: {name, path, build_command, test_command?,
+    # lint_command?, typecheck_command?}. A task's gate is routed to the target
+    # that owns its files; with no targets (the default) the top-level commands
+    # are used unchanged. Open list like ``runtime``, not schema-validated.
+    "targets": [],
     # Shared INDEPENDENT judge model for the post-gate goal-completion check and
     # the LLM acceptance judge: ``model`` (an id different from the generator so
     # those judgments don't share its blind spots). Empty leaves each judge on the

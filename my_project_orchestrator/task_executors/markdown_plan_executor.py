@@ -579,10 +579,29 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             f for f in task.context_files if not _is_golden_path(f, golden_paths)
         ]
 
+        # Multi-target routing: pick the sub-project that owns this task's files
+        # and gate with ITS build/test/typecheck commands. No targets / no match
+        # -> top-level commands, i.e. the single-target path is unchanged.
+        from my_project_orchestrator.core.targets import select_target, target_commands
+
+        routed_target = select_target(project.config.get("targets") or [], target_files)
+        target_cmds = target_commands(routed_target, project.config)
+        if routed_target is not None:
+            logger.info(
+                f"Task routed to target "
+                f"'{routed_target.get('name') or routed_target.get('path')}': "
+                f"build={target_cmds['build_command']!r}, "
+                f"test={target_cmds['test_command']!r}"
+            )
+
         test_command = task.processor_data.get(test_cmd_key)
-        typecheck_command = task.processor_data.get(
-            typecheck_cmd_key
-        ) or project.config.get(typecheck_cmd_key)
+        if routed_target is not None and target_cmds["test_command"] is not None:
+            test_command = target_cmds["test_command"]
+        typecheck_command = (
+            task.processor_data.get(typecheck_cmd_key)
+            or target_cmds["typecheck_command"]
+        )
+        task_build_command = target_cmds["build_command"]
         build_timeout = get_setting(project.config, "build", "build_timeout")
         test_timeout = get_setting(project.config, "build", "test_timeout")
 
@@ -879,7 +898,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                 self._run_formatters(project, edits.keys())
                 edited_files.update(edits.keys())
 
-            build_cmd = project.config.get("build_command")
+            build_cmd = task_build_command
             if build_cmd:
                 success, output = self._run_command(
                     project, build_cmd, timeout=build_timeout

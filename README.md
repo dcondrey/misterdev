@@ -126,6 +126,12 @@ reports done.
   doesn't fail the task, since the generated test may itself be imperfect); set
   `spec_as_tests_block` for strict enforcement. Off by default and byte-identical
   when off. Scoped runs support pytest/jest-style suites; other languages SKIP.
+- **Multi-target (polyglot) gate routing** (`targets:` in project.yaml): a
+  monorepo with sub-projects in different languages (e.g. a Rust core + a
+  TypeScript web client) declares each with its own build/test/lint; a task's
+  gate is routed to the target that owns its files, so a frontend edit is checked
+  with `npm run typecheck`, not `cargo`. Omit `targets` for a single-language
+  project — the path is byte-identical.
 - **Regression safety:** branch-per-task, integration gate per wave with
   `git bisect`-style revert of the culprit, test-tamper detection, dirty-tree
   guard. On a **red baseline** (suite already failing) the gate runs in *count

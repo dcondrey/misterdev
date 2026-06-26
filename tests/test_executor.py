@@ -1357,3 +1357,63 @@ def test_seed_content_reaches_prompt():
             error_template="FAILURES:\n{error_logs}",
         )
         assert "createRateLimiter" in prompts[0]
+
+
+# ----------------------------------------------------------------
+# Multi-target gate routing (polyglot)
+# ----------------------------------------------------------------
+
+
+def test_target_routing_gates_in_target_files_with_target_commands():
+    # A task whose files live under a target is gated by THAT target's commands.
+    # Top-level build is "false" (would fail); the web target's is "true".
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "web").mkdir()
+        (td / "web" / "x.ts").write_text("const x = 0;\n", encoding="utf-8")
+        task = _make_task()
+        task.processor_data["strategy"] = "surgical"
+        task.files_to_modify = ["web/x.ts"]
+        proj = _FakeProject(
+            td,
+            _edit_response("web/x.ts", "const x = 1;\n"),
+            config_extra={
+                "build_command": "false",
+                "targets": [
+                    {
+                        "name": "web",
+                        "path": "web",
+                        "build_command": "true",
+                        "test_command": "true",
+                    }
+                ],
+                "orchestrator": {
+                    "max_task_attempts": 1,
+                    "verify_acceptance": False,
+                    "llm_acceptance_judge": False,
+                },
+            },
+        )
+        result = MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
+        assert result.status == "completed"  # routed to target's passing gate
+
+
+def test_non_target_file_uses_top_level_build():
+    # A file outside every target uses the top-level build ("false" -> fails).
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "other.py").write_text("x = 0\n", encoding="utf-8")
+        task = _make_task()
+        task.processor_data["strategy"] = "surgical"
+        task.files_to_modify = ["other.py"]
+        proj = _FakeProject(
+            td,
+            _edit_response("other.py", "x = 1\n"),
+            config_extra={
+                "build_command": "false",
+                "targets": [{"name": "web", "path": "web", "build_command": "true"}],
+                "orchestrator": {"max_task_attempts": 1},
+            },
+        )
+        result = MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
+        assert result.status != "completed"  # top-level "false" build fails
