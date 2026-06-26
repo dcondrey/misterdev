@@ -2457,3 +2457,41 @@ def test_enable_ab_mcts_default_off():
     from my_project_orchestrator.config import DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG["orchestrator"]["enable_ab_mcts"] is False
+
+
+def test_warn_if_no_test_gate_silent_for_multi_target():
+    import types
+    from my_project_orchestrator.agent import _warn_if_no_test_gate
+    from my_project_orchestrator.core.report import BuildReport
+    from my_project_orchestrator.core.assessment import (
+        ProjectAssessment,
+        HealthCheck,
+        ProjectStructure,
+        TechnicalDebt,
+        RiskAssessment,
+    )
+    from my_project_orchestrator.core.modes import BuildMode
+    from datetime import datetime, timezone
+
+    def _assess():
+        return ProjectAssessment(
+            structure=ProjectStructure(project_type="monorepo", test_command=None),
+            health=HealthCheck(builds=True),
+            tech_debt=TechnicalDebt(score=5),
+            risk=RiskAssessment(level="low"),
+        )
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "tests").mkdir()
+        (root / "tests" / "a.test.js").write_text("", encoding="utf-8")
+        # No top-level test command, but a target declares one -> no warning.
+        proj = types.SimpleNamespace(
+            path=root,
+            config={"targets": [{"name": "web", "path": "web", "build_command": "tsc"}]},
+        )
+        rep = BuildReport(
+            BuildMode.SMART, "x", _assess(), datetime(2026, 1, 1, tzinfo=timezone.utc)
+        )
+        _warn_if_no_test_gate(_assess(), proj, rep)
+        assert not any("No test gate" in d for d in rep.degraded_subsystems)

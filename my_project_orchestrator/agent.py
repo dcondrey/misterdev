@@ -136,6 +136,15 @@ def _warn_if_no_test_gate(assessment, project, report) -> None:
     """
     if assessment.structure.test_command:
         return
+    # Multi-target repos gate per sub-project, so an empty top-level command is
+    # not "no gate": declared targets with a build/test command (or auto-target
+    # discovery) provide the protection. Don't cry wolf in that case.
+    cfg = getattr(project, "config", {}) or {}
+    targets = cfg.get("targets") or []
+    if any(t.get("test_command") or t.get("build_command") for t in targets):
+        return
+    if get_setting(cfg, "orchestrator", "auto_targets"):
+        return
     if not has_test_files(project.path):
         return
     msg = (
