@@ -918,6 +918,11 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                 self._run_formatters(project, edits.keys())
                 edited_files.update(edits.keys())
 
+            # Whether an OBJECTIVE compile/type gate passed this attempt. A green
+            # build or typecheck IS verification, so a typecheck-only target (a
+            # frontend with no unit tests) must NOT then also be gated on the
+            # LLM's self-reported certainty — that wrongly rejects good edits.
+            gate_verified = False
             build_cmd = task_build_command
             if build_cmd:
                 success, output = self._run_command(
@@ -932,6 +937,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                         prior_errors, attempt, output, classified, attributed_error
                     )
                     continue
+                gate_verified = True
 
             if typecheck_command:
                 success, output = self._run_command(
@@ -946,6 +952,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                         prior_errors, attempt, output, classified, attributed_error
                     )
                     continue
+                gate_verified = True
 
             if test_command:
                 success, output = self._run_command(
@@ -1038,13 +1045,15 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
                     error_logs = self._build_error_context(
                         prior_errors, attempt, output, classified, attributed_error
                     )
-            elif certainty < certainty_threshold:
-                # No test gate ran, so completion rests entirely on the LLM's
-                # word. With low certainty that's not enough to trust: force a
-                # retry (which escalates to surgical once attempts run out)
-                # instead of silently accepting unverified code.
+            elif certainty < certainty_threshold and not gate_verified:
+                # No test gate AND no compile/type gate ran, so completion rests
+                # entirely on the LLM's word. With low certainty that's not enough
+                # to trust: force a retry (which escalates to surgical once
+                # attempts run out) instead of silently accepting unverified code.
+                # A green build/typecheck (gate_verified) is objective proof and
+                # bypasses this — the common frontend case (typecheck, no tests).
                 logger.warning(
-                    f"No tests ran and certainty {certainty:.2f} < "
+                    f"No tests/build verified this and certainty {certainty:.2f} < "
                     f"{certainty_threshold:.2f}; refusing silent completion."
                 )
                 error_logs = (

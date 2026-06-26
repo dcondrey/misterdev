@@ -1504,3 +1504,53 @@ def test_frontend_test_additions_allowed():
         "[Fact]\npublic void B() { Assert.Equal(2, G()); }\n"
     )
     assert _diagnose_tampering(before, after) is None  # pure addition is fine
+
+
+def test_build_verified_task_completes_without_tests_or_certainty():
+    # A typecheck-only frontend target: build passes, no test_command. A green
+    # build is objective verification, so completion must NOT be blocked by a low
+    # LLM certainty score (regression: web pilot tasks failed this way).
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "a.ts").write_text("const x = 0;\n", encoding="utf-8")
+        task = _make_task()
+        task.processor_data["strategy"] = "surgical"
+        task.files_to_modify = ["a.ts"]
+        proj = _FakeProject(
+            td,
+            _edit_response("a.ts", "const x = 1;\n"),
+            config_extra={
+                "build_command": "true",  # typecheck-style gate, passes
+                "orchestrator": {
+                    "max_task_attempts": 1,
+                    "verify_acceptance": False,
+                    "llm_acceptance_judge": False,
+                    "certainty_threshold": 0.99,  # force certainty < threshold
+                },
+            },
+        )
+        result = MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
+        assert result.status == "completed"
+
+
+def test_unverified_low_certainty_still_refused_without_build():
+    # The guard still holds when NOTHING verified the change: no test, no build,
+    # low certainty -> refuse silent completion (task fails after its one attempt).
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        (td / "a.ts").write_text("const x = 0;\n", encoding="utf-8")
+        task = _make_task()
+        task.processor_data["strategy"] = "surgical"
+        task.files_to_modify = ["a.ts"]
+        proj = _FakeProject(
+            td,
+            _edit_response("a.ts", "const x = 1;\n"),
+            config_extra={
+                "orchestrator": {
+                    "max_task_attempts": 1,
+                    "certainty_threshold": 0.99,
+                }
+            },
+        )
+        result = MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
+        assert result.status != "completed"
