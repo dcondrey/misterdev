@@ -1120,12 +1120,16 @@ class ProjectOrchestrator:
         executor: MarkdownPlanExecutor,
         test_cmd: str,
         timeout: int,
+        cwd=None,
     ) -> Optional[int]:
         """Full-suite failure count: 0 when green, the parsed count when red, or
-        None when the count can't be parsed (caller then can't count-compare)."""
+        None when the count can't be parsed (caller then can't count-compare).
+
+        ``cwd`` runs the command in a sub-project (target) directory; defaults to
+        the repo root."""
         from my_project_orchestrator.core.validator import _parse_test_counts
 
-        ok, output = executor._run_command(project, test_cmd, timeout=timeout)
+        ok, output = executor._run_command(project, test_cmd, timeout=timeout, cwd=cwd)
         if ok:
             return 0
         total, failures = _parse_test_counts(output)
@@ -1167,6 +1171,84 @@ class ProjectOrchestrator:
             now = self._suite_failures(project, executor, test_cmd, timeout)
             if now is not None and now <= baseline_failures:
                 break
+        return reverted
+
+    @staticmethod
+    def _target_regressed(after: Optional[int], baseline: Optional[int]) -> bool:
+        """Did a target's gate regress vs its baseline?
+
+        ``after``/``baseline`` are :meth:`_suite_failures` results (0 green, N
+        count, None unparseable). A green-now gate never regressed. With no
+        countable baseline we can't compare, so we don't revert. A binary failure
+        now (None) is a regression only if the target was green (baseline 0);
+        otherwise compare counts.
+        """
+        if after == 0:
+            return False
+        if baseline is None:
+            return False
+        if after is None:
+            return baseline == 0
+        return after > baseline
+
+    def _integration_gate_targets(
+        self,
+        project: Project,
+        executor: MarkdownPlanExecutor,
+        targets: list[dict],
+        wave_tasks: list[Task],
+        timeout: int,
+        target_baselines: dict,
+    ) -> list[str]:
+        """Per-target integration gate: validate each sub-project the wave touched
+        with ITS own toolchain (in ITS directory), reverting only the wave commits
+        belonging to a target that regressed. This is the multi-target analogue of
+        :meth:`_integration_gate` — the last place a polyglot run would otherwise
+        gate with the wrong toolchain.
+        """
+        from my_project_orchestrator.core.targets import select_target
+
+        reverted: list[str] = []
+        for tgt in targets:
+            gate_cmd = tgt.get("test_command") or tgt.get("build_command")
+            if not gate_cmd:
+                continue
+            tname = tgt.get("name") or tgt.get("path")
+            tp = (tgt.get("path") or "").strip("/")
+            run_dir = project.path / tp if tp else project.path
+            owned = [
+                t
+                for t in wave_tasks
+                if (
+                    select_target(
+                        targets, list(t.files_to_modify) + list(t.files_to_create)
+                    )
+                    or {}
+                ).get("path")
+                == tgt.get("path")
+            ]
+            if not owned:
+                continue
+            baseline = target_baselines.get(tname)
+            after = self._suite_failures(
+                project, executor, gate_cmd, timeout, cwd=run_dir
+            )
+            if not self._target_regressed(after, baseline):
+                continue
+            logger.warning(
+                f"Integration gate [{tname}]: regressed (baseline={baseline}, "
+                f"after={after}); reverting this target's wave commits."
+            )
+            commits = [(t.id, executor.find_task_commit(project, t.id)) for t in owned]
+            commits = [(tid, sha) for tid, sha in commits if sha]
+            for tid, sha in reversed(commits):
+                if executor.revert_task_commit(project, sha):
+                    reverted.append(tid)
+                now = self._suite_failures(
+                    project, executor, gate_cmd, timeout, cwd=run_dir
+                )
+                if not self._target_regressed(now, baseline):
+                    break
         return reverted
 
     def _integration_gate(
@@ -1282,14 +1364,33 @@ class ProjectOrchestrator:
             get_setting(project.config, "orchestrator", "golden_command"),
         )
         test_timeout = get_setting(project.config, "build", "test_timeout")
+        gate_targets = project.config.get("targets") or []
         gate_active = (
             not flags.no_rollback
             and get_setting(project.config, "orchestrator", "integration_gate")
-            and bool(test_cmd)
+            and (bool(test_cmd) or bool(gate_targets))
             and (Path(project.path) / ".git").exists()
         )
+        # Per-target baselines (multi-target): measure each sub-project's gate in
+        # its own dir ONCE up front, so the per-wave gate reverts only a target
+        # that REGRESSED, and the executor's per-task gate uses the right baseline.
+        target_baselines: dict = {}
+        if gate_active and gate_targets:
+            for tgt in gate_targets:
+                gcmd = tgt.get("test_command") or tgt.get("build_command")
+                if not gcmd:
+                    continue
+                tname = tgt.get("name") or tgt.get("path")
+                tp = (tgt.get("path") or "").strip("/")
+                rdir = project.path / tp if tp else project.path
+                target_baselines[tname] = self._suite_failures(
+                    project, executor, gcmd, test_timeout, cwd=rdir
+                )
+            project.target_baselines = {
+                k: int(v or 0) for k, v in target_baselines.items()
+            }
         baseline_failures = 0
-        if gate_active:
+        if gate_active and test_cmd:
             baseline_ok, baseline_out = executor._run_command(
                 project, test_cmd, timeout=test_timeout
             )
@@ -1497,14 +1598,27 @@ class ProjectOrchestrator:
             # Integration gate: after this wave's merges, revert any task that
             # regressed the full suite before the next wave builds on top of it.
             if gate_active and wave_completed:
-                reverted = self._integration_gate(
-                    project,
-                    executor,
-                    test_cmd,
-                    wave_completed,
-                    test_timeout,
-                    baseline_failures=baseline_failures,
-                )
+                if gate_targets:
+                    # Polyglot: gate each touched sub-project with its own
+                    # toolchain in its own directory (replaces the top-level gate,
+                    # which would use the wrong commands for a frontend wave).
+                    reverted = self._integration_gate_targets(
+                        project,
+                        executor,
+                        gate_targets,
+                        wave_completed,
+                        test_timeout,
+                        target_baselines,
+                    )
+                else:
+                    reverted = self._integration_gate(
+                        project,
+                        executor,
+                        test_cmd,
+                        wave_completed,
+                        test_timeout,
+                        baseline_failures=baseline_failures,
+                    )
                 for tid in reverted:
                     completed_ids.discard(tid)
                     failed_ids.add(tid)

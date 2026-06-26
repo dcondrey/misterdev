@@ -10,7 +10,7 @@ class _FakeExec:
         self._unparseable = unparseable
         self.reverted = []
 
-    def _run_command(self, project, cmd, timeout=0):
+    def _run_command(self, project, cmd, timeout=0, cwd=None):
         n = self._q.pop(0) if self._q else 0
         if self._unparseable:
             return False, "something went very wrong with no countable output"
@@ -94,3 +94,74 @@ def test_integration_gate_green_baseline_uses_binary_path():
     orch = ProjectOrchestrator()
     ex = _FakeExec([0])
     assert orch._integration_gate(None, ex, "t", [_task("T-1")], 1) == []
+
+
+# ----------------------------------------------------------------
+# Per-target integration gate (polyglot)
+# ----------------------------------------------------------------
+
+
+class _P:
+    from pathlib import Path as _Path
+
+    path = _Path("/tmp")
+
+
+def _wtask(tid, files):
+    t = Task(id=tid, description="x", project_ref="p")
+    t.files_to_modify = files
+    return t
+
+
+def test_target_regressed_helper():
+    r = ProjectOrchestrator._target_regressed
+    assert r(0, 0) is False           # green now
+    assert r(0, 5) is False           # green now (was red)
+    assert r(None, None) is False     # no countable baseline
+    assert r(5, None) is False        # no countable baseline
+    assert r(None, 0) is True         # binary fail from a green baseline
+    assert r(None, 3) is False        # binary fail, but baseline was red -> can't compare
+    assert r(7, 5) is True            # count rose
+    assert r(5, 5) is False           # not worse
+
+
+def test_integration_gate_targets_reverts_regressed_target_only():
+    orch = ProjectOrchestrator()
+    targets = [
+        {"name": "web", "path": "clients/web", "test_command": "npm test"},
+        {"name": "core", "path": "rust", "test_command": "cargo test"},
+    ]
+    # web regressed 0 -> green-fail handled via counts here: baseline 6, after 8.
+    ex = _FakeExec([8, 6])  # web after=8 (>6) -> revert web task -> recheck=6
+    web_task = _wtask("T-web", ["clients/web/src/a.ts"])
+    core_task = _wtask("T-core", ["rust/src/x.rs"])  # core not exercised (no counts queued for it)
+    reverted = orch._integration_gate_targets(
+        _P(), ex, targets, [web_task, core_task], 1,
+        {"web": 6, "core": 0},
+    )
+    assert reverted == ["T-web"]
+    assert ex.reverted == ["sha-T-web"]
+
+
+def test_integration_gate_targets_no_revert_when_target_green():
+    orch = ProjectOrchestrator()
+    targets = [{"name": "web", "path": "clients/web", "test_command": "npm test"}]
+    ex = _FakeExec([0])  # web green after wave
+    web_task = _wtask("T-web", ["clients/web/src/a.ts"])
+    reverted = orch._integration_gate_targets(
+        _P(), ex, targets, [web_task], 1, {"web": 0}
+    )
+    assert reverted == []
+    assert ex.reverted == []
+
+
+def test_integration_gate_targets_binary_fail_from_green_reverts():
+    orch = ProjectOrchestrator()
+    targets = [{"name": "web", "path": "clients/web", "build_command": "tsc"}]
+    # Unparseable failure (typecheck) from a green baseline -> regression -> revert.
+    ex = _FakeExec([1], unparseable=True)
+    web_task = _wtask("T-web", ["clients/web/src/a.ts"])
+    reverted = orch._integration_gate_targets(
+        _P(), ex, targets, [web_task], 1, {"web": 0}
+    )
+    assert reverted == ["T-web"]
