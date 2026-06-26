@@ -327,8 +327,27 @@ class SymbolGraph:
             logger.info("Tree-sitter not available; symbol graph disabled")
             return
 
+        # Skip dependency/build-output dirs across toolchains so the symbol map
+        # reflects real source, not generated artifacts (e.g. Swift's `.build`
+        # derived sources and headers, Xcode `DerivedData`, CocoaPods, wasm-pack
+        # `pkg`). Without this a frontend task gets generated junk as context.
         _skip = frozenset(
-            (".venv", ".git", "__pycache__", "node_modules", "target", "build", "dist")
+            (
+                ".venv",
+                ".git",
+                "__pycache__",
+                "node_modules",
+                "target",
+                "build",
+                ".build",
+                "dist",
+                "pkg",
+                "Pods",
+                "DerivedData",
+                ".gradle",
+                ".next",
+                "vendor",
+            )
         )
         supported_exts = {
             ext for ext, lang in _EXT_TO_LANG.items() if lang in self.parsers
