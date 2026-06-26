@@ -65,24 +65,19 @@ def select_target(
     return best
 
 
+_GATE_KEYS = ("build_command", "test_command", "lint_command", "typecheck_command")
+
+
 def target_commands(
     target: Optional[Dict[str, Any]], config: Dict[str, Any]
 ) -> Dict[str, Optional[str]]:
     """Resolve the effective build/test/lint/typecheck commands for a task.
 
-    Uses the matched ``target``'s commands when present, falling back per-command
-    to the top-level config — so a target may override just its build command and
-    inherit the rest. With no target, returns the top-level commands unchanged.
+    A MATCHED target is self-contained: only the commands it declares apply, and
+    any it omits are skipped (None) — NOT inherited from the top-level, which is
+    usually a different toolchain (inheriting ``cargo test`` onto a web task would
+    be meaningless). With NO matched target, the top-level commands are used
+    unchanged (the single-target path).
     """
-
-    def pick(key: str) -> Optional[str]:
-        if target is not None and target.get(key) is not None:
-            return target.get(key)
-        return config.get(key)
-
-    return {
-        "build_command": pick("build_command"),
-        "test_command": pick("test_command"),
-        "lint_command": pick("lint_command"),
-        "typecheck_command": pick("typecheck_command"),
-    }
+    source = target if target is not None else config
+    return {key: source.get(key) for key in _GATE_KEYS}

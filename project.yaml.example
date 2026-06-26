@@ -219,9 +219,10 @@ environment:
 
 # Multi-target (polyglot) gate routing. For a monorepo with sub-projects in
 # different languages, declare each with its own toolchain; a task's gate is
-# routed to the target that owns its files (the top-level build/test/lint are the
-# fallback for files outside every target). Omit entirely for a single-language
-# project — the path is then unchanged.
+# routed to the target that owns its files. A matched target is self-contained —
+# only the commands it lists run (others are skipped, NOT inherited, so a web
+# task is never gated by cargo). The top-level build/test/lint apply only to files
+# outside every target. Omit entirely for a single-language project.
 # targets:
 #   - name: core
 #     path: emathy-core

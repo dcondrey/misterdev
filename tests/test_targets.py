@@ -51,7 +51,7 @@ def test_select_target_ignores_targets_without_path():
     assert select_target(targets, ["clients/web/x.ts"])["name"] == "web"
 
 
-def test_target_commands_uses_target_then_falls_back():
+def test_target_commands_matched_target_is_self_contained():
     config = {
         "build_command": "cargo build --workspace",
         "test_command": "cargo test",
@@ -59,10 +59,11 @@ def test_target_commands_uses_target_then_falls_back():
     }
     web = {"path": "clients/web", "build_command": "npm run typecheck"}
     cmds = target_commands(web, config)
-    # Overrides build; inherits test/lint from top-level config.
+    # Only the target's own commands apply; unspecified ones skip (NOT inherited
+    # — a web task must not be gated by cargo test).
     assert cmds["build_command"] == "npm run typecheck"
-    assert cmds["test_command"] == "cargo test"
-    assert cmds["lint_command"] == "cargo clippy"
+    assert cmds["test_command"] is None
+    assert cmds["lint_command"] is None
 
 
 def test_target_commands_none_target_is_top_level():
