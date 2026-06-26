@@ -236,8 +236,8 @@ environment:
 #     # Opt-in behavioral verification for a frontend target: render + check it
 #     # actually works (not just type-checks). Best-effort; only a failed check
 #     # fails the target. `vision` judges the web gate's screenshot via a VLM.
-#     web: { launch: "npm run serve", url: "http://localhost:8000", checks: ["#app"] }
-#     vision: { assert: "the editor toolbar is visible" }
+#     web: { serve: "npm run serve", url: "http://localhost:8000", checks: ["#app"] }
+#     vision: { assert: "the editor toolbar is visible" }   # judges the web gate's screenshot
 
 # Build workflow settings (6-phase autonomous builder)
 build:
