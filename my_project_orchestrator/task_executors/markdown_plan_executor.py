@@ -64,7 +64,14 @@ more blocks:
 Rules:
 - The SEARCH text must match the current file exactly and identify exactly one
   location; include enough surrounding lines to make it unique.
+- COPY the SEARCH lines verbatim from the file shown in Code Context — do not
+  retype from memory, reformat, or guess; a single wrong character fails the edit.
 - Use several small blocks rather than one large one.
+- To ADD code to an existing file (a new function, import, or export), anchor on
+  a real adjacent line you can see in the file — e.g. an existing function near
+  where the new code belongs — and put that anchor verbatim in BOTH SEARCH and
+  REPLACE, with your new code added in REPLACE. Never anchor on a line you have
+  not seen in the file.
 - To create a NEW file, use a single block with an empty SEARCH section and the
   full file contents in the REPLACE section.
 """
