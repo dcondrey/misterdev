@@ -215,6 +215,10 @@ class OrchestratorSettings:
     # ephemeral scripts to verify facts before planning. On by default (it grounds
     # the spec), but set false for a cheaper/faster run that skips the pre-work.
     enable_probes: bool = True
+    # Auto-detect polyglot sub-projects (targets) when none are declared, so a
+    # monorepo gets per-toolchain gate routing with zero config. Off by default
+    # (explicit ``targets`` is more precise); detected commands are best-effort.
+    auto_targets: bool = False
     # "auto" (worktree isolation on a git repo, else shared), "shared" (one
     # working tree), or "worktree" (always isolate each parallel task).
     parallel_mode: str = "auto"

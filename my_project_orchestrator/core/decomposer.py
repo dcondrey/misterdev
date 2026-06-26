@@ -70,7 +70,7 @@ session (1-20 files) and have a concrete "done" condition.
 
 ### Project Files (REAL paths and their symbols — the actual code that exists)
 {file_map}
-
+{targets_section}
 ## Spec
 {spec}
 
@@ -83,7 +83,7 @@ session (1-20 files) and have a concrete "done" condition.
   change a function, find the file in the map that already defines it and put
   THAT path in files_to_modify. Use files_to_create only for a file that is
   genuinely absent from the map.
-{existing_guidance}- Max {max_tasks} tasks. Prioritize: must-fix > must-complete > should-add.
+{targets_rule}{existing_guidance}- Max {max_tasks} tasks. Prioritize: must-fix > must-complete > should-add.
 - Order: infrastructure > core types > core logic > features > integration > tests > fixes > cleanup.
 - Each task's files_to_modify must not overlap with another task's files_to_create unless a dependency is declared.
 - For DEBUG mode: order by build-blocking > test-blocking > runtime errors > warnings.
@@ -106,6 +106,34 @@ Return a JSON array of task objects. Each object must have exactly these fields:
 Return ONLY the JSON array, no markdown fences or other text."""
 
 
+def _targets_prompt(targets: list[dict] | None) -> tuple[str, str]:
+    """Render the optional sub-project (targets) section and grounding rule.
+
+    Returns ("", "") when there are no targets, so the single-target prompt is
+    unchanged. When present, the planner is told the sub-project boundaries and
+    instructed to keep each task within ONE target so gate routing stays clean.
+    """
+    if not targets:
+        return "", ""
+    lines = ["\n### Sub-projects (targets — each has its OWN build/test toolchain)"]
+    for t in targets:
+        path = (t.get("path") or "").strip("/")
+        if not path:
+            continue
+        name = t.get("name") or path
+        gate = t.get("build_command") or t.get("test_command") or "?"
+        lines.append(f"- {name}: files under `{path}/` (gate: {gate})")
+    section = "\n".join(lines) + "\n"
+    rule = (
+        "- This repo has multiple sub-projects (targets above). Each task's files "
+        "MUST stay within ONE target's directory — never mix files from different "
+        "targets in a single task (they are built/tested with different "
+        "toolchains). Split cross-target work into separate, dependency-ordered "
+        "tasks (e.g. a core task, then the frontend task that consumes it).\n"
+    )
+    return section, rule
+
+
 def decompose_spec(
     spec: str,
     assessment: ProjectAssessment,
@@ -114,6 +142,7 @@ def decompose_spec(
     project_ref: str,
     max_tasks: int = MAX_TASKS,
     file_map: str = "",
+    targets: list[dict] | None = None,
 ) -> list[Task]:
     """Use LLM to decompose a spec into ordered tasks with dependencies."""
     s = assessment.structure
@@ -134,8 +163,12 @@ def decompose_spec(
         )
     )
 
+    targets_section, targets_rule = _targets_prompt(targets)
+
     prompt = DECOMPOSE_PROMPT.format(
         existing_guidance=existing_guidance,
+        targets_section=targets_section,
+        targets_rule=targets_rule,
         file_map=file_map.strip() or "(file map unavailable — infer paths cautiously)",
         project_type=s.project_type,
         languages=", ".join(s.languages) if s.languages else "unknown",

@@ -322,10 +322,13 @@ def detect_build_command(project_path: Path) -> Optional[str]:
     p = project_path
     if (p / "Cargo.toml").exists():
         return "cargo build"
-    if (p / "package.json").exists() and _json_has_test_script(
-        p / "package.json", key="build"
-    ):
-        return "npm run build"
+    if (p / "package.json").exists():
+        # Prefer a `typecheck` script: for a TS project it's the fast, deterministic
+        # gate (tsc --noEmit), whereas `build` often runs heavy bundling/wasm.
+        if _json_has_test_script(p / "package.json", key="typecheck"):
+            return "npm run typecheck"
+        if _json_has_test_script(p / "package.json", key="build"):
+            return "npm run build"
     if (p / "Package.swift").exists():
         return "swift build"
     if any(p.glob("*.sln")) or any(p.glob("*.csproj")):

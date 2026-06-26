@@ -223,6 +223,8 @@ environment:
 # only the commands it lists run (others are skipped, NOT inherited, so a web
 # task is never gated by cargo). The top-level build/test/lint apply only to files
 # outside every target. Omit entirely for a single-language project.
+# Zero-config alternative: set `orchestrator.auto_targets: true` to auto-detect
+# sub-projects (best-effort commands); an explicit `targets` list always wins.
 # targets:
 #   - name: core
 #     path: emathy-core

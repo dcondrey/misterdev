@@ -196,3 +196,49 @@ def test_decompose_without_file_map_uses_fallback_text():
     )
     decompose_spec("do x", assessment, BuildMode.SMART, _Client(), ".")
     assert "file map unavailable" in captured["prompt"]
+
+
+def test_targets_prompt_helper():
+    from my_project_orchestrator.core.decomposer import _targets_prompt
+    section, rule = _targets_prompt(None)
+    assert section == "" and rule == ""
+    section, rule = _targets_prompt(
+        [
+            {"name": "core", "path": "emathy-core", "build_command": "cargo build"},
+            {"name": "web", "path": "clients/web", "build_command": "npm run typecheck"},
+        ]
+    )
+    assert "emathy-core/" in section and "clients/web/" in section
+    assert "cargo build" in section and "npm run typecheck" in section
+    assert "ONE target" in rule
+
+
+def test_decompose_includes_targets_when_present():
+    from my_project_orchestrator.core.decomposer import decompose_spec
+    from my_project_orchestrator.core.assessment import (
+        ProjectAssessment,
+        HealthCheck,
+        ProjectStructure,
+        TechnicalDebt,
+        RiskAssessment,
+    )
+
+    captured = {}
+
+    class _Client:
+        def generate_code(self, prompt, system=""):
+            captured["prompt"] = prompt
+            return "[]"
+
+    assessment = ProjectAssessment(
+        structure=ProjectStructure(project_type="monorepo", languages=["rust"]),
+        health=HealthCheck(builds=True),
+        tech_debt=TechnicalDebt(score=5),
+        risk=RiskAssessment(level="low"),
+    )
+    decompose_spec(
+        "x", assessment, BuildMode.SMART, _Client(), ".",
+        targets=[{"name": "web", "path": "clients/web", "build_command": "npm run typecheck"}],
+    )
+    assert "clients/web/" in captured["prompt"]
+    assert "ONE target" in captured["prompt"]

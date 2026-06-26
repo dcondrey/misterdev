@@ -22,7 +22,96 @@ declared (or no match), everything falls back to the top-level commands, so the
 single-target path is byte-identical to before.
 """
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# Directories that never contain a sub-project worth gating (vendored deps, build
+# output, VCS), so discovery skips them.
+_SKIP_DIRS = {
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "pkg",
+    "vendor",
+    "Pods",
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".next",
+    ".gradle",
+    ".cargo",
+}
+
+# A directory holding any of these is the root of a sub-project (one toolchain).
+_BUILD_MARKERS = (
+    "Cargo.toml",
+    "package.json",
+    "Package.swift",
+    "go.mod",
+    "meson.build",
+    "build.gradle",
+    "build.gradle.kts",
+    "pyproject.toml",
+    "CMakeLists.txt",
+)
+
+
+def _has_marker(d: Path) -> bool:
+    if any((d / m).exists() for m in _BUILD_MARKERS):
+        return True
+    return any(d.glob("*.csproj")) or any(d.glob("*.sln"))
+
+
+def discover_targets(project_path: str, max_depth: int = 3) -> List[Dict[str, Any]]:
+    """Auto-detect sub-projects (targets) in a polyglot monorepo.
+
+    Walks the tree and records the SHALLOWEST build marker in each subtree (a
+    Cargo workspace at ``rust/`` is one target, not one per crate — discovery does
+    not descend past a found marker). The repo root itself is never a target (it
+    is the top-level fallback). Build/test commands are detected per sub-project.
+
+    Conservative on purpose: returns [] unless at least TWO distinct sub-projects
+    are found, so a normal single-project repo is never turned into "targets" and
+    behavior is unchanged. Commands are best-effort — explicit ``targets`` in
+    project.yaml override and tune them.
+    """
+    from my_project_orchestrator.analyzers.project_analyzer import (
+        detect_build_command,
+        detect_test_command,
+    )
+
+    root = Path(project_path)
+    targets: List[Dict[str, Any]] = []
+
+    def scan(d: Path, depth: int, rel: str) -> None:
+        if depth > max_depth:
+            return
+        if d.name in _SKIP_DIRS or (rel and d.name.startswith(".")):
+            return
+        if rel and _has_marker(d):
+            build = detect_build_command(d)
+            test = detect_test_command(d)
+            if build or test:
+                targets.append(
+                    {
+                        "name": rel.replace("/", "-"),
+                        "path": rel,
+                        "build_command": build,
+                        "test_command": test,
+                    }
+                )
+            return  # do not descend into a found sub-project
+        try:
+            children = sorted(c for c in d.iterdir() if c.is_dir())
+        except OSError:
+            return
+        for child in children:
+            scan(child, depth + 1, f"{rel}/{child.name}" if rel else child.name)
+
+    scan(root, 0, "")
+    return targets if len(targets) >= 2 else []
 
 
 def _norm(path: str) -> str:

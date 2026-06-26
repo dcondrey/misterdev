@@ -760,6 +760,7 @@ class ProjectOrchestrator:
         # the executor then CREATES a wrong new file. Feed it the real file+symbol
         # map so a task targets the actual file that defines the code to change.
         file_map = self._project_file_map(project)
+        targets = self._resolve_targets(project)
         tasks = decompose_spec(
             spec,
             assessment,
@@ -768,6 +769,7 @@ class ProjectOrchestrator:
             str(project.path),
             max_tasks=max_tasks,
             file_map=file_map,
+            targets=targets,
         )
         tasks = topological_sort(tasks)
 
@@ -851,7 +853,22 @@ class ProjectOrchestrator:
             validation.build_ran = bool(commands["build_command"])
             validation.tests_ran = bool(commands["test_command"])
             validation.lint_ran = bool(commands["lint_command"])
-            validation.issues = issues
+            # Per-target validation: verify EVERY declared sub-project with its
+            # own toolchain. A target failure fails the run even if the top-level
+            # gate was green (no-op when no targets are declared).
+            target_results = self._validate_targets(project, env_activate)
+            if target_results:
+                summary = ", ".join(
+                    f"{r['name']}={'OK' if r['ok'] else 'FAIL'}" for r in target_results
+                )
+                report.key_decisions.append(f"Per-target validation: {summary}")
+                failed_targets = [r["name"] for r in target_results if not r["ok"]]
+                if failed_targets:
+                    issues = list(issues) + [
+                        f"Target validation failed: {', '.join(failed_targets)}"
+                    ]
+                    validation.issues = issues
+                    success = False
             report.validation = validation
             report.validation_passed = success
             report.health_after = final_health
@@ -893,6 +910,7 @@ class ProjectOrchestrator:
                 str(project.path),
                 max_tasks=max_tasks,
                 file_map=file_map,
+                targets=targets,
             )
             tasks = topological_sort(fix_tasks)
             report.key_decisions.append(
@@ -1789,6 +1807,71 @@ class ProjectOrchestrator:
         except Exception as e:
             logger.warning(f"File map unavailable for decomposition (non-fatal): {e}")
             return ""
+
+    def _resolve_targets(self, project: Project) -> list[dict]:
+        """Explicit ``targets`` if declared, else auto-discovered when enabled.
+
+        Discovered targets are written back into ``project.config['targets']`` so
+        the executor's per-task routing and per-target validation see them too.
+        """
+        explicit = project.config.get("targets") or []
+        if explicit:
+            return explicit
+        if not get_setting(project.config, "orchestrator", "auto_targets"):
+            return []
+        from my_project_orchestrator.core.targets import discover_targets
+
+        discovered = discover_targets(str(project.path))
+        if discovered:
+            names = ", ".join(t["name"] for t in discovered)
+            logger.info(
+                f"Auto-discovered {len(discovered)} polyglot target(s): {names}"
+            )
+            project.config["targets"] = discovered
+        return discovered
+
+    def _validate_targets(
+        self, project: Project, env_activate: Optional[str]
+    ) -> list[dict]:
+        """Run each declared target's build+test gate; return per-target results.
+
+        Closes the multi-target gap where the end-of-run GateKeeper only ran the
+        top-level commands — a cross-target run now verifies EVERY sub-project
+        with its OWN toolchain (so a web regression actually fails the run, not
+        just the per-task typecheck). Returns [] when no targets are declared, so
+        single-target builds are unaffected.
+        """
+        from my_project_orchestrator.core.gatekeeper import _run_cmd
+
+        targets = project.config.get("targets") or []
+        if not targets:
+            return []
+        container = self._container_engine(project)
+        runner = container.run if container else None
+        build_to = get_setting(project.config, "build", "build_timeout")
+        test_to = get_setting(project.config, "build", "test_timeout")
+        results: list[dict] = []
+        for t in targets:
+            name = t.get("name") or t.get("path") or "?"
+            ok = True
+            failed: list[str] = []
+            for key, timeout in (
+                ("build_command", build_to),
+                ("test_command", test_to),
+            ):
+                cmd = t.get(key)
+                if not cmd:
+                    continue
+                cok, _ = _run_cmd(
+                    cmd, project.path, env_activate, timeout=timeout, runner=runner
+                )
+                if not cok:
+                    ok = False
+                    failed.append(key.split("_")[0])
+            results.append(
+                {"name": name, "ok": ok, "detail": ", ".join(failed) or "ok"}
+            )
+        return results
 
     def _analyze(self, project: Project, env_activate: Optional[str]):
         """Phase 1 analysis with config-driven commands and timeouts.
