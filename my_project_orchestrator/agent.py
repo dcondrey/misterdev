@@ -1979,13 +1979,50 @@ class ProjectOrchestrator:
             )
             baseline = target_baselines.get(name)
             regressed = self._target_regressed(after, baseline)
-            detail = (
-                "ok"
-                if not regressed
-                else f"regressed (baseline={baseline}, after={after})"
-            )
-            results.append({"name": name, "ok": not regressed, "detail": detail})
+            ok = not regressed
+            detail = "ok" if ok else f"regressed (baseline={baseline}, after={after})"
+            # Behavioral verification (opt-in): a frontend target may declare a
+            # `web`/`vision` block to verify it actually RENDERS/works, not just
+            # type-checks. Only run when the build/test gate is already clean.
+            if ok and (t.get("web") or t.get("vision")):
+                ok, rt_detail = self._run_target_runtime_gates(project, t, run_dir)
+                if not ok:
+                    detail = rt_detail
+            results.append({"name": name, "ok": ok, "detail": detail})
         return results
+
+    def _run_target_runtime_gates(
+        self, project: Project, target: dict, run_dir
+    ) -> tuple[bool, str]:
+        """Run a target's opt-in web/vision behavioral gates in its directory.
+
+        Mirrors the GateKeeper's G4.7/G4.8 but scoped to a sub-project: the web
+        gate renders + screenshots, the vision gate judges that screenshot. Both
+        are best-effort and timeout-bounded — only a RED (a real failed check)
+        fails the target; a SKIP (no browser/model/config) passes.
+        """
+        evidence = None
+        web_cfg = target.get("web")
+        if web_cfg:
+            from my_project_orchestrator.core.web_verify import run_web_gate
+
+            web = run_web_gate(run_dir, web_cfg)
+            evidence = getattr(web, "evidence", None)
+            if web.status == "red":
+                return False, f"web verify failed ({web.reason or 'no detail'})"
+        vision_cfg = target.get("vision")
+        if vision_cfg:
+            from my_project_orchestrator.core.vision_verify import run_vision_gate
+
+            vc = dict(vision_cfg)
+            if not vc.get("capture") and evidence:
+                vc["capture"] = evidence
+            vision = run_vision_gate(
+                run_dir, vc or None, llm_client=getattr(project, "llm_client", None)
+            )
+            if vision.status == "red":
+                return False, f"vision verify failed ({vision.reason or 'no detail'})"
+        return True, "ok"
 
     def _analyze(self, project: Project, env_activate: Optional[str]):
         """Phase 1 analysis with config-driven commands and timeouts.

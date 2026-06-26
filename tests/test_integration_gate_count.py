@@ -203,3 +203,60 @@ def test_validate_targets_flags_regression():
 
     results = orch._validate_targets(_Proj(), None)
     assert results[0]["name"] == "web" and results[0]["ok"] is False
+
+
+def test_validate_targets_runs_web_gate_red_fails(monkeypatch):
+    from pathlib import Path
+    import my_project_orchestrator.core.web_verify as wv
+
+    class _Web:
+        status, reason, evidence = "red", "submit button missing", None
+
+    monkeypatch.setattr(wv, "run_web_gate", lambda path, cfg: _Web())
+    orch = ProjectOrchestrator()
+    orch._validate_executor = _FakeExec([0, 0])  # build/test green
+
+    class _Proj:
+        path = Path("/tmp")
+        config = {
+            "targets": [
+                {
+                    "name": "web",
+                    "path": "clients/web",
+                    "build_command": "tsc",
+                    "web": {"url": "http://localhost:3000"},
+                }
+            ],
+            "build": {},
+        }
+        target_baselines = {"web": 0}
+        llm_client = None
+
+    results = orch._validate_targets(_Proj(), None)
+    assert results[0]["ok"] is False and "web verify" in results[0]["detail"]
+
+
+def test_validate_targets_web_gate_green_passes(monkeypatch):
+    from pathlib import Path
+    import my_project_orchestrator.core.web_verify as wv
+
+    class _Web:
+        status, reason, evidence = "green", None, "shot.png"
+
+    monkeypatch.setattr(wv, "run_web_gate", lambda path, cfg: _Web())
+    orch = ProjectOrchestrator()
+    orch._validate_executor = _FakeExec([0, 0])
+
+    class _Proj:
+        path = Path("/tmp")
+        config = {
+            "targets": [
+                {"name": "web", "path": "clients/web", "build_command": "tsc", "web": {"url": "x"}}
+            ],
+            "build": {},
+        }
+        target_baselines = {"web": 0}
+        llm_client = None
+
+    results = orch._validate_targets(_Proj(), None)
+    assert results[0]["ok"] is True
