@@ -240,7 +240,13 @@ class BaseLLMClient(ABC):
         """
         self._enforce_budget()
 
-        max_retries = 3
+        # Free models (`:free`) are frequently rate-limited upstream and slow to
+        # even return the 429. Since routed calls fall back to the reliable paid
+        # model on failure, a free model should FAIL FAST (one shot) rather than
+        # burn ~minutes on slow retries before that fallback kicks in. Paid models
+        # keep full retry resilience for genuine transient errors.
+        is_free = ":free" in (getattr(self, "model", "") or "")
+        max_retries = 1 if is_free else 3
         base_delay = 1.0
 
         last_error = None

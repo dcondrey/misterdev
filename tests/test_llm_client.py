@@ -973,3 +973,29 @@ def test_per_task_cost_cap_auto_is_budget_fraction():
     assert not client.task_cost_exceeded("T-1")
     client.cost_by_task = {"T-1": 6.0}
     assert client.task_cost_exceeded("T-1")
+
+
+def test_free_model_fails_fast_single_attempt(monkeypatch):
+    # A rate-limited free model must not burn 3 slow retries — it fails after one
+    # shot so the routed-call fallback to the paid model kicks in quickly.
+    import my_project_orchestrator.llm.client as client_mod
+
+    monkeypatch.setattr(client_mod.time, "sleep", lambda *_: None)
+    err = LLMCallError("429 rate limit", retryable=True)
+    c = FakeLLMClient(responses=[err, err, err])
+    c.model = "cognitivecomputations/dolphin:free"
+    with pytest.raises(LLMCallError):
+        c.generate("p")
+    assert c._call_count == 1
+
+
+def test_paid_model_keeps_full_retries(monkeypatch):
+    import my_project_orchestrator.llm.client as client_mod
+
+    monkeypatch.setattr(client_mod.time, "sleep", lambda *_: None)
+    err = LLMCallError("429 rate limit", retryable=True)
+    c = FakeLLMClient(responses=[err, err, err])
+    c.model = "anthropic/claude-sonnet-4-6"
+    with pytest.raises(LLMCallError):
+        c.generate("p")
+    assert c._call_count == 3
