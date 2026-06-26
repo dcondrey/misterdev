@@ -1947,46 +1947,44 @@ class ProjectOrchestrator:
     def _validate_targets(
         self, project: Project, env_activate: Optional[str]
     ) -> list[dict]:
-        """Run each declared target's build+test gate; return per-target results.
+        """Validate each declared target with its OWN toolchain, vs its baseline.
 
         Closes the multi-target gap where the end-of-run GateKeeper only ran the
-        top-level commands — a cross-target run now verifies EVERY sub-project
-        with its OWN toolchain (so a web regression actually fails the run, not
-        just the per-task typecheck). Returns [] when no targets are declared, so
+        top-level commands. Crucially this compares against each target's baseline
+        (measured before the run, stored on ``project.target_baselines``), so a
+        target that was ALREADY broken (e.g. a frontend with pre-existing errors)
+        is not counted as a failure for a run that never touched it — only a
+        genuine REGRESSION fails. Returns [] when no targets are declared, so
         single-target builds are unaffected.
         """
-        from my_project_orchestrator.core.gatekeeper import _run_cmd
-
         targets = project.config.get("targets") or []
         if not targets:
             return []
-        container = self._container_engine(project)
-        runner = container.run if container else None
+        # getattr seam lets tests inject a fake runner; prod creates a real one.
+        executor = getattr(self, "_validate_executor", None) or MarkdownPlanExecutor()
+        target_baselines = getattr(project, "target_baselines", {}) or {}
         build_to = get_setting(project.config, "build", "build_timeout")
         test_to = get_setting(project.config, "build", "test_timeout")
         results: list[dict] = []
         for t in targets:
+            gate_cmd = t.get("test_command") or t.get("build_command")
+            if not gate_cmd:
+                continue
             name = t.get("name") or t.get("path") or "?"
             tp = (t.get("path") or "").strip("/")
             run_dir = project.path / tp if tp else project.path
-            ok = True
-            failed: list[str] = []
-            for key, timeout in (
-                ("build_command", build_to),
-                ("test_command", test_to),
-            ):
-                cmd = t.get(key)
-                if not cmd:
-                    continue
-                cok, _ = _run_cmd(
-                    cmd, run_dir, env_activate, timeout=timeout, runner=runner
-                )
-                if not cok:
-                    ok = False
-                    failed.append(key.split("_")[0])
-            results.append(
-                {"name": name, "ok": ok, "detail": ", ".join(failed) or "ok"}
+            timeout = test_to if t.get("test_command") else build_to
+            after = self._suite_failures(
+                project, executor, gate_cmd, timeout, cwd=run_dir
             )
+            baseline = target_baselines.get(name)
+            regressed = self._target_regressed(after, baseline)
+            detail = (
+                "ok"
+                if not regressed
+                else f"regressed (baseline={baseline}, after={after})"
+            )
+            results.append({"name": name, "ok": not regressed, "detail": detail})
         return results
 
     def _analyze(self, project: Project, env_activate: Optional[str]):

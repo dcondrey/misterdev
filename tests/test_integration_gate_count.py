@@ -165,3 +165,41 @@ def test_integration_gate_targets_binary_fail_from_green_reverts():
         _P(), ex, targets, [web_task], 1, {"web": 0}
     )
     assert reverted == ["T-web"]
+
+
+def test_validate_targets_ignores_pre_broken_target():
+    # A target broken at BASELINE (e.g. Apple's pre-existing errors) must NOT fail
+    # a run that never fixed it — only a genuine regression fails.
+    from pathlib import Path
+
+    orch = ProjectOrchestrator()
+    orch._validate_executor = _FakeExec([1], unparseable=True)  # still broken now
+
+    class _Proj:
+        path = Path("/tmp")
+        config = {
+            "targets": [{"name": "apple", "path": "clients/apple", "build_command": "swift build"}],
+            "build": {},
+        }
+        target_baselines = {"apple": None}  # was unparseable-broken at baseline
+
+    results = orch._validate_targets(_Proj(), None)
+    assert results == [{"name": "apple", "ok": True, "detail": "ok"}]
+
+
+def test_validate_targets_flags_regression():
+    from pathlib import Path
+
+    orch = ProjectOrchestrator()
+    orch._validate_executor = _FakeExec([1], unparseable=True)  # binary fail now
+
+    class _Proj:
+        path = Path("/tmp")
+        config = {
+            "targets": [{"name": "web", "path": "clients/web", "build_command": "tsc"}],
+            "build": {},
+        }
+        target_baselines = {"web": 0}  # was green
+
+    results = orch._validate_targets(_Proj(), None)
+    assert results[0]["name"] == "web" and results[0]["ok"] is False
