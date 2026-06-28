@@ -277,6 +277,19 @@ class OrchestratorSettings:
     adversarial_critic: bool = False
     critic_timeout: int = 60
     critic_max_rejections: int = 2
+    # Independent completeness-claim verifier. Before a build composes its spec
+    # and tasks, each feature the analyzer flagged "incomplete" and each "stub"
+    # file is rechecked against the REAL file + tests by a second component
+    # (ideally the independent ``judge.model``). A claim it refutes WITH evidence
+    # — documented graceful-degradation, a platform no-op, a parity shim, or
+    # already-tested code — is dropped, so no budget is spent "fixing" intentional
+    # design. Conservative: only a positive refutation drops a claim; unsure, a
+    # skip, an error, or a timeout KEEPS it, so genuine work is never lost. On by
+    # default — a cheap once-per-build correctness win that degrades to a no-op
+    # when no LLM client is available. ``verify_claims_timeout`` bounds each
+    # claim's judgment.
+    verify_claims: bool = True
+    verify_claims_timeout: int = 45
 
 
 PROMPT_TEMPLATES = {

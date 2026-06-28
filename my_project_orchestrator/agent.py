@@ -1,4 +1,5 @@
 import concurrent.futures
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -729,6 +730,12 @@ class ProjectOrchestrator:
             except Exception as e:
                 logger.warning(f"Probe discovery failed (non-fatal): {e}")
                 report.degraded_subsystems.append(f"Empirical probes: {e}")
+
+        # Verify completeness claims against the real source before they shape the
+        # spec or the task list, so deliberate design (graceful-degradation,
+        # platform no-ops, parity shims) is not planned as work. Best-effort and
+        # conservative: only claims the verifier refutes with evidence are dropped.
+        self._verify_completeness_claims(project, assessment, report)
 
         # Phase 2: Generate Spec
         spec = self._generate_spec(
@@ -1931,6 +1938,128 @@ class ProjectOrchestrator:
             logger.warning(f"File map unavailable for decomposition (non-fatal): {e}")
             return ""
 
+    @staticmethod
+    def _resolve_claim_file(root: Path, label: str, file_map: str) -> Optional[Path]:
+        """Best-effort map a claim label to a real file for evidence.
+
+        A label that is itself a path wins; otherwise the longest identifier
+        tokens in it (e.g. "TractBackend" from "TractBackend wasm inference") are
+        matched against the file+symbol map, and the first file that mentions one
+        is used. Returns None when nothing resolves — the verifier then judges
+        from the description + verified build/test state alone and keeps the claim
+        unless it is clearly refutable.
+        """
+        if label:
+            direct = root / label
+            if direct.is_file():
+                return direct
+        tokens = sorted(
+            set(re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", label or "")),
+            key=len,
+            reverse=True,
+        )
+        for token in tokens:
+            for line in file_map.splitlines():
+                if token in line:
+                    cand = root / line.split(":", 1)[0].strip()
+                    if cand.is_file():
+                        return cand
+        return None
+
+    def _verify_completeness_claims(
+        self, project: Project, assessment: ProjectAssessment, report: BuildReport
+    ) -> None:
+        """Drop completeness claims a second component refutes against the source.
+
+        The analyzer flags "incomplete"/"stub" items from a lossy overview, so it
+        can mislabel deliberate design (graceful-degradation, platform no-ops,
+        parity shims) as work. Before the spec and tasks are built, recheck each
+        claim against the REAL file plus the verified build/test state with an
+        independent verifier and prune only the ones it refutes WITH evidence;
+        unsure / skip / timeout keeps the claim, so genuine work is never lost.
+        No-op when disabled or when no LLM verifier is available.
+        """
+        if not get_setting(project.config, "orchestrator", "verify_claims"):
+            return
+        feats = assessment.features
+        if not feats.incomplete and not feats.stubs:
+            logger.info(
+                "Completeness-claim verifier: no incomplete/stub claims flagged; "
+                "nothing to verify."
+            )
+            return
+
+        from my_project_orchestrator.analyzers.project_analyzer import (
+            _health_ground_truth,
+        )
+        from my_project_orchestrator.core.claim_verifier import Claim, verify_claims
+
+        root = project.path
+        health = _health_ground_truth(assessment.health)
+        file_map = self._project_file_map(project)
+
+        def evidence_for(path: Optional[Path]) -> str:
+            body = ""
+            if path is not None and path.is_file():
+                try:
+                    body = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    body = ""
+            return f"{body}\n\n{health}".strip()
+
+        claims = [
+            Claim(
+                kind="incomplete",
+                label=fi.name,
+                description=fi.description,
+                evidence=evidence_for(
+                    self._resolve_claim_file(root, fi.name, file_map)
+                ),
+            )
+            for fi in feats.incomplete
+        ]
+        claims += [
+            Claim(
+                kind="stub",
+                label=sp,
+                description="flagged as a stub file",
+                evidence=evidence_for(root / sp),
+            )
+            for sp in feats.stubs
+            if isinstance(sp, str)
+        ]
+
+        judge_model = (project.config.get("judge") or {}).get("model")
+        timeout = get_setting(project.config, "orchestrator", "verify_claims_timeout")
+        logger.info(
+            f"Verifying {len(claims)} completeness claim(s) against the real source..."
+        )
+        try:
+            verdicts = verify_claims(
+                claims,
+                llm_client=project.llm_client,
+                model=judge_model,
+                timeout=timeout,
+            )
+        except Exception as e:  # the gate must never crash a build
+            logger.warning(f"Completeness-claim verification failed (non-fatal): {e}")
+            report.degraded_subsystems.append(f"Claim verifier: {e}")
+            return
+
+        refuted = {v.claim.label: v.reason for v in verdicts if v.refuted}
+        logger.info(
+            f"Completeness-claim verification: {len(claims) - len(refuted)} kept, "
+            f"{len(refuted)} dropped."
+        )
+        if not refuted:
+            return
+        feats.incomplete = [fi for fi in feats.incomplete if fi.name not in refuted]
+        feats.stubs = [sp for sp in feats.stubs if sp not in refuted]
+        for label, reason in refuted.items():
+            msg = f"Dropped phantom completeness claim '{label}': {reason}"
+            logger.info(msg)
+            report.key_decisions.append(msg)
+
     def _resolve_targets(self, project: Project) -> list[dict]:
         """Explicit ``targets`` if declared, else auto-discovered when enabled.
 
@@ -2039,6 +2168,11 @@ class ProjectOrchestrator:
         Shared by build() and interactive_plan() so the analyzer's parameters
         (and any future config wiring) live in exactly one place.
         """
+        # Build the project's symbol graph ONCE via its TopographyEngine and feed
+        # the outline to the analyzer, instead of letting the source overview parse
+        # a second throwaway graph. The engine's initialize() is idempotent, so the
+        # later decomposition/file-map calls reuse this same graph.
+        project_outline = self._project_file_map(project) or None
         return analyze_project(
             project.path,
             project.llm_client,
@@ -2050,6 +2184,7 @@ class ProjectOrchestrator:
             test_timeout=get_setting(project.config, "build", "test_timeout"),
             lint_timeout=get_setting(project.config, "build", "lint_timeout"),
             parallel=get_setting(project.config, "build", "parallel_analysis"),
+            project_outline=project_outline,
         )
 
     def _get_or_register(self, project_path: str | Path) -> Optional[Project]:
