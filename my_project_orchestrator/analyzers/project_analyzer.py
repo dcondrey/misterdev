@@ -645,10 +645,14 @@ def _leading_doc(path: Path, max_lines: int = 40, max_chars: int = 220) -> str:
     block_end = ""
     for raw in head:
         line = raw.strip()
-        if not doc and not in_block:
+        if not in_block:
             if not line:
-                continue  # leading blank lines
-            if line.startswith("#!"):
+                # Skip blank lines anywhere in the leading comment region (not just
+                # before the first comment), so an intent stated after a blank
+                # separator line is still collected; the first real CODE line below
+                # still ends the block.
+                continue
+            if not doc and line.startswith("#!"):
                 continue  # shebang
         if in_block:
             end = line.find(block_end)

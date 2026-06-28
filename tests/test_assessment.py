@@ -58,6 +58,21 @@ def test_leading_doc_grafts_deep_intent_sentence():
         assert "degrades to empty output by design" in doc
 
 
+def test_leading_doc_collects_intent_after_blank_separator():
+    # A blank line between leading comment lines must NOT terminate collection,
+    # or intent stated after the blank (the degrade/parity sentence) is lost.
+    with tempfile.TemporaryDirectory() as td:
+        f = Path(td) / "backend.rs"
+        f.write_text(
+            "// Tract inference backend.\n"
+            "\n"
+            "// Degrades to empty on wasm by design; nothing panics.\n"
+            "fn embed() {}\n"
+        )
+        doc = _leading_doc(f)
+        assert "Degrades to empty on wasm by design" in doc
+
+
 def test_leading_doc_empty_when_code_first():
     with tempfile.TemporaryDirectory() as td:
         f = Path(td) / "a.rs"

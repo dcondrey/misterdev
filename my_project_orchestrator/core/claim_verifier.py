@@ -18,6 +18,7 @@ SKIP (keep the claim) on no client, an unparseable verdict, any error, or the
 hard timeout. The decomposer and gates remain the ground truth.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
@@ -123,7 +124,11 @@ def verify_claims(
     With no callable and no client, every claim is KEPT (no verifier available),
     so the behavior is byte-identical to not running the gate. ``timeout`` is the
     hard ceiling PER claim; an unparseable verdict, any error, or a timeout KEEPS
-    that claim. Returns one verdict per input claim, in order.
+    that claim. Independent claims fan out across a small thread pool (the
+    analyzers do the same) EXCEPT when an independent ``model`` is configured:
+    routing through it uses ``with_model``, which mutates shared client state and
+    is not thread-safe, so that path stays sequential. Returns one verdict per
+    input claim, in order.
     """
     if not claims:
         return []
@@ -139,8 +144,7 @@ def verify_claims(
             ClaimVerdict(c, KEPT, reason="no LLM verifier available") for c in claims
         ]
 
-    verdicts: List[ClaimVerdict] = []
-    for claim in claims:
+    def judge(claim: Claim) -> ClaimVerdict:
         prompt = _VERIFY_PROMPT.format(
             kind=claim.kind,
             label=claim.label or "(unnamed)",
@@ -150,22 +154,25 @@ def verify_claims(
             ],
         )
 
-        def _work(c=claim, p=prompt) -> ClaimVerdict:
+        def _work() -> ClaimVerdict:
             try:
-                return _parse_verdict(c, call(p) or "")
+                return _parse_verdict(claim, call(prompt) or "")
             except Exception as e:  # any model/IO failure is non-fatal -> keep
-                logger.debug(f"Claim verifier unavailable for {c.label!r}: {e}")
-                return ClaimVerdict(c, KEPT, reason=f"error: {e}")
+                logger.debug(f"Claim verifier unavailable for {claim.label!r}: {e}")
+                return ClaimVerdict(claim, KEPT, reason=f"error: {e}")
 
-        verdicts.append(
-            run_bounded(
-                _work,
-                timeout,
-                ClaimVerdict(claim, KEPT, reason="timed out"),
-                "Completeness-claim verifier",
-            )
+        return run_bounded(
+            _work,
+            timeout,
+            ClaimVerdict(claim, KEPT, reason="timed out"),
+            "Completeness-claim verifier",
         )
-    return verdicts
+
+    # `model` set -> per-call with_model() is not thread-safe -> sequential.
+    if model or len(claims) == 1:
+        return [judge(c) for c in claims]
+    with ThreadPoolExecutor(max_workers=min(4, len(claims))) as pool:
+        return list(pool.map(judge, claims))
 
 
 def _parse_verdict(claim: Claim, text: str) -> ClaimVerdict:
@@ -187,10 +194,12 @@ def _parse_verdict(claim: Claim, text: str) -> ClaimVerdict:
     reason = obj.get("reason")
     reason = reason.strip() if isinstance(reason, str) and reason.strip() else ""
     if real is False:
+        # Surface a content-free refute honestly (it dropped a claim with no stated
+        # justification) instead of fabricating a confident-sounding rationale.
         return ClaimVerdict(
             claim,
             REFUTED,
-            reason=reason or "false positive (intentional/complete)",
+            reason=reason or "refuted without a stated reason",
             raw=text,
         )
     if real is True:

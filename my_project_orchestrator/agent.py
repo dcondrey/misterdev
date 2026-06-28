@@ -1942,25 +1942,31 @@ class ProjectOrchestrator:
     def _resolve_claim_file(root: Path, label: str, file_map: str) -> Optional[Path]:
         """Best-effort map a claim label to a real file for evidence.
 
-        A label that is itself a path wins; otherwise the longest identifier
-        tokens in it (e.g. "TractBackend" from "TractBackend wasm inference") are
-        matched against the file+symbol map, and the first file that mentions one
-        is used. Returns None when nothing resolves — the verifier then judges
-        from the description + verified build/test state alone and keeps the claim
-        unless it is clearly refutable.
+        A label that is itself a path wins. Otherwise its DISTINCTIVE identifier
+        tokens (length >= 5, or CamelCase) are matched as WHOLE WORDS against the
+        file+symbol map, longest first, and the first file that mentions one is
+        used. The word-boundary + distinctiveness rules stop a generic token like
+        "backend" from matching an unrelated ``backend_registry.py``. Returns None
+        when nothing resolves — the caller then leaves the claim unverified rather
+        than judging it against the wrong file.
         """
         if label:
             direct = root / label
             if direct.is_file():
                 return direct
         tokens = sorted(
-            set(re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", label or "")),
+            {
+                t
+                for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", label or "")
+                if len(t) >= 5 or any(c.isupper() for c in t)
+            },
             key=len,
             reverse=True,
         )
         for token in tokens:
+            pattern = re.compile(rf"\b{re.escape(token)}\b")
             for line in file_map.splitlines():
-                if token in line:
+                if pattern.search(line):
                     cand = root / line.split(":", 1)[0].strip()
                     if cand.is_file():
                         return cand
@@ -1998,45 +2004,80 @@ class ProjectOrchestrator:
         health = _health_ground_truth(assessment.health)
         file_map = self._project_file_map(project)
 
-        def evidence_for(path: Optional[Path]) -> str:
-            body = ""
-            if path is not None and path.is_file():
-                try:
-                    body = path.read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    body = ""
-            return f"{body}\n\n{health}".strip()
+        def read_body(path: Optional[Path]) -> str:
+            if path is None or not path.is_file():
+                return ""
+            try:
+                return path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return ""
 
-        claims = [
-            Claim(
-                kind="incomplete",
-                label=fi.name,
-                description=fi.description,
-                evidence=evidence_for(
-                    self._resolve_claim_file(root, fi.name, file_map)
-                ),
+        # Build a claim ONLY when the claimed file's real source is in hand. Without
+        # it the verifier would see just the "build passes" line — which the prompt
+        # treats as grounds to refute — and could drop a genuine claim on no
+        # evidence, so an unresolved claim is KEPT, unverified. `health` goes FIRST
+        # so it survives the verifier's evidence truncation. `origin` is the
+        # assessment object/string, so pruning is by identity and a shared or empty
+        # label can't drop the wrong claim.
+        entries = []  # (Claim, kind, origin)
+        unverified = 0
+        for fi in feats.incomplete:
+            path = self._resolve_claim_file(root, fi.name, file_map)
+            body = read_body(path)
+            if not body:
+                unverified += 1
+                continue
+            try:
+                rel = path.relative_to(root)
+            except ValueError:
+                rel = path
+            entries.append(
+                (
+                    Claim(
+                        kind="incomplete",
+                        label=fi.name,
+                        description=f"{fi.description} (source file: {rel})",
+                        evidence=f"{health}\n\n{body}",
+                    ),
+                    "incomplete",
+                    fi,
+                )
             )
-            for fi in feats.incomplete
-        ]
-        claims += [
-            Claim(
-                kind="stub",
-                label=sp,
-                description="flagged as a stub file",
-                evidence=evidence_for(root / sp),
+        for sp in feats.stubs:
+            if not isinstance(sp, str):
+                continue
+            body = read_body(root / sp)
+            if not body:
+                unverified += 1
+                continue
+            entries.append(
+                (
+                    Claim(
+                        kind="stub",
+                        label=sp,
+                        description=f"flagged as a stub file (source file: {sp})",
+                        evidence=f"{health}\n\n{body}",
+                    ),
+                    "stub",
+                    sp,
+                )
             )
-            for sp in feats.stubs
-            if isinstance(sp, str)
-        ]
+
+        if not entries:
+            logger.info(
+                "Completeness-claim verifier: no claims with readable source to "
+                f"verify ({unverified} kept unverified)."
+            )
+            return
 
         judge_model = (project.config.get("judge") or {}).get("model")
         timeout = get_setting(project.config, "orchestrator", "verify_claims_timeout")
         logger.info(
-            f"Verifying {len(claims)} completeness claim(s) against the real source..."
+            f"Verifying {len(entries)} completeness claim(s) against the real source..."
         )
         try:
             verdicts = verify_claims(
-                claims,
+                [claim for claim, _, _ in entries],
                 llm_client=project.llm_client,
                 model=judge_model,
                 timeout=timeout,
@@ -2046,19 +2087,29 @@ class ProjectOrchestrator:
             report.degraded_subsystems.append(f"Claim verifier: {e}")
             return
 
-        refuted = {v.claim.label: v.reason for v in verdicts if v.refuted}
-        logger.info(
-            f"Completeness-claim verification: {len(claims) - len(refuted)} kept, "
-            f"{len(refuted)} dropped."
-        )
-        if not refuted:
-            return
-        feats.incomplete = [fi for fi in feats.incomplete if fi.name not in refuted]
-        feats.stubs = [sp for sp in feats.stubs if sp not in refuted]
-        for label, reason in refuted.items():
-            msg = f"Dropped phantom completeness claim '{label}': {reason}"
+        drop_incomplete: set[int] = set()
+        drop_stubs: set[str] = set()
+        for (claim, kind, origin), v in zip(entries, verdicts):
+            if not v.refuted:
+                continue
+            if kind == "incomplete":
+                drop_incomplete.add(id(origin))
+            else:
+                drop_stubs.add(origin)
+            msg = f"Dropped phantom completeness claim '{claim.label}': {v.reason}"
             logger.info(msg)
             report.key_decisions.append(msg)
+
+        dropped = len(drop_incomplete) + len(drop_stubs)
+        logger.info(
+            f"Completeness-claim verification: {len(entries) - dropped} kept, "
+            f"{dropped} dropped ({unverified} unverified)."
+        )
+        if dropped:
+            feats.incomplete = [
+                fi for fi in feats.incomplete if id(fi) not in drop_incomplete
+            ]
+            feats.stubs = [sp for sp in feats.stubs if sp not in drop_stubs]
 
     def _resolve_targets(self, project: Project) -> list[dict]:
         """Explicit ``targets`` if declared, else auto-discovered when enabled.
