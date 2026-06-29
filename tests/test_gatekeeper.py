@@ -141,6 +141,36 @@ def test_iter_source_files_does_not_follow_symlink_cycle():
     assert all("loop" not in f.parts for f in files)
 
 
+def test_secrets_scan_detects_unquoted_env_secret():
+    # Real .env files almost never quote values — the most common leak vector.
+    root = _make_project({".env": "DB_PASSWORD=p@ssw0rd-prod-2024xyz\n"})
+    assert any(".env" in f for f in GateKeeper(root)._scan_secrets())
+
+
+def test_secrets_scan_unquoted_heuristic_not_applied_to_source():
+    # In source code an unquoted RHS is a variable reference, not a secret, so
+    # the unquoted heuristic must NOT fire (it would block legitimate code).
+    root = _make_project(
+        {"src/x.py": "api_key = get_key()\npassword = cfg['db_password_field_99']\n"}
+    )
+    assert GateKeeper(root)._scan_secrets() == []
+
+
+def test_secrets_scan_ignores_ordinary_env_config():
+    # Ports, hosts, timeouts, and ${VAR} references must not be flagged.
+    root = _make_project(
+        {
+            ".env": (
+                "DB_PORT=5432\n"
+                "DB_HOST=localhost\n"
+                "API_TIMEOUT=30\n"
+                "SECRET_TOKEN=${MY_TOKEN}\n"
+            )
+        }
+    )
+    assert GateKeeper(root)._scan_secrets() == []
+
+
 def test_skip_dirs_excluded():
     root = _make_project(
         {

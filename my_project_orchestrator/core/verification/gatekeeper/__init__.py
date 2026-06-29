@@ -14,6 +14,7 @@ from .constants import (
     CODE_EXTENSIONS,
     SECRET_SCAN_EXTENSIONS,
     SECRET_SCAN_FILENAMES,
+    ENV_LITERAL_EXTENSIONS,
 )
 from .helpers import _path_in_scope
 
@@ -390,7 +391,9 @@ class GateKeeper:
             by_file.setdefault(path, []).append(line)
         flagged = []
         for path, lines in by_file.items():
-            if self._content_has_secret("\n".join(lines)):
+            if self._content_has_secret(
+                "\n".join(lines), is_env_file=self._is_env_literal_file(path)
+            ):
                 flagged.append(path)
         return flagged
 
@@ -404,7 +407,9 @@ class GateKeeper:
                 content = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if self._content_has_secret(content):
+            if self._content_has_secret(
+                content, is_env_file=self._is_env_literal_file(path)
+            ):
                 flagged.append(str(path.relative_to(self.project_path)))
         return flagged
 
@@ -459,14 +464,55 @@ class GateKeeper:
         return added
 
     @staticmethod
-    def _content_has_secret(content: str) -> bool:
+    def _is_env_literal_file(path) -> bool:
+        """True when ``path`` is an env/ini-style config file where ``KEY=value``
+        is a literal assignment (so an unquoted value may be a real secret)."""
+        p = Path(path)
+        return p.suffix in ENV_LITERAL_EXTENSIONS or p.name in SECRET_SCAN_FILENAMES
+
+    @staticmethod
+    def _content_has_secret(content: str, is_env_file: bool = False) -> bool:
         for pattern in SECRET_PATTERNS:
             if pattern in content:
                 return True
         for line in content.splitlines():
             if GateKeeper._is_secret_assignment(line):
                 return True
+            if is_env_file and GateKeeper._is_unquoted_env_secret(line):
+                return True
         return False
+
+    @staticmethod
+    def _is_unquoted_env_secret(line: str) -> bool:
+        """True for an UNQUOTED credential value in an env/ini-style config file.
+
+        Only used for ENV_LITERAL_EXTENSIONS files, where ``KEY=value`` is a
+        literal — never on source code, where an unquoted RHS is a variable
+        reference (``token = get_token()``) and flagging it would block real code.
+        The value must look like an actual secret: long, no whitespace, no
+        variable/template prefix, and mixing letters with digits — so ordinary
+        config (ports, hosts, booleans, ``${VAR}`` refs, plain words) is ignored.
+        """
+        stripped = line.lstrip()
+        if not stripped or stripped[0] in ("#", ";"):  # comment
+            return False
+        if "=" not in stripped:
+            return False
+        key_part, _, value = stripped.partition("=")
+        if not any(k in key_part.lower() for k in ASSIGNMENT_SECRET_KEYS):
+            return False
+        value = value.strip()
+        # Quoted literals are handled by _is_secret_assignment; here we want bare
+        # values only, and never a variable/template reference.
+        if (
+            not value
+            or value[0] in ('"', "'")
+            or value.startswith(("${", "$", "%", "{{"))
+        ):
+            return False
+        if len(value) < 16 or any(c.isspace() for c in value) or "://" in value:
+            return False
+        return any(c.isalpha() for c in value) and any(c.isdigit() for c in value)
 
     @staticmethod
     def _is_secret_assignment(line: str) -> bool:

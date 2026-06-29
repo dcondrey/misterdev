@@ -101,3 +101,9 @@ SECRET_SCAN_EXTENSIONS = CODE_EXTENSIONS | frozenset(
 # Dotfiles whose whole name is the extension (``Path(".env").suffix == ""``), so
 # they must be matched by name rather than suffix.
 SECRET_SCAN_FILENAMES = frozenset({".env", ".envrc", ".netrc", ".pgpass"})
+
+# File types where ``KEY=value`` is a literal config assignment (so an UNQUOTED
+# value can be a real secret), as opposed to source code where an unquoted RHS
+# is a variable reference. Used to gate the unquoted-secret heuristic so it never
+# fires on .py/.rs/etc and blocks legitimate code.
+ENV_LITERAL_EXTENSIONS = frozenset({".env", ".ini", ".properties", ".conf", ".cfg"})
