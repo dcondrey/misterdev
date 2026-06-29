@@ -1,6 +1,9 @@
+import os
 import subprocess
 import tempfile
 from pathlib import Path
+
+import pytest
 
 from my_project_orchestrator.core.verification.gatekeeper import (
     GateKeeper,
@@ -100,6 +103,42 @@ def test_secrets_scan_clean():
     gk = GateKeeper(root)
     found = gk._scan_secrets()
     assert found == []
+
+
+def test_secrets_scan_detects_broadened_provider_prefixes():
+    root = _make_project(
+        {
+            "a.py": 'STRIPE = "sk_live_abc123def456ghi"\n',
+            "b.py": 'SLACK = "xoxb-111-222-aaaaaaaaaa"\n',
+            "c.py": 'GOOGLE = "AIzaSyA1b2c3d4e5f6g7h8i9"\n',
+            "d.py": 'GH = "github_pat_11ABCDEF0abcdefghij"\n',
+        }
+    )
+    flagged = " ".join(GateKeeper(root)._scan_secrets())
+    for name in ("a.py", "b.py", "c.py", "d.py"):
+        assert name in flagged
+
+
+def test_secrets_scan_no_false_positive_on_common_identifiers():
+    # Distinctive prefixes only: ordinary identifiers that merely CONTAIN a
+    # fragment like "sk_" (task_, disk_) must not be flagged, or the gate would
+    # block legitimate code.
+    root = _make_project(
+        {"src/x.py": "task_id = 1\ndisk_usage = compute()\nsubtask = run()\n"}
+    )
+    assert GateKeeper(root)._scan_secrets() == []
+
+
+def test_iter_source_files_does_not_follow_symlink_cycle():
+    root = _make_project({"src/main.py": "x = 1\n"})
+    try:
+        os.symlink(root, root / "loop")  # directory symlink back to the repo root
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unsupported on this platform")
+    files = list(GateKeeper(root)._iter_source_files(CODE_EXTENSIONS))
+    # Terminates (no infinite loop) and never descends through the symlink.
+    assert any(f.name == "main.py" for f in files)
+    assert all("loop" not in f.parts for f in files)
 
 
 def test_skip_dirs_excluded():

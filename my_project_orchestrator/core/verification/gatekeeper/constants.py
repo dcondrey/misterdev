@@ -1,16 +1,30 @@
 # Patterns that indicate incomplete or debug code
 BANNED_MARKERS = ("todo!", "FIXME", "HACK", "XXX", "placeholder", "dummy")
 
-# High-signal patterns: a bare substring match is enough to flag a file.
+# High-signal patterns: a bare substring match is enough to flag a file. Only
+# DISTINCTIVE provider prefixes belong here — a short fragment like "sk_" would
+# substring-match ordinary identifiers (task_, disk_) and block legitimate code,
+# so Stripe/AWS use their full prefixes.
 SECRET_PATTERNS = (
     "PRIVATE KEY",
     "BEGIN RSA",
     "BEGIN EC",
     "BEGIN DSA",
-    "sk-",
-    "ghp_",
-    "gho_",
-    "AKIA",
+    "sk-",  # OpenAI
+    "sk_live_",  # Stripe secret (live)
+    "sk_test_",  # Stripe secret (test)
+    "ghp_",  # GitHub PAT
+    "gho_",  # GitHub OAuth
+    "ghs_",  # GitHub server-to-server
+    "ghu_",  # GitHub user-to-server
+    "ghr_",  # GitHub refresh
+    "github_pat_",  # GitHub fine-grained PAT
+    "glpat-",  # GitLab PAT
+    "xoxb-",  # Slack bot token
+    "xoxp-",  # Slack user token
+    "AIza",  # Google API key
+    "AKIA",  # AWS access key id
+    "ASIA",  # AWS temporary access key id
 )
 
 # Low-signal credential keys. These appear constantly in ordinary source

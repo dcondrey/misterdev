@@ -548,7 +548,10 @@ class GateKeeper:
             for entry in entries:
                 if entry.name in SKIP_DIRS:
                     continue
-                if entry.is_dir():
+                # Do not follow directory symlinks: a link back to an ancestor
+                # would make this walk loop forever, and a link outside the repo
+                # would scan unrelated files. Real subdirectories only.
+                if entry.is_dir() and not entry.is_symlink():
                     stack.append(entry)
                 elif entry.suffix in extensions or entry.name in filenames:
                     yield entry
