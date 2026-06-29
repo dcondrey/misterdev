@@ -12,6 +12,12 @@ from .response import LLMResponse, LLMUsage
 
 logger = setup_logger(__name__)
 
+# Per-request network ceiling. The SDKs default to ~600s, so a hung/stalled
+# connection can block a single attempt for ten minutes before retry/failover
+# even kicks in. 300s bounds that while still allowing a large code generation
+# to finish.
+_REQUEST_TIMEOUT_SECONDS = 300.0
+
 
 def _openrouter_sdk(llm_config: dict):
     """Build an OpenAI SDK client pointed at OpenRouter. Returns (client, api_key).
@@ -25,7 +31,14 @@ def _openrouter_sdk(llm_config: dict):
         raise ValueError(f"API key environment variable '{env_var}' not set.")
     from openai import OpenAI
 
-    return OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key), api_key
+    return (
+        OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
+            timeout=_REQUEST_TIMEOUT_SECONDS,
+        ),
+        api_key,
+    )
 
 
 def _deny_unless_training_allowed(llm_config: dict) -> str:
@@ -289,7 +302,9 @@ class AnthropicLLMClient(BaseLLMClient):
         try:
             import anthropic
 
-            self.client = anthropic.Anthropic(api_key=self.api_key)
+            self.client = anthropic.Anthropic(
+                api_key=self.api_key, timeout=_REQUEST_TIMEOUT_SECONDS
+            )
         except ImportError:
             raise ImportError(
                 "anthropic package required for Anthropic provider. "
