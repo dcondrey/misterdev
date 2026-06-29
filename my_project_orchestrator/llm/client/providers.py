@@ -19,6 +19,17 @@ logger = setup_logger(__name__)
 _REQUEST_TIMEOUT_SECONDS = 300.0
 
 
+def _close_stream(stream) -> None:
+    """Close an SDK stream's underlying HTTP connection (best effort), so an
+    aborted generation doesn't leak the socket back into the connection pool."""
+    close = getattr(stream, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
 def _openrouter_sdk(llm_config: dict):
     """Build an OpenAI SDK client pointed at OpenRouter. Returns (client, api_key).
 
@@ -145,23 +156,42 @@ class OpenRouterLLMClient(BaseLLMClient):
         routing prefs are reused so a multimodal call honors the same
         data_collection policy as every other request.
         """
-        resp = self.client.chat.completions.create(
-            model=model or self.model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{image_b64}"},
-                        },
-                    ],
-                }
-            ],
-            extra_body=self._extra_body(),
-        )
-        return resp.choices[0].message.content or ""
+        # Honor the budget gate and record spend just like generate()/_call() —
+        # otherwise every vision call is invisible to the budget accounting and
+        # cost_by_task, letting the cap be silently overrun.
+        self._enforce_budget()
+        try:
+            resp = self.client.chat.completions.create(
+                model=model or self.model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{image_b64}"
+                                },
+                            },
+                        ],
+                    }
+                ],
+                extra_body=self._extra_body(),
+            )
+            usage_data = getattr(resp, "usage", None)
+            if usage_data:
+                usage = LLMUsage()
+                usage.prompt_tokens = usage_data.prompt_tokens or 0
+                usage.completion_tokens = usage_data.completion_tokens or 0
+                usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
+                usage.estimated_cost = self._estimate_cost(
+                    usage.prompt_tokens, usage.completion_tokens
+                )
+                self._track_usage(usage)
+            return resp.choices[0].message.content or ""
+        except Exception as e:
+            raise _api_error("OpenRouter", e) from e
 
     def _extra_body(self) -> dict:
         """OpenRouter provider routing prefs.
@@ -252,19 +282,29 @@ class OpenRouterLLMClient(BaseLLMClient):
             raise _api_error("OpenRouter", e) from e
 
         usage = LLMUsage()
-        for chunk in stream:
-            if chunk.choices:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    yield delta
-            usage_data = getattr(chunk, "usage", None)
-            if usage_data:
-                usage.prompt_tokens = usage_data.prompt_tokens or 0
-                usage.completion_tokens = usage_data.completion_tokens or 0
-                usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
-                usage.estimated_cost = self._estimate_cost(
-                    usage.prompt_tokens, usage.completion_tokens
-                )
+        try:
+            for chunk in stream:
+                if chunk.choices:
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        yield delta
+                usage_data = getattr(chunk, "usage", None)
+                if usage_data:
+                    usage.prompt_tokens = usage_data.prompt_tokens or 0
+                    usage.completion_tokens = usage_data.completion_tokens or 0
+                    usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
+                    usage.estimated_cost = self._estimate_cost(
+                        usage.prompt_tokens, usage.completion_tokens
+                    )
+        except Exception as e:
+            # A drop DURING streaming was previously raised raw, bypassing the
+            # LLMCallError classification that retry/failover keys on.
+            raise _api_error("OpenRouter", e) from e
+        finally:
+            # Runs on normal completion, on a mid-stream error, AND on the
+            # GeneratorExit raised when the caller aborts (code_gen_abort_check),
+            # so the HTTP connection is always released.
+            _close_stream(stream)
         return usage
 
     def _estimate_cost(self, prompt_tokens: int, completion_tokens: int) -> float:

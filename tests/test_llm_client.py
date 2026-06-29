@@ -326,6 +326,75 @@ def test_openrouter_stream_aborts_early(monkeypatch):
     assert "bad" in resp.content
 
 
+def test_openrouter_chat_multimodal_tracks_usage(monkeypatch):
+    client = _make_openrouter(monkeypatch)
+
+    class _Completions:
+        def create(self, **kw):
+            return types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(message=types.SimpleNamespace(content="ok"))
+                ],
+                usage=types.SimpleNamespace(prompt_tokens=100, completion_tokens=20),
+            )
+
+    client.client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=_Completions())
+    )
+    assert client.chat_multimodal("p", "IMG") == "ok"
+    # Vision spend is now visible to the budget accounting.
+    assert client.cumulative_usage.call_count == 1
+    assert client.cumulative_usage.estimated_cost > 0
+
+
+def test_openrouter_chat_multimodal_enforces_budget(monkeypatch):
+    client = _make_openrouter(monkeypatch)
+    client.cumulative_usage.estimated_cost = client._budget  # already at the cap
+    called = {"n": 0}
+
+    class _Completions:
+        def create(self, **kw):
+            called["n"] += 1
+            return types.SimpleNamespace(choices=[])
+
+    client.client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(completions=_Completions())
+    )
+    with pytest.raises(BudgetExceededError):
+        client.chat_multimodal("p", "IMG")
+    assert called["n"] == 0  # gate fired before any network call
+
+
+def test_openrouter_stream_closes_underlying_stream(monkeypatch):
+    client = _make_openrouter(monkeypatch)
+
+    class _RecordingStream:
+        def __init__(self):
+            self.closed = False
+
+        def __iter__(self):
+            for t in ("a", "b"):
+                yield types.SimpleNamespace(
+                    choices=[
+                        types.SimpleNamespace(delta=types.SimpleNamespace(content=t))
+                    ],
+                    usage=None,
+                )
+
+        def close(self):
+            self.closed = True
+
+    rec = _RecordingStream()
+    client.client = types.SimpleNamespace(
+        chat=types.SimpleNamespace(
+            completions=types.SimpleNamespace(create=lambda **kw: rec)
+        )
+    )
+    resp = client.generate_stream("p", "s")
+    assert resp.content == "ab"
+    assert rec.closed is True  # HTTP connection released, not leaked
+
+
 def test_openrouter_embedding_orders_by_index(monkeypatch):
     monkeypatch.setenv("FAKE_OR_KEY", "x")
     cfg = {"llm": {"provider": "openrouter", "api_key_env_var": "FAKE_OR_KEY"}}
