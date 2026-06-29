@@ -156,6 +156,18 @@ def test_secrets_scan_unquoted_heuristic_not_applied_to_source():
     assert GateKeeper(root)._scan_secrets() == []
 
 
+def test_read_capped_bounds_read_and_handles_missing():
+    from my_project_orchestrator.core.verification.gatekeeper.helpers import (
+        _read_capped,
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        f = Path(td) / "big.txt"
+        f.write_text("A" * 1000)
+        assert _read_capped(f, max_chars=10) == "A" * 10  # bounded, not the whole file
+        assert _read_capped(Path(td) / "missing.txt") is None
+
+
 def test_secrets_scan_ignores_ordinary_env_config():
     # Ports, hosts, timeouts, and ${VAR} references must not be flagged.
     root = _make_project(

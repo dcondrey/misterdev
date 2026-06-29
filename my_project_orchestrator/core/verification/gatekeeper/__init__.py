@@ -16,7 +16,7 @@ from .constants import (
     SECRET_SCAN_FILENAMES,
     ENV_LITERAL_EXTENSIONS,
 )
-from .helpers import _path_in_scope
+from .helpers import _path_in_scope, _read_capped
 
 if TYPE_CHECKING:
     from my_project_orchestrator.core.execution.container import ContainerEngine
@@ -363,13 +363,12 @@ class GateKeeper:
         """Non-git fallback for G5: scan every source file."""
         found = set()
         for path in self._iter_source_files():
-            try:
-                content = path.read_text(encoding="utf-8", errors="replace")
-                for marker in BANNED_MARKERS:
-                    if marker in content:
-                        found.add(marker)
-            except OSError:
+            content = _read_capped(path)
+            if content is None:
                 continue
+            for marker in BANNED_MARKERS:
+                if marker in content:
+                    found.add(marker)
         return sorted(found)
 
     def _scan_secrets(self) -> List[str]:
@@ -403,9 +402,8 @@ class GateKeeper:
         for path in self._iter_source_files(
             SECRET_SCAN_EXTENSIONS, SECRET_SCAN_FILENAMES
         ):
-            try:
-                content = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
+            content = _read_capped(path)
+            if content is None:
                 continue
             if self._content_has_secret(
                 content, is_env_file=self._is_env_literal_file(path)
@@ -453,11 +451,8 @@ class GateKeeper:
                 rel = rel.strip()
                 if not rel:
                     continue
-                try:
-                    content = (self.project_path / rel).read_text(
-                        encoding="utf-8", errors="replace"
-                    )
-                except OSError:
+                content = _read_capped(self.project_path / rel)
+                if content is None:
                     continue
                 for line in content.splitlines():
                     added.append((rel, line))
