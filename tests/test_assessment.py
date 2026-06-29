@@ -15,7 +15,89 @@ from my_project_orchestrator.core.models import Task, ExecutionResult
 from my_project_orchestrator.analyzers.project_analyzer import (
     _get_source_overview,
     _leading_doc,
+    _merge_completeness,
+    _merge_debt_risk,
+    _merge_structure,
 )
+
+
+def test_merge_completeness_tolerates_null_fields():
+    # LLMs commonly emit `null` for an empty array; `.get(k, default)` keeps the
+    # default only when the key is ABSENT, so a present null must be coerced —
+    # otherwise the merge (or a downstream join/iterate) crashes.
+    a = ProjectAssessment()
+    _merge_completeness(
+        a,
+        {
+            "existing": None,
+            "incomplete": None,
+            "missing": None,
+            "stubs": None,
+            "broken": None,
+            "dead_code": None,
+            "todos": None,
+        },
+    )
+    assert a.features.incomplete == []
+    assert a.features.stubs == []  # coerced to a list, not None
+    list(a.features.stubs)  # must be iterable downstream
+    ", ".join(a.features.broken)
+
+
+def test_merge_completeness_rejects_wrong_typed_field():
+    a = ProjectAssessment()
+    a.features.stubs = ["keep.rs"]
+    # A bare string where a list is expected must not replace the list with a str.
+    _merge_completeness(a, {"stubs": "oops"})
+    assert a.features.stubs == ["keep.rs"]
+
+
+def test_merge_completeness_filters_non_string_list_items():
+    a = ProjectAssessment()
+    _merge_completeness(a, {"stubs": ["a.rs", 5, None, "b.rs"]})
+    assert a.features.stubs == ["a.rs", "b.rs"]
+
+
+def test_merge_completeness_valid_data_still_merges():
+    a = ProjectAssessment()
+    _merge_completeness(
+        a,
+        {
+            "incomplete": [{"name": "X", "description": "d", "complexity": "large"}],
+            "stubs": ["s.rs"],
+            "todos": [{"file": "a", "line": 1, "text": "t"}],
+        },
+    )
+    assert [fi.name for fi in a.features.incomplete] == ["X"]
+    assert a.features.stubs == ["s.rs"]
+    assert a.features.todos == [{"file": "a", "line": 1, "text": "t"}]
+
+
+def test_merge_structure_coerces_null_lists():
+    a = ProjectAssessment()
+    _merge_structure(a, {"languages": None, "frameworks": None, "entry_points": None})
+    assert a.structure.languages == []
+    ", ".join(a.structure.languages)  # downstream join must not crash
+
+
+def test_merge_debt_risk_coerces_score_and_null_lists():
+    a = ProjectAssessment()
+    _merge_debt_risk(
+        a,
+        {
+            "tech_debt": {"score": "75", "critical_issues": None},
+            "risk": {"factors": None},
+        },
+    )
+    assert a.tech_debt.score == 75 and isinstance(a.tech_debt.score, int)
+    assert a.tech_debt.critical_issues == []
+    assert a.risk.factors == []
+
+
+def test_merge_debt_risk_bad_score_falls_back():
+    a = ProjectAssessment()
+    _merge_debt_risk(a, {"tech_debt": {"score": "high"}})
+    assert a.tech_debt.score == 0
 
 
 def test_leading_doc_extracts_rust_module_doc():
