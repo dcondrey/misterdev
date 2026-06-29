@@ -11,7 +11,7 @@ from pathlib import Path
 
 from my_project_orchestrator.config import ConfigManager
 from my_project_orchestrator.core.task import TaskManager
-from my_project_orchestrator.core.decomposer import topological_sort
+from my_project_orchestrator.core.planning.decomposer import topological_sort
 
 HMS_PATH = Path("/Volumes/A/hms")
 HMS_AVAILABLE = HMS_PATH.exists() and (HMS_PATH / "project.yaml").exists()

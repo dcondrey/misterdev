@@ -10,7 +10,7 @@ after a task's gates pass — and that the off path leaves the loop unchanged.
 from pathlib import Path
 
 from my_project_orchestrator.core.models import Task
-from my_project_orchestrator.core.spec_tests import (
+from my_project_orchestrator.core.verification.spec_tests import (
     extract_code,
     generate_spec_test,
     spec_test_path,

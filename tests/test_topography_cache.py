@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from my_project_orchestrator.core.topography import (
+from my_project_orchestrator.core.context.topography import (
     SymbolGraph,
     _get_ts_parsers,
     _TopographyCache,

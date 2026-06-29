@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
-from my_project_orchestrator.core.report import BuildReport
-from my_project_orchestrator.core.assessment import (
+from my_project_orchestrator.core.reporting.report import BuildReport
+from my_project_orchestrator.core.planning.assessment import (
     ProjectAssessment,
     HealthCheck,
     ProjectStructure,
@@ -10,8 +10,8 @@ from my_project_orchestrator.core.assessment import (
 )
 from my_project_orchestrator.core.models import Task
 from my_project_orchestrator.core.modes import BuildMode
-from my_project_orchestrator.core.scratchpad import Scratchpad
-from my_project_orchestrator.core.validator import ValidationResult
+from my_project_orchestrator.core.context.scratchpad import Scratchpad
+from my_project_orchestrator.core.verification.validator import ValidationResult
 
 
 def _make_assessment(**overrides):
@@ -298,7 +298,7 @@ def test_report_to_dict_degraded_empty_by_default():
 
 
 def test_failure_reason_surfaces_logs_first_line():
-    from my_project_orchestrator.core.report import _failure_reason
+    from my_project_orchestrator.core.reporting.report import _failure_reason
     from my_project_orchestrator.core.models import Task, ExecutionResult
 
     t = Task(id="T-1", description="x", project_ref="p", status="failed")
@@ -314,7 +314,7 @@ def test_failure_reason_surfaces_logs_first_line():
 
 
 def test_failure_reason_escapes_pipes_and_falls_back():
-    from my_project_orchestrator.core.report import _failure_reason
+    from my_project_orchestrator.core.reporting.report import _failure_reason
     from my_project_orchestrator.core.models import Task, ExecutionResult
 
     t = Task(id="T-2", description="x", project_ref="p", status="failed")
@@ -326,9 +326,9 @@ def test_failure_reason_escapes_pipes_and_falls_back():
 
 
 def test_failed_tasks_table_includes_reason(tmp_path):
-    from my_project_orchestrator.core.report import BuildReport
+    from my_project_orchestrator.core.reporting.report import BuildReport
     from my_project_orchestrator.core.models import Task, ExecutionResult
-    from my_project_orchestrator.core.assessment import (
+    from my_project_orchestrator.core.planning.assessment import (
         ProjectAssessment, HealthCheck, ProjectStructure, TechnicalDebt, RiskAssessment,
     )
     from my_project_orchestrator.core.modes import BuildMode

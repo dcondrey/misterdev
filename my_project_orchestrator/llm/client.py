@@ -550,7 +550,7 @@ class OpenRouterLLMClient(BaseLLMClient):
         self.sampling = dict(get_section_setting("llm", llm_config, "sampling") or {})
         self.data_collection = _deny_unless_training_allowed(llm_config)
 
-        from my_project_orchestrator.core.model_catalog import ModelCatalog
+        from my_project_orchestrator.core.economics.model_catalog import ModelCatalog
 
         self._catalog = ModelCatalog()
 
@@ -1046,7 +1046,7 @@ def _create_local_embedding_client(config: dict):
 def _create_openrouter_embedding_client(config: dict):
     if get_setting(config, "llm", "provider") != "openrouter":
         return None
-    from my_project_orchestrator.core.embeddings import pick_embedding_model
+    from my_project_orchestrator.core.economics.embeddings import pick_embedding_model
 
     model = pick_embedding_model(
         get_setting(config, "llm", "embedding_model"),

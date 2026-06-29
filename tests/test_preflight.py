@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.preflight import PreflightValidator, PreflightIssue
+from my_project_orchestrator.core.verification.preflight import PreflightValidator, PreflightIssue
 from my_project_orchestrator.core.models import Task
 
 

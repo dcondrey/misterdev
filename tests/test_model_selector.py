@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from my_project_orchestrator.core.model_ledger import ModelLedger
-from my_project_orchestrator.core.model_selector import ModelSelector
+from my_project_orchestrator.core.economics.model_ledger import ModelLedger
+from my_project_orchestrator.core.economics.model_selector import ModelSelector
 
 
 @pytest.fixture

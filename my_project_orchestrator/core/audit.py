@@ -9,7 +9,7 @@ Append-only and crash-tolerant: :meth:`AuditTrail.record` NEVER raises into the
 caller. An unwritable path, a full disk, or a serialization failure is logged at
 debug and dropped — audit is observability, so a logging failure must never
 break a build. This mirrors the never-hang/never-hard-fail discipline of
-:mod:`my_project_orchestrator.core.container` and ``lsp``.
+:mod:`my_project_orchestrator.core.execution.container` and ``lsp``.
 
 Defaults ON: it is pure-win observability with no behavioral effect (it only
 appends to a gitignored file under ``.orchestrator/``) and degrades silently if

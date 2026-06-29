@@ -20,11 +20,11 @@ from my_project_orchestrator.task_executors.markdown_plan_executor import (
     _detect_language,
     _LANG_MAP,
 )
-from my_project_orchestrator.core.gatekeeper import GateKeeper
-from my_project_orchestrator.core.error_classifier import classify_error, ErrorCategory
-from my_project_orchestrator.core.validator import ValidationResult, CodeValidator
-from my_project_orchestrator.core.change_tracker import ChangeTracker
-from my_project_orchestrator.core.sovereign import EphemeralCodeManager
+from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
+from my_project_orchestrator.core.execution.error_classifier import classify_error, ErrorCategory
+from my_project_orchestrator.core.verification.validator import ValidationResult, CodeValidator
+from my_project_orchestrator.core.context.change_tracker import ChangeTracker
+from my_project_orchestrator.core.planning.sovereign import EphemeralCodeManager
 
 
 class _FakeProject:
@@ -356,7 +356,7 @@ def test_commit_task_empty_file_list_does_not_sweep():
 
 
 def test_generate_probes_does_not_crash_on_json_braces():
-    from my_project_orchestrator.core.sovereign import ProbeGenerator
+    from my_project_orchestrator.core.planning.sovereign import ProbeGenerator
 
     class _LLM:
         def generate_code(self, prompt, system_prompt=""):
@@ -676,7 +676,7 @@ def test_failover_factory_wraps_when_configured(monkeypatch):
 
 
 def test_progress_needs_rerun_on_hash_change():
-    from my_project_orchestrator.core.progress import ProgressTracker
+    from my_project_orchestrator.core.execution.progress import ProgressTracker
 
     with tempfile.TemporaryDirectory() as td:
         pt = ProgressTracker(Path(td))
@@ -690,7 +690,7 @@ def test_progress_needs_rerun_on_hash_change():
 
 
 def test_compute_task_hash_changes_with_spec():
-    from my_project_orchestrator.core.progress import compute_task_hash
+    from my_project_orchestrator.core.execution.progress import compute_task_hash
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -711,7 +711,7 @@ def test_compute_task_hash_changes_with_spec():
 
 
 def test_rust_contracts_tree_sitter_multiline():
-    from my_project_orchestrator.core.contracts import _extract_public_symbols
+    from my_project_orchestrator.core.context.contracts import _extract_public_symbols
 
     src = (
         "pub struct Engine<T: Clone> {\n"
@@ -747,7 +747,7 @@ def test_rust_contracts_tree_sitter_multiline():
 
 
 def test_topography_typescript_symbols():
-    from my_project_orchestrator.core.topography import SymbolGraph, _get_ts_parsers
+    from my_project_orchestrator.core.context.topography import SymbolGraph, _get_ts_parsers
 
     if "typescript" not in _get_ts_parsers():
         pytest.skip("typescript grammar not installed")
@@ -790,7 +790,7 @@ def test_walk_limited_prunes_and_bounds_depth():
 
 
 def test_preflight_flags_dangling_dependency():
-    from my_project_orchestrator.core.preflight import PreflightValidator
+    from my_project_orchestrator.core.verification.preflight import PreflightValidator
     from my_project_orchestrator.core.models import Task
 
     good = Task(
@@ -814,7 +814,7 @@ def test_preflight_flags_dangling_dependency():
 
 
 def test_preflight_clean_plan_has_no_errors():
-    from my_project_orchestrator.core.preflight import PreflightValidator
+    from my_project_orchestrator.core.verification.preflight import PreflightValidator
     from my_project_orchestrator.core.models import Task
 
     a = Task(
@@ -917,8 +917,8 @@ def test_run_project_executes_in_dependency_order():
 
 def _fresh_report():
     from datetime import datetime, timezone
-    from my_project_orchestrator.core.report import BuildReport
-    from my_project_orchestrator.core.assessment import ProjectAssessment
+    from my_project_orchestrator.core.reporting.report import BuildReport
+    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
     from my_project_orchestrator.core.modes import BuildMode
 
     return BuildReport(
@@ -1061,8 +1061,8 @@ def test_budget_exhausted_before_wave_defers_gracefully():
 
 def test_report_save_writes_markdown_and_json():
     from datetime import datetime, timezone
-    from my_project_orchestrator.core.report import BuildReport
-    from my_project_orchestrator.core.assessment import ProjectAssessment
+    from my_project_orchestrator.core.reporting.report import BuildReport
+    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
     from my_project_orchestrator.core.modes import BuildMode
 
     with tempfile.TemporaryDirectory() as td:
@@ -1189,8 +1189,8 @@ def test_has_test_files():
 def test_warn_if_no_test_gate_records_when_tests_exist_without_command():
     import types
     from my_project_orchestrator.agent import _warn_if_no_test_gate
-    from my_project_orchestrator.core.report import BuildReport
-    from my_project_orchestrator.core.assessment import (
+    from my_project_orchestrator.core.reporting.report import BuildReport
+    from my_project_orchestrator.core.planning.assessment import (
         ProjectAssessment,
         HealthCheck,
         ProjectStructure,
@@ -1242,7 +1242,7 @@ def test_analyze_project_fills_test_command_when_llm_returns_null():
     deterministic fallback must populate the assessment so the suite runs."""
     from unittest.mock import patch
     from my_project_orchestrator.analyzers import project_analyzer
-    from my_project_orchestrator.core.assessment import HealthCheck
+    from my_project_orchestrator.core.planning.assessment import HealthCheck
 
     class _EmptyLLM:
         def generate_code(self, prompt, system_prompt=""):
@@ -1411,8 +1411,8 @@ def test_integration_gate_noop_when_suite_stays_green():
 
 # --- interactive planner: advisor + goal selection --------------------------
 def test_recommend_work_parses_and_normalizes():
-    from my_project_orchestrator.core.advisor import recommend_work
-    from my_project_orchestrator.core.assessment import ProjectAssessment
+    from my_project_orchestrator.core.planning.advisor import recommend_work
+    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
 
     class _LLM:
         def generate_code(self, prompt, system_prompt=""):
@@ -1430,8 +1430,8 @@ def test_recommend_work_parses_and_normalizes():
 
 
 def test_recommend_work_bad_json_returns_empty():
-    from my_project_orchestrator.core.advisor import recommend_work
-    from my_project_orchestrator.core.assessment import ProjectAssessment
+    from my_project_orchestrator.core.planning.advisor import recommend_work
+    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
 
     class _LLM:
         def generate_code(self, prompt, system_prompt=""):
@@ -1443,7 +1443,7 @@ def test_recommend_work_bad_json_returns_empty():
 def test_choose_goal_number_text_and_quit():
     from unittest.mock import patch
     from my_project_orchestrator.agent import ProjectOrchestrator
-    from my_project_orchestrator.core.advisor import Recommendation
+    from my_project_orchestrator.core.planning.advisor import Recommendation
     from my_project_orchestrator.core.modes import BuildMode
 
     orch = ProjectOrchestrator()
@@ -1470,7 +1470,7 @@ def test_choose_goal_number_text_and_quit():
 def test_interactive_plan_cancels_when_no_goal():
     from unittest.mock import patch, MagicMock
     from my_project_orchestrator.agent import ProjectOrchestrator
-    from my_project_orchestrator.core.assessment import ProjectAssessment
+    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
 
     orch = ProjectOrchestrator()
     project = MagicMock()
@@ -1498,7 +1498,7 @@ def test_interactive_plan_cancels_when_no_goal():
 def test_interactive_plan_runs_pipeline_with_confirm():
     from unittest.mock import patch, MagicMock
     from my_project_orchestrator.agent import ProjectOrchestrator
-    from my_project_orchestrator.core.assessment import ProjectAssessment
+    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
     from my_project_orchestrator.core.modes import BuildMode
 
     orch = ProjectOrchestrator()
@@ -1528,7 +1528,7 @@ def test_interactive_plan_runs_pipeline_with_confirm():
 
 # --- health-check test-count parsing (tests=none display bug) ----------------
 def test_parse_test_counts_pytest_and_cargo():
-    from my_project_orchestrator.core.validator import _parse_test_counts
+    from my_project_orchestrator.core.verification.validator import _parse_test_counts
 
     assert _parse_test_counts("332 passed in 34.18s") == (332, 0)
     assert _parse_test_counts("3 failed, 317 passed in 53s") == (320, 3)
@@ -1538,7 +1538,7 @@ def test_parse_test_counts_pytest_and_cargo():
 
 
 def test_run_health_check_populates_test_count():
-    from my_project_orchestrator.core.validator import run_health_check
+    from my_project_orchestrator.core.verification.validator import run_health_check
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1552,7 +1552,7 @@ def test_run_health_check_populates_test_count():
 
 def test_health_ground_truth_string():
     from my_project_orchestrator.analyzers.project_analyzer import _health_ground_truth
-    from my_project_orchestrator.core.assessment import HealthCheck
+    from my_project_orchestrator.core.planning.assessment import HealthCheck
 
     h = HealthCheck(builds=True, tests_pass=True, test_count=332, test_failures=0)
     g = _health_ground_truth(h)
@@ -1562,7 +1562,7 @@ def test_health_ground_truth_string():
 # --- stale cross-build progress no longer causes spurious skips --------------
 def test_task_hash_reflects_content_for_idless_llm_tasks():
     from types import SimpleNamespace
-    from my_project_orchestrator.core.progress import compute_task_hash
+    from my_project_orchestrator.core.execution.progress import compute_task_hash
 
     a = SimpleNamespace(
         id="T-001",
@@ -1586,7 +1586,7 @@ def test_task_hash_reflects_content_for_idless_llm_tasks():
 
 def test_needs_rerun_skips_stale_idmatch_without_hash():
     from types import SimpleNamespace
-    from my_project_orchestrator.core.progress import ProgressTracker, compute_task_hash
+    from my_project_orchestrator.core.execution.progress import ProgressTracker, compute_task_hash
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1611,7 +1611,7 @@ def test_needs_rerun_skips_stale_idmatch_without_hash():
 
 # --- ephemeral probe name with path chars must not crash (live build #3) -----
 def test_ephemeral_script_name_with_slash_does_not_crash():
-    from my_project_orchestrator.core.sovereign import EphemeralCodeManager
+    from my_project_orchestrator.core.planning.sovereign import EphemeralCodeManager
 
     with tempfile.TemporaryDirectory() as td:
         with EphemeralCodeManager(Path(td)) as mgr:
@@ -1638,8 +1638,8 @@ def test_safe_ref_slug_neutralizes_path_and_ref_chars():
 
 
 def test_decompose_sanitizes_task_ids_and_deps():
-    from my_project_orchestrator.core.decomposer import decompose_spec
-    from my_project_orchestrator.core.assessment import ProjectAssessment
+    from my_project_orchestrator.core.planning.decomposer import decompose_spec
+    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
     from my_project_orchestrator.core.modes import BuildMode
 
     class _LLM:
@@ -1660,7 +1660,7 @@ def test_decompose_sanitizes_task_ids_and_deps():
 def _fake_project(repo: Path, monkeypatch, edit_response: str):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     from my_project_orchestrator.config import DEFAULT_CONFIG
-    from my_project_orchestrator.core.project import Project
+    from my_project_orchestrator.core.execution.project import Project
     from tests.test_llm_client import FakeLLMClient
     from my_project_orchestrator.llm.client import LLMResponse, LLMUsage
 
@@ -1938,13 +1938,13 @@ class _ScriptedLLM:
 def test_full_pipeline_offline_smart_build(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     from my_project_orchestrator.config import DEFAULT_CONFIG
-    from my_project_orchestrator.core.project import Project
-    from my_project_orchestrator.core.assessment import (
+    from my_project_orchestrator.core.execution.project import Project
+    from my_project_orchestrator.core.planning.assessment import (
         ProjectAssessment,
         HealthCheck,
     )
     from my_project_orchestrator.core.modes import BuildMode, BuildFlags
-    from my_project_orchestrator.core.report import BuildReport
+    from my_project_orchestrator.core.reporting.report import BuildReport
     from my_project_orchestrator.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
@@ -2031,9 +2031,9 @@ def test_build_pipeline_offline_converges_and_writes_report(monkeypatch):
     # report file under .orchestrator/reports.
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     from my_project_orchestrator.config import DEFAULT_CONFIG
-    from my_project_orchestrator.core.project import Project
+    from my_project_orchestrator.core.execution.project import Project
     from my_project_orchestrator.core.modes import BuildMode, BuildFlags
-    from my_project_orchestrator.core.report import BuildReport
+    from my_project_orchestrator.core.reporting.report import BuildReport
     from my_project_orchestrator.agent import ProjectOrchestrator
     from datetime import datetime, timezone
 
@@ -2085,7 +2085,7 @@ def test_build_pipeline_offline_converges_and_writes_report(monkeypatch):
 
 # --- metacognition: LLM returning objects must not crash the audit -----------
 def test_save_lessons_handles_dict_rules_without_crashing():
-    from my_project_orchestrator.core.metacognition import SessionAuditor
+    from my_project_orchestrator.core.planning.metacognition import SessionAuditor
 
     class _LLM:
         def generate_code(self, prompt, system_prompt=""):
@@ -2119,7 +2119,7 @@ def test_lazy_topography_not_built_at_registration(monkeypatch):
     CLI command registers all known projects, so eager scanning is wasted."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     from my_project_orchestrator.config import DEFAULT_CONFIG
-    from my_project_orchestrator.core.project import Project
+    from my_project_orchestrator.core.execution.project import Project
 
     with tempfile.TemporaryDirectory() as td:
         repo = Path(td)
@@ -2162,7 +2162,7 @@ class _ScriptedGate:
         pass
 
     def run_gates(self, commands):
-        from my_project_orchestrator.core.assessment import HealthCheck
+        from my_project_orchestrator.core.planning.assessment import HealthCheck
 
         idx = min(_ScriptedGate._calls, len(_ScriptedGate.sequence) - 1)
         success, issues = _ScriptedGate.sequence[idx]
@@ -2183,10 +2183,10 @@ def _run_convergence_pipeline(gate_sequence, max_iterations, budget=100.0):
     from unittest.mock import patch
     import my_project_orchestrator.agent as agent_mod
     from my_project_orchestrator.config import DEFAULT_CONFIG
-    from my_project_orchestrator.core.project import Project
-    from my_project_orchestrator.core.assessment import ProjectAssessment, HealthCheck
+    from my_project_orchestrator.core.execution.project import Project
+    from my_project_orchestrator.core.planning.assessment import ProjectAssessment, HealthCheck
     from my_project_orchestrator.core.modes import BuildMode, BuildFlags
-    from my_project_orchestrator.core.report import BuildReport
+    from my_project_orchestrator.core.reporting.report import BuildReport
     from datetime import datetime, timezone
 
     _ScriptedGate.sequence = list(gate_sequence)
@@ -2247,10 +2247,10 @@ def _run_convergence_pipeline_with_cfg(gate_sequence, orchestrator_cfg):
     from unittest.mock import patch
     import my_project_orchestrator.agent as agent_mod
     from my_project_orchestrator.config import DEFAULT_CONFIG
-    from my_project_orchestrator.core.project import Project
-    from my_project_orchestrator.core.assessment import ProjectAssessment, HealthCheck
+    from my_project_orchestrator.core.execution.project import Project
+    from my_project_orchestrator.core.planning.assessment import ProjectAssessment, HealthCheck
     from my_project_orchestrator.core.modes import BuildMode, BuildFlags
-    from my_project_orchestrator.core.report import BuildReport
+    from my_project_orchestrator.core.reporting.report import BuildReport
     from datetime import datetime, timezone
 
     _ScriptedGate.sequence = list(gate_sequence)
@@ -2435,9 +2435,9 @@ def test_apply_budget_ceiling_takes_tighter_cap():
 def test_warn_if_baseline_broken_records_only_on_failure():
     from datetime import datetime, timezone
     from my_project_orchestrator.agent import _warn_if_baseline_broken
-    from my_project_orchestrator.core.assessment import ProjectAssessment, HealthCheck
+    from my_project_orchestrator.core.planning.assessment import ProjectAssessment, HealthCheck
     from my_project_orchestrator.core.modes import BuildMode
-    from my_project_orchestrator.core.report import BuildReport
+    from my_project_orchestrator.core.reporting.report import BuildReport
 
     def _report(builds):
         a = ProjectAssessment()
@@ -2462,8 +2462,8 @@ def test_enable_ab_mcts_default_off():
 def test_warn_if_no_test_gate_silent_for_multi_target():
     import types
     from my_project_orchestrator.agent import _warn_if_no_test_gate
-    from my_project_orchestrator.core.report import BuildReport
-    from my_project_orchestrator.core.assessment import (
+    from my_project_orchestrator.core.reporting.report import BuildReport
+    from my_project_orchestrator.core.planning.assessment import (
         ProjectAssessment,
         HealthCheck,
         ProjectStructure,

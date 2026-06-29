@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from my_project_orchestrator.core.llm_cache import LLMCache
+from my_project_orchestrator.core.economics.llm_cache import LLMCache
 
 
 @pytest.fixture

@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from my_project_orchestrator.core.models import Task, ExecutionResult
-from my_project_orchestrator.core.project import Project
+from my_project_orchestrator.core.execution.project import Project
 
 
 class BaseTaskExecutor(ABC):

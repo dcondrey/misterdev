@@ -1,4 +1,4 @@
-from my_project_orchestrator.core.model_catalog import (
+from my_project_orchestrator.core.economics.model_catalog import (
     ModelCatalog,
     ModelProfile,
     _parse,

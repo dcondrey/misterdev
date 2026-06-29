@@ -2,8 +2,8 @@ import types
 from datetime import datetime, timezone
 
 from my_project_orchestrator.agent import ProjectOrchestrator
-from my_project_orchestrator.core.report import BuildReport
-from my_project_orchestrator.core.assessment import (
+from my_project_orchestrator.core.reporting.report import BuildReport
+from my_project_orchestrator.core.planning.assessment import (
     ProjectAssessment,
     HealthCheck,
     ProjectStructure,

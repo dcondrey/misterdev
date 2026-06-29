@@ -18,7 +18,7 @@ from my_project_orchestrator.task_executors.markdown_plan_executor import (
     _relevant_line_ranges,
 )
 from my_project_orchestrator.core.models import Task
-from my_project_orchestrator.core.scratchpad import Scratchpad
+from my_project_orchestrator.core.context.scratchpad import Scratchpad
 
 
 def test_detect_language_rust():
@@ -411,7 +411,7 @@ def test_code_context_injects_file_outline():
     # The model editing a large file should receive a symbol outline (table of
     # contents) so it can navigate and anchor SEARCH blocks precisely.
     from types import SimpleNamespace
-    from my_project_orchestrator.core.topography import TopographyEngine
+    from my_project_orchestrator.core.context.topography import TopographyEngine
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -474,7 +474,7 @@ def test_relevant_line_ranges_none_when_no_match():
 
 def test_render_large_file_windows_to_relevant_symbol():
     from types import SimpleNamespace
-    from my_project_orchestrator.core.topography import TopographyEngine
+    from my_project_orchestrator.core.context.topography import TopographyEngine
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -505,7 +505,7 @@ def test_render_large_file_windows_to_relevant_symbol():
 
 def test_render_large_file_no_match_sends_full():
     from types import SimpleNamespace
-    from my_project_orchestrator.core.topography import TopographyEngine
+    from my_project_orchestrator.core.context.topography import TopographyEngine
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)

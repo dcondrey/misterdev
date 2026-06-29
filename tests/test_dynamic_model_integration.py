@@ -12,9 +12,9 @@ from pathlib import Path
 import pytest
 
 from my_project_orchestrator.config import get_setting
-from my_project_orchestrator.core.llm_cache import LLMCache
-from my_project_orchestrator.core.model_ledger import ModelLedger
-from my_project_orchestrator.core.model_selector import ModelSelector
+from my_project_orchestrator.core.economics.llm_cache import LLMCache
+from my_project_orchestrator.core.economics.model_ledger import ModelLedger
+from my_project_orchestrator.core.economics.model_selector import ModelSelector
 from my_project_orchestrator.task_executors.markdown_plan_executor import (
     MarkdownPlanExecutor,
 )

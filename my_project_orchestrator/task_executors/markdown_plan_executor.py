@@ -9,11 +9,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from my_project_orchestrator.core.context_budget import ContextBudget
-from my_project_orchestrator.core.mcp_gather import gather_context
+from my_project_orchestrator.core.economics.context_budget import ContextBudget
+from my_project_orchestrator.core.integration.mcp_gather import gather_context
 from my_project_orchestrator.core.models import Task, ExecutionResult
-from my_project_orchestrator.core.project import Project
-from my_project_orchestrator.core.scratchpad import Scratchpad
+from my_project_orchestrator.core.execution.project import Project
+from my_project_orchestrator.core.context.scratchpad import Scratchpad
 from my_project_orchestrator.llm.prompt_manager import PromptManager
 from my_project_orchestrator.logging_setup import setup_logger
 from my_project_orchestrator.task_executors.base_executor import BaseTaskExecutor
@@ -23,14 +23,14 @@ from my_project_orchestrator.llm.responses import (
     apply_search_replace,
 )
 from my_project_orchestrator.llm.client import code_gen_abort_check
-from my_project_orchestrator.core.validator import (
+from my_project_orchestrator.core.verification.validator import (
     CodeValidator,
     CertaintyScorer,
     StallDetector,
     _run_cmd,
 )
-from my_project_orchestrator.core.error_resolver import ErrorResolver
-from my_project_orchestrator.core.error_classifier import (
+from my_project_orchestrator.core.execution.error_resolver import ErrorResolver
+from my_project_orchestrator.core.execution.error_classifier import (
     format_classified_error,
     classify_error,
 )
@@ -617,7 +617,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         # Multi-target routing: pick the sub-project that owns this task's files
         # and gate with ITS build/test/typecheck commands. No targets / no match
         # -> top-level commands, i.e. the single-target path is unchanged.
-        from my_project_orchestrator.core.targets import select_target, target_commands
+        from my_project_orchestrator.core.planning.targets import select_target, target_commands
 
         routed_target = select_target(project.config.get("targets") or [], target_files)
         target_cmds = target_commands(routed_target, project.config)
@@ -1825,7 +1825,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             return True, 0
         if baseline_failures <= 0:
             return False, None
-        from my_project_orchestrator.core.validator import _parse_test_counts
+        from my_project_orchestrator.core.verification.validator import _parse_test_counts
 
         total, post = _parse_test_counts(output)
         if total > 0 and post <= baseline_failures:
@@ -1898,7 +1898,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
         configured (so the judge doesn't share the generator's blind spots), else
         on the generator's own model. Routed through ``with_model`` when possible.
         """
-        from my_project_orchestrator.core.independent import generate_independent
+        from my_project_orchestrator.core.verification.independent import generate_independent
 
         judge_model = (project.config.get("judge") or {}).get("model")
         return generate_independent(project.llm_client, prompt, "", model=judge_model)
@@ -1963,10 +1963,10 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
 
         Reads the (optional) independent ``critic.model`` and timeout from config
         and delegates to the never-raising, timeout-bounded gate. Returns a
-        :class:`~my_project_orchestrator.core.critic.CritiqueVerdict`; a SKIP
+        :class:`~my_project_orchestrator.core.verification.critic.CritiqueVerdict`; a SKIP
         (no client, unparseable, timeout) is treated by the caller as "proceed".
         """
-        from my_project_orchestrator.core.critic import run_edit_critic
+        from my_project_orchestrator.core.verification.critic import run_edit_critic
 
         critic_cfg = project.config.get("critic") or {}
         timeout = get_setting(project.config, "orchestrator", "critic_timeout")
@@ -2024,7 +2024,7 @@ class MarkdownPlanExecutor(BaseTaskExecutor):
             return None
         if not getattr(task, "acceptance_criteria", ""):
             return None
-        from my_project_orchestrator.core.spec_tests import generate_spec_test
+        from my_project_orchestrator.core.verification.spec_tests import generate_spec_test
 
         language = (project.config.get("language") or "python").lower()
         try:

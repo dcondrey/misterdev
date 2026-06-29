@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.error_resolver import ErrorResolver, ErrorLocation
+from my_project_orchestrator.core.execution.error_resolver import ErrorResolver, ErrorLocation
 
 
 def test_resolve_python_traceback_location():

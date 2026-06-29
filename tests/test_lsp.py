@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-import my_project_orchestrator.core.lsp as lsp
-from my_project_orchestrator.core.lsp import (
+import my_project_orchestrator.core.context.lsp as lsp
+from my_project_orchestrator.core.context.lsp import (
     collect_diagnostics,
     find_source_files,
     _to_errors,

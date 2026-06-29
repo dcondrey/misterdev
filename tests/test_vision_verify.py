@@ -4,7 +4,7 @@ import types
 
 import pytest
 
-from my_project_orchestrator.core.vision_verify import (
+from my_project_orchestrator.core.verification.vision_verify import (
     GREEN,
     RED,
     SKIP,
@@ -310,7 +310,7 @@ def test_default_call_prefers_chat_multimodal(tmp_path):
 
 
 def test_gatekeeper_skips_vision_when_off(tmp_path):
-    from my_project_orchestrator.core.gatekeeper import GateKeeper
+    from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
 
     (tmp_path / "a.py").write_text("x = 1\n")
     shot = _shot(tmp_path)
@@ -325,7 +325,7 @@ def test_gatekeeper_skips_vision_when_off(tmp_path):
 
 
 def test_gatekeeper_red_vision_blocks_build(tmp_path):
-    from my_project_orchestrator.core.gatekeeper import GateKeeper
+    from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
 
     (tmp_path / "a.py").write_text("x = 1\n")
     shot = _shot(tmp_path)
@@ -341,7 +341,7 @@ def test_gatekeeper_red_vision_blocks_build(tmp_path):
 
 
 def test_gatekeeper_green_vision_passes(tmp_path):
-    from my_project_orchestrator.core.gatekeeper import GateKeeper
+    from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
 
     (tmp_path / "a.py").write_text("x = 1\n")
     shot = _shot(tmp_path)

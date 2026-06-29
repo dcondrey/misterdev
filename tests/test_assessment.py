@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.assessment import (
+from my_project_orchestrator.core.planning.assessment import (
     HealthCheck,
     FeatureInfo,
     FeatureInventory,
@@ -210,7 +210,7 @@ def test_source_overview_empty_project():
 def test_source_overview_reuses_provided_outline(monkeypatch):
     # When the caller passes a pre-built outline (the TopographyEngine graph), the
     # overview must reuse it and NOT parse a second throwaway SymbolGraph.
-    import my_project_orchestrator.core.topography as topo
+    import my_project_orchestrator.core.context.topography as topo
 
     def boom(*a, **k):
         raise AssertionError("SymbolGraph built despite a provided outline")

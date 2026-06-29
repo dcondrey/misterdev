@@ -11,11 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from my_project_orchestrator.agent import ProjectOrchestrator
-from my_project_orchestrator.core.assessment import ProjectAssessment
+from my_project_orchestrator.core.planning.assessment import ProjectAssessment
 from my_project_orchestrator.core.modes import BuildMode
 from my_project_orchestrator.core.models import Task
-from my_project_orchestrator.core.report import BuildReport
-from my_project_orchestrator.core.validator import ValidationResult
+from my_project_orchestrator.core.reporting.report import BuildReport
+from my_project_orchestrator.core.verification.validator import ValidationResult
 
 
 class _FakeClient:

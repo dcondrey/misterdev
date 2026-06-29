@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.validator import (
+from my_project_orchestrator.core.verification.validator import (
     CodeValidator,
     CertaintyScorer,
     StallDetector,
@@ -211,7 +211,7 @@ def test_tokenize_empty():
 def test_run_health_check_honors_per_command_timeouts(monkeypatch):
     # build_timeout/test_timeout must override the shared default per command,
     # so a slow compiler isn't falsely reported as a build failure.
-    import my_project_orchestrator.core.validator as v
+    import my_project_orchestrator.core.verification.validator as v
 
     calls = []
 
@@ -235,7 +235,7 @@ def test_run_health_check_honors_per_command_timeouts(monkeypatch):
 
 
 def test_run_health_check_explicit_lint_timeout(monkeypatch):
-    import my_project_orchestrator.core.validator as v
+    import my_project_orchestrator.core.verification.validator as v
 
     calls = {}
 

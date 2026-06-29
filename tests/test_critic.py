@@ -1,6 +1,6 @@
 import time
 
-from my_project_orchestrator.core.critic import (
+from my_project_orchestrator.core.verification.critic import (
     APPROVED,
     REJECTED,
     SKIP,

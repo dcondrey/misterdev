@@ -4,14 +4,14 @@ from pathlib import Path
 
 import pytest
 
-import my_project_orchestrator.core.container as container
-from my_project_orchestrator.core.container import (
+import my_project_orchestrator.core.execution.container as container
+from my_project_orchestrator.core.execution.container import (
     ContainerEngine,
     detect_engine,
     image_for_language,
 )
-from my_project_orchestrator.core.gatekeeper import GateKeeper
-from my_project_orchestrator.core.validator import _run_cmd
+from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
+from my_project_orchestrator.core.verification.validator import _run_cmd
 from my_project_orchestrator.environments.container_env import (
     ContainerEnvironmentManager,
 )
@@ -213,7 +213,7 @@ def test_env_manager_passes_network_to_engine(tmp_path, monkeypatch):
 
 
 def test_project_wires_governance_network(tmp_path, monkeypatch):
-    from my_project_orchestrator.core import project as project_mod
+    from my_project_orchestrator.core.execution import project as project_mod
 
     monkeypatch.setattr(
         "my_project_orchestrator.environments.container_env.detect_engine",
@@ -311,7 +311,7 @@ def test_gatekeeper_routes_gates_through_container(tmp_path):
 
 
 def test_gatekeeper_falls_back_local_when_engine_unavailable(tmp_path, monkeypatch):
-    import my_project_orchestrator.core.gatekeeper as gk
+    import my_project_orchestrator.core.verification.gatekeeper as gk
 
     local_calls = []
 

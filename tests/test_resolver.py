@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from my_project_orchestrator.core.resolver import ErrorResolver, ErrorLocation
-from my_project_orchestrator.core.topography import SymbolGraph, SymbolNode
+from my_project_orchestrator.core.planning.resolver import ErrorResolver, ErrorLocation
+from my_project_orchestrator.core.context.topography import SymbolGraph, SymbolNode
 
 
 def _make_graph():

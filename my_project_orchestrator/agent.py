@@ -10,43 +10,43 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Prompt
 
-from my_project_orchestrator.core.registry import ProjectRegistry
+from my_project_orchestrator.core.execution.registry import ProjectRegistry
 from my_project_orchestrator.core.modes import (
     BuildMode,
     BuildFlags,
     parse_flags,
     resolve_mode,
 )
-from my_project_orchestrator.core.assessment import ProjectAssessment, HealthCheck
-from my_project_orchestrator.core.scratchpad import Scratchpad
-from my_project_orchestrator.core.decomposer import (
+from my_project_orchestrator.core.planning.assessment import ProjectAssessment, HealthCheck
+from my_project_orchestrator.core.context.scratchpad import Scratchpad
+from my_project_orchestrator.core.planning.decomposer import (
     decompose_spec,
     topological_sort,
     format_plan,
 )
-from my_project_orchestrator.core.validator import ValidationResult
-from my_project_orchestrator.core.gatekeeper import GateKeeper
+from my_project_orchestrator.core.verification.validator import ValidationResult
+from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
 from my_project_orchestrator.core.gitcmd import run_git
-from my_project_orchestrator.core.sovereign import (
+from my_project_orchestrator.core.planning.sovereign import (
     StrategyOptimizer,
     RealTimeAligner,
     ABMCTSPlanner,
     EphemeralCodeManager,
     ProbeGenerator,
 )
-from my_project_orchestrator.core.metacognition import SessionAuditor
-from my_project_orchestrator.core.contracts import ContractRegistry
-from my_project_orchestrator.core.preflight import PreflightValidator
-from my_project_orchestrator.core.progress import ProgressTracker, compute_task_hash
-from my_project_orchestrator.core.change_tracker import ChangeTracker
-from my_project_orchestrator.core.report import BuildReport
-from my_project_orchestrator.core.project import Project
+from my_project_orchestrator.core.planning.metacognition import SessionAuditor
+from my_project_orchestrator.core.context.contracts import ContractRegistry
+from my_project_orchestrator.core.verification.preflight import PreflightValidator
+from my_project_orchestrator.core.execution.progress import ProgressTracker, compute_task_hash
+from my_project_orchestrator.core.context.change_tracker import ChangeTracker
+from my_project_orchestrator.core.reporting.report import BuildReport
+from my_project_orchestrator.core.execution.project import Project
 from my_project_orchestrator.core.models import Task
 from my_project_orchestrator.analyzers.project_analyzer import (
     analyze_project,
     has_test_files,
 )
-from my_project_orchestrator.core.advisor import recommend_work
+from my_project_orchestrator.core.planning.advisor import recommend_work
 from my_project_orchestrator.llm.client import BudgetExceededError
 from my_project_orchestrator.task_executors.markdown_plan_executor import (
     MarkdownPlanExecutor,
@@ -1009,7 +1009,7 @@ class ProjectOrchestrator:
         true. SKIP (no goal/criteria/client, unparseable, timeout, error) is a
         no-op. Wrapped so a judge failure can never crash a finished build.
         """
-        from my_project_orchestrator.core.goal_check import (
+        from my_project_orchestrator.core.verification.goal_check import (
             GAP,
             build_evidence,
             run_goal_check,
@@ -1143,7 +1143,7 @@ class ProjectOrchestrator:
 
         ``cwd`` runs the command in a sub-project (target) directory; defaults to
         the repo root."""
-        from my_project_orchestrator.core.validator import _parse_test_counts
+        from my_project_orchestrator.core.verification.validator import _parse_test_counts
 
         ok, output = executor._run_command(project, test_cmd, timeout=timeout, cwd=cwd)
         if ok:
@@ -1222,7 +1222,7 @@ class ProjectOrchestrator:
         :meth:`_integration_gate` — the last place a polyglot run would otherwise
         gate with the wrong toolchain.
         """
-        from my_project_orchestrator.core.targets import select_target
+        from my_project_orchestrator.core.planning.targets import select_target
 
         reverted: list[str] = []
         for tgt in targets:
@@ -1416,7 +1416,7 @@ class ProjectOrchestrator:
                 # commit. Instead, run the gate in COUNT mode against the baseline
                 # failure count when it is parseable — reverting only a wave that
                 # increases failures. Unparseable count -> disable as before.
-                from my_project_orchestrator.core.validator import _parse_test_counts
+                from my_project_orchestrator.core.verification.validator import _parse_test_counts
 
                 total, fails = _parse_test_counts(baseline_out)
                 if total > 0 and fails > 0:
@@ -1998,7 +1998,7 @@ class ProjectOrchestrator:
         from my_project_orchestrator.analyzers.project_analyzer import (
             _health_ground_truth,
         )
-        from my_project_orchestrator.core.claim_verifier import Claim, verify_claims
+        from my_project_orchestrator.core.verification.claim_verifier import Claim, verify_claims
 
         root = project.path
         health = _health_ground_truth(assessment.health)
@@ -2122,7 +2122,7 @@ class ProjectOrchestrator:
             return explicit
         if not get_setting(project.config, "orchestrator", "auto_targets"):
             return []
-        from my_project_orchestrator.core.targets import discover_targets
+        from my_project_orchestrator.core.planning.targets import discover_targets
 
         discovered = discover_targets(str(project.path))
         if discovered:
@@ -2193,7 +2193,7 @@ class ProjectOrchestrator:
         evidence = None
         web_cfg = target.get("web")
         if web_cfg:
-            from my_project_orchestrator.core.web_verify import run_web_gate
+            from my_project_orchestrator.core.verification.web_verify import run_web_gate
 
             web = run_web_gate(run_dir, web_cfg)
             evidence = getattr(web, "evidence", None)
@@ -2201,7 +2201,7 @@ class ProjectOrchestrator:
                 return False, f"web verify failed ({web.reason or 'no detail'})"
         vision_cfg = target.get("vision")
         if vision_cfg:
-            from my_project_orchestrator.core.vision_verify import run_vision_gate
+            from my_project_orchestrator.core.verification.vision_verify import run_vision_gate
 
             vc = dict(vision_cfg)
             if not vc.get("capture") and evidence:

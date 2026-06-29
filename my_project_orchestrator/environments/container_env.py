@@ -1,7 +1,7 @@
 """Container-backed build environment (opt-in).
 
 Selected by ``environment.type: docker`` (or ``container``). Provides a
-:class:`~my_project_orchestrator.core.container.ContainerEngine` configured for
+:class:`~my_project_orchestrator.core.execution.container.ContainerEngine` configured for
 the project so gate commands run inside a pinned image. Strictly best-effort:
 if no OCI engine is reachable, :meth:`engine` returns ``None`` and the caller
 runs gates locally exactly as before — the environment never blocks a build.
@@ -14,7 +14,7 @@ from the project ``language``. ``environment.engine`` may pin a preferred engine
 from pathlib import Path
 from typing import Optional
 
-from my_project_orchestrator.core.container import (
+from my_project_orchestrator.core.execution.container import (
     ContainerEngine,
     detect_engine,
     image_for_language,

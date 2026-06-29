@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from my_project_orchestrator.core.free_models import FreeModelCache, _is_free
-from my_project_orchestrator.core.model_ledger import ModelLedger
-from my_project_orchestrator.core.model_selector import ModelSelector
+from my_project_orchestrator.core.economics.free_models import FreeModelCache, _is_free
+from my_project_orchestrator.core.economics.model_ledger import ModelLedger
+from my_project_orchestrator.core.economics.model_selector import ModelSelector
 
 
 @pytest.fixture
@@ -98,7 +98,7 @@ def test_selector_merges_free_into_cheapest_tier():
 
 
 def test_http_fetch_memoizes_per_url(monkeypatch):
-    import my_project_orchestrator.core.free_models as fm
+    import my_project_orchestrator.core.economics.free_models as fm
 
     fm._FETCH_CACHE.clear()
     calls = []

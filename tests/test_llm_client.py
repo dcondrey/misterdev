@@ -554,7 +554,7 @@ def _fake_openai_capture(captured):
 
 
 def _build_openrouter(monkeypatch, captured, llm=None, catalog_models=None):
-    from my_project_orchestrator.core.model_catalog import ModelCatalog
+    from my_project_orchestrator.core.economics.model_catalog import ModelCatalog
     from my_project_orchestrator.llm.client import OpenRouterLLMClient
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
@@ -672,7 +672,7 @@ def _fake_openai_tool(captured, edits):
 
 
 def test_generate_edits_uses_tool_and_renders_fences(monkeypatch):
-    from my_project_orchestrator.core.model_catalog import ModelCatalog
+    from my_project_orchestrator.core.economics.model_catalog import ModelCatalog
     from my_project_orchestrator.llm.client import OpenRouterLLMClient
 
     captured = {}
@@ -697,7 +697,7 @@ def test_generate_edits_uses_tool_and_renders_fences(monkeypatch):
 
 
 def test_generate_edits_falls_back_when_tools_unsupported(monkeypatch):
-    from my_project_orchestrator.core.model_catalog import ModelCatalog
+    from my_project_orchestrator.core.economics.model_catalog import ModelCatalog
     from my_project_orchestrator.llm.client import OpenRouterLLMClient
 
     captured = {}

@@ -12,12 +12,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
-from my_project_orchestrator.core.assessment import (
+from my_project_orchestrator.core.planning.assessment import (
     FeatureInfo,
     ProjectAssessment,
 )
 from my_project_orchestrator.core.gitcmd import run_git
-from my_project_orchestrator.core.validator import run_health_check
+from my_project_orchestrator.core.verification.validator import run_health_check
 from my_project_orchestrator.llm.client import BaseLLMClient
 from my_project_orchestrator.logging_setup import setup_logger
 
@@ -766,7 +766,7 @@ def _get_source_overview(
     parts = []
     if outline is None:
         try:
-            from my_project_orchestrator.core.topography import SymbolGraph
+            from my_project_orchestrator.core.context.topography import SymbolGraph
 
             graph = SymbolGraph(project_path)
             graph.build()

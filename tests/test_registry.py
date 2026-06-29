@@ -3,7 +3,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.registry import ProjectRegistry
+from my_project_orchestrator.core.execution.registry import ProjectRegistry
 
 
 def _make_project_dir(root, name="test-proj", with_yaml=True):

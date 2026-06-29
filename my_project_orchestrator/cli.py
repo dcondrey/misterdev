@@ -14,7 +14,7 @@ console = Console()
 
 def _print_report(project_path: str) -> None:
     """Render the aggregated cost/model/audit summary for a project."""
-    from my_project_orchestrator.core.report_view import collect
+    from my_project_orchestrator.core.reporting.report_view import collect
 
     data = collect(project_path)
     rpt = data["latest_report"]

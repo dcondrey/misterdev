@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 
 from my_project_orchestrator.core.config import DEFAULT_CONFIG
-from my_project_orchestrator.core.context_budget import ContextBudget
+from my_project_orchestrator.core.economics.context_budget import ContextBudget
 
 
 # ---------------------------------------------------------------------------

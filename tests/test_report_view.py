@@ -2,13 +2,13 @@ import json
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.report_view import (
+from my_project_orchestrator.core.reporting.report_view import (
     collect,
     summarize_audit,
     summarize_models,
     latest_report,
 )
-from my_project_orchestrator.core.model_ledger import ModelLedger
+from my_project_orchestrator.core.economics.model_ledger import ModelLedger
 
 
 def _orch(tmp):
