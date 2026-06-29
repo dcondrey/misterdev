@@ -7,10 +7,30 @@ from my_project_orchestrator.core.verification.validator import (
     StallDetector,
     ValidationResult,
     run_validation,
+    run_health_check,
     _run_cmd,
     _tokenize,
     _parse_test_counts,
 )
+
+
+def test_run_health_check_absent_commands_count_as_pass():
+    # An absent build/test/lint command is "not applicable", not "failing".
+    with tempfile.TemporaryDirectory() as td:
+        h = run_health_check(Path(td), None, None, None)
+        assert h.builds is True
+        assert h.tests_pass is True
+        assert h.lint_clean is True
+
+
+def test_parse_test_counts_sums_multiple_cargo_crates():
+    out = "test result: ok. 3 passed; 0 failed\ntest result: ok. 4 passed; 1 failed\n"
+    assert _parse_test_counts(out) == (8, 1)
+
+
+def test_parse_test_counts_sums_multiple_pytest_blocks():
+    out = "3 passed\n=== 5 passed, 1 failed in 0.1s ===\n"
+    assert _parse_test_counts(out) == (9, 1)
 
 
 def test_run_validation_all_pass():

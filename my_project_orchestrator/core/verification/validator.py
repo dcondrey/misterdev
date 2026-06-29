@@ -1,5 +1,7 @@
 import ast
+import os
 import re
+import signal
 import subprocess
 from typing import Callable, Dict, List, Optional, Tuple
 from pathlib import Path
@@ -54,6 +56,25 @@ class ValidationResult:
         return " | ".join(parts)
 
 
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """SIGKILL a timed-out command's whole process group so build/test
+    grandchildren (rustc, pytest workers) don't outlive the gate and hold locks.
+
+    Falls back to killing just the direct child when the platform has no process
+    groups (Windows) or the group is already gone.
+    """
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
 def _run_cmd(
     cmd: str,
     cwd: Path,
@@ -88,23 +109,34 @@ def _run_cmd(
     else:
         full_cmd = cmd
     try:
-        proc = subprocess.run(
+        # start_new_session puts the command in its own process group so a
+        # timeout can SIGKILL the WHOLE tree (build/test grandchildren like rustc
+        # or pytest workers), not just the shell — otherwise they outlive the
+        # gate and hold the target/ lock. errors="replace" keeps a stray non-UTF8
+        # byte in tool output from raising and being misreported as a failure.
+        proc = subprocess.Popen(
             full_cmd,
             shell=True,
             cwd=cwd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            errors="replace",
+            start_new_session=True,
         )
-        output = proc.stdout
-        if proc.stderr:
-            output += "\n" + proc.stderr
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc)
+            out, err = proc.communicate()
+            _audit_command(audit, cmd, False, cwd)
+            return False, f"Command timed out after {timeout}s: {full_cmd}"
+        output = out
+        if err:
+            output += "\n" + err
         ok = proc.returncode == 0
         _audit_command(audit, cmd, ok, cwd)
         return ok, output
-    except subprocess.TimeoutExpired:
-        _audit_command(audit, cmd, False, cwd)
-        return False, f"Command timed out after {timeout}s: {full_cmd}"
     except Exception as e:
         _audit_command(audit, cmd, False, cwd)
         return False, f"Command failed: {e}"
@@ -200,6 +232,10 @@ def run_health_check(
     tt = test_timeout if test_timeout is not None else timeout
     lt = lint_timeout if lint_timeout is not None else tt
 
+    # A command that is absent is "not applicable", not "failing" — leaving the
+    # field at its False default would make a no-build-step (or no-lint) project
+    # read as build=FAIL and mislead the analyzers. Mirror run_validation, which
+    # treats an absent command as a pass.
     if build_command:
         health.builds, health.build_output = _run_cmd(
             build_command,
@@ -207,6 +243,8 @@ def run_health_check(
             env_activate,
             bt,
         )
+    else:
+        health.builds = True
 
     if test_command:
         health.tests_pass, health.test_output = _run_cmd(
@@ -216,6 +254,8 @@ def run_health_check(
             tt,
         )
         health.test_count, health.test_failures = _parse_test_counts(health.test_output)
+    else:
+        health.tests_pass = True
 
     if lint_command:
         health.lint_clean, health.lint_output = _run_cmd(
@@ -224,6 +264,8 @@ def run_health_check(
             env_activate,
             lt,
         )
+    else:
+        health.lint_clean = True
 
     return health
 
@@ -236,25 +278,28 @@ def _parse_test_counts(output: str) -> Tuple[int, int]:
     and recommender into believing no tests exist.
     """
     passed = failed = 0
-    # pytest: "N passed", "N failed", "N error(s)", "N skipped"
+    # pytest: "N passed", "N failed", "N error(s)", "N skipped". Sum EVERY match
+    # so a multi-package run (more than one summary line) isn't undercounted to
+    # just the first block.
     for kind, target in (
         ("passed", "p"),
         ("failed", "f"),
         ("error", "f"),
         ("errors", "f"),
     ):
-        m = re.search(rf"(\d+) {kind}\b", output)
-        if m:
+        for n in re.findall(rf"(\d+) {kind}\b", output):
             if target == "p":
-                passed += int(m.group(1))
+                passed += int(n)
             else:
-                failed += int(m.group(1))
+                failed += int(n)
     if passed or failed:
         return passed + failed, failed
-    # cargo: "test result: ok. N passed; M failed"
-    m = re.search(r"test result:.*?(\d+) passed; (\d+) failed", output)
-    if m:
-        p, f = int(m.group(1)), int(m.group(2))
+    # cargo: "test result: ok. N passed; M failed" — one line per crate in a
+    # workspace run, so sum them all rather than counting only the first crate.
+    cargo = re.findall(r"test result:.*?(\d+) passed; (\d+) failed", output)
+    if cargo:
+        p = sum(int(a) for a, _ in cargo)
+        f = sum(int(b) for _, b in cargo)
         return p + f, f
     # swift test / XCTest: "Executed N tests, with M failures"
     m = re.search(r"Executed (\d+) tests?, with (\d+) failure", output)
