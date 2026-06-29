@@ -177,15 +177,15 @@ def run_edit_critic(
     )
 
 
-def _run_panel(call: CriticCall, base_prompt: str, members: int) -> List["CritiqueVerdict"]:
+def _run_panel(
+    call: CriticCall, base_prompt: str, members: int
+) -> List["CritiqueVerdict"]:
     """Run ``members`` lens-diversified critiques concurrently; return verdicts.
 
     A member whose call fails contributes a SKIP (abstention) rather than sinking
     the panel, so one flaky reviewer can't force a decision either way.
     """
-    prompts = [
-        f"{base_prompt}\n{_LENSES[i % len(_LENSES)]}\n" for i in range(members)
-    ]
+    prompts = [f"{base_prompt}\n{_LENSES[i % len(_LENSES)]}\n" for i in range(members)]
 
     def _one(p: str) -> "CritiqueVerdict":
         try:

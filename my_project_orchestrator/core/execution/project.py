@@ -92,7 +92,9 @@ class Project:
     def model_selector(self):
         """Ledger-driven model selection policy (lazy)."""
         if self._model_selector is None:
-            from my_project_orchestrator.core.economics.model_selector import ModelSelector
+            from my_project_orchestrator.core.economics.model_selector import (
+                ModelSelector,
+            )
 
             self._model_selector = ModelSelector(
                 self.config, self.model_ledger, free_models=self._harvest_free_models()
@@ -181,7 +183,9 @@ class Project:
         command seam stays byte-identical to today."""
         if not self._governance_built:
             self._governance_built = True
-            from my_project_orchestrator.core.execution.governance import policy_from_config
+            from my_project_orchestrator.core.execution.governance import (
+                policy_from_config,
+            )
 
             policy = policy_from_config(
                 self.config, interactive=False, audit=self.audit_trail

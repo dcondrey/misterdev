@@ -19,7 +19,12 @@ from pathlib import Path
 from typing import Optional
 
 from my_project_orchestrator.core.execution.bounded import run_bounded
-from my_project_orchestrator.core.execution.outcomes import GREEN, RED, SKIP, GateOutcome
+from my_project_orchestrator.core.execution.outcomes import (
+    GREEN,
+    RED,
+    SKIP,
+    GateOutcome,
+)
 
 from my_project_orchestrator.logging_setup import setup_logger
 

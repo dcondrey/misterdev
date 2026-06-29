@@ -31,7 +31,12 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from my_project_orchestrator.core.execution.bounded import run_bounded
-from my_project_orchestrator.core.execution.outcomes import GREEN, RED, SKIP, GateOutcome
+from my_project_orchestrator.core.execution.outcomes import (
+    GREEN,
+    RED,
+    SKIP,
+    GateOutcome,
+)
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -96,6 +101,7 @@ def run_web_gate(
         return WebResult(SKIP, reason="no runtime.web config")
 
     timeout = float(web_config.get("timeout", 60))
+
     def _work() -> WebResult:
         try:
             return _verify(project_root, web_config, timeout)

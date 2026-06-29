@@ -8,7 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from my_project_orchestrator.core.planning.assessment import HealthCheck, ProjectAssessment
+from my_project_orchestrator.core.planning.assessment import (
+    HealthCheck,
+    ProjectAssessment,
+)
 from my_project_orchestrator.core.models import Task
 from my_project_orchestrator.core.context.scratchpad import Scratchpad
 from my_project_orchestrator.core.modes import BuildMode

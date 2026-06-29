@@ -50,6 +50,7 @@ def _per_file_wait(num_files: int, settle_budget: float) -> float:
         return _MIN_FILE_WAIT
     return max(_MIN_FILE_WAIT, min(_MAX_FILE_WAIT, settle_budget / num_files))
 
+
 _LANG_EXTS: Dict[str, tuple] = {
     "python": (".py",),
     "rust": (".rs",),

@@ -7,7 +7,6 @@ vocabulary and the small boilerplate so each gate's result class only declares
 its own evidence fields.
 """
 
-
 # Tri-state gate status. GREEN passed; RED failed (blocks the build); SKIP is
 # "no opinion" (missing config/dep, unparseable, or timeout) and never blocks.
 SKIP = "skip"
