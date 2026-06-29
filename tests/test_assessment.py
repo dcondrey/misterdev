@@ -12,6 +12,9 @@ from my_project_orchestrator.core.planning.assessment import (
     ProjectAssessment,
 )
 from my_project_orchestrator.core.models import Task, ExecutionResult
+import pytest
+from pydantic import ValidationError
+
 from my_project_orchestrator.analyzers.project_analyzer import (
     _get_source_overview,
     _leading_doc,
@@ -19,6 +22,21 @@ from my_project_orchestrator.analyzers.project_analyzer import (
     _merge_debt_risk,
     _merge_structure,
 )
+
+
+def test_summary_clamps_negative_passing_count():
+    # Some runner parsers fill test_count and test_failures from independent
+    # regexes, so failures can exceed count; summary() must not render a negative.
+    a = ProjectAssessment()
+    a.health = HealthCheck(builds=True, test_count=5, test_failures=7)
+    assert "tests=0/5" in a.summary()
+
+
+def test_validate_assignment_rejects_wrong_typed_write():
+    # validate_assignment turns a silently-stored bad write into a fast failure.
+    a = ProjectAssessment()
+    with pytest.raises(ValidationError):
+        a.features.stubs = None  # list[str] field; None is no longer stored silently
 
 
 def test_merge_completeness_tolerates_null_fields():
