@@ -6,110 +6,21 @@ from my_project_orchestrator.core.planning.assessment import HealthCheck
 from my_project_orchestrator.core.gitcmd import run_git
 from my_project_orchestrator.core.verification.validator import _run_cmd
 
+from .constants import (
+    BANNED_MARKERS,
+    SECRET_PATTERNS,
+    ASSIGNMENT_SECRET_KEYS,
+    SKIP_DIRS,
+    CODE_EXTENSIONS,
+    SECRET_SCAN_EXTENSIONS,
+    SECRET_SCAN_FILENAMES,
+)
+from .helpers import _path_in_scope
+
 if TYPE_CHECKING:
     from my_project_orchestrator.core.execution.container import ContainerEngine
 
 logger = setup_logger(__name__)
-
-# Patterns that indicate incomplete or debug code
-BANNED_MARKERS = ("todo!", "FIXME", "HACK", "XXX", "placeholder", "dummy")
-
-# High-signal patterns: a bare substring match is enough to flag a file.
-SECRET_PATTERNS = (
-    "PRIVATE KEY",
-    "BEGIN RSA",
-    "BEGIN EC",
-    "BEGIN DSA",
-    "sk-",
-    "ghp_",
-    "gho_",
-    "AKIA",
-)
-
-# Low-signal credential keys. These appear constantly in ordinary source
-# (struct fields, function params, config keys), so they are only flagged when
-# assigned a concrete quoted literal, not a variable/env reference.
-ASSIGNMENT_SECRET_KEYS = (
-    "password",
-    "passwd",
-    "secret",
-    "api_key",
-    "apikey",
-    "access_key",
-    "token",
-)
-
-# Extensions to skip during file scanning
-SKIP_DIRS = frozenset(
-    {
-        ".venv",
-        "venv",
-        ".git",
-        "node_modules",
-        "__pycache__",
-        "target",
-        "build",
-        "dist",
-        ".tox",
-        ".mypy_cache",
-        ".eggs",
-    }
-)
-
-CODE_EXTENSIONS = frozenset(
-    {
-        ".py",
-        ".js",
-        ".ts",
-        ".tsx",
-        ".jsx",
-        ".rs",
-        ".go",
-        ".java",
-        ".c",
-        ".cpp",
-        ".h",
-        ".rb",
-        ".php",
-        ".swift",
-        ".kt",
-        ".sh",
-    }
-)
-
-# Secrets leak through config/env files just as readily as source — and a
-# planted credential there is never "code", so the code-only scan (G5/G9) misses
-# it. G6 therefore scans these in addition to CODE_EXTENSIONS. Banned-marker and
-# debug-artifact scans deliberately stay code-only (a TODO in a YAML is fine).
-SECRET_SCAN_EXTENSIONS = CODE_EXTENSIONS | frozenset(
-    {
-        ".env",
-        ".yaml",
-        ".yml",
-        ".json",
-        ".toml",
-        ".ini",
-        ".cfg",
-        ".conf",
-        ".properties",
-        ".xml",
-        ".tfvars",
-    }
-)
-
-# Dotfiles whose whole name is the extension (``Path(".env").suffix == ""``), so
-# they must be matched by name rather than suffix.
-SECRET_SCAN_FILENAMES = frozenset({".env", ".envrc", ".netrc", ".pgpass"})
-
-
-def _path_in_scope(
-    path_str: str,
-    extensions: frozenset,
-    filenames: frozenset = frozenset(),
-) -> bool:
-    """True when ``path_str`` is in scope by file extension or exact name."""
-    p = Path(path_str)
-    return p.suffix in extensions or p.name in filenames
 
 
 class GateKeeper:
@@ -286,7 +197,9 @@ class GateKeeper:
         # and timeout-bounded: a SKIP (no config, unparseable score, timeout)
         # never fails; only a parsed score below the floor is a RED that blocks.
         if self.mutation_gate:
-            from my_project_orchestrator.core.verification.mutation_gate import run_mutation_gate
+            from my_project_orchestrator.core.verification.mutation_gate import (
+                run_mutation_gate,
+            )
 
             mutation = run_mutation_gate(
                 self.project_path, self.mutation_config, runner=self._runner
@@ -361,7 +274,9 @@ class GateKeeper:
         # blocks the build. Real screenshot evidence is captured.
         web_evidence: Optional[str] = None
         if self.web_verify:
-            from my_project_orchestrator.core.verification.web_verify import run_web_gate
+            from my_project_orchestrator.core.verification.web_verify import (
+                run_web_gate,
+            )
 
             web = run_web_gate(self.project_path, self.runtime_config.get("web"))
             # The captured screenshot doubles as the vision gate's input below, so
@@ -380,7 +295,9 @@ class GateKeeper:
         # config, no model/network, unparseable verdict, timeout) never fails;
         # only a RED (the model denies the assertion) blocks the build.
         if self.vision_verify:
-            from my_project_orchestrator.core.verification.vision_verify import run_vision_gate
+            from my_project_orchestrator.core.verification.vision_verify import (
+                run_vision_gate,
+            )
 
             # Default the screenshot to the web gate's freshly captured evidence
             # when the vision config doesn't name its own ``capture``, so enabling

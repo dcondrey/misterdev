@@ -1,0 +1,89 @@
+# Patterns that indicate incomplete or debug code
+BANNED_MARKERS = ("todo!", "FIXME", "HACK", "XXX", "placeholder", "dummy")
+
+# High-signal patterns: a bare substring match is enough to flag a file.
+SECRET_PATTERNS = (
+    "PRIVATE KEY",
+    "BEGIN RSA",
+    "BEGIN EC",
+    "BEGIN DSA",
+    "sk-",
+    "ghp_",
+    "gho_",
+    "AKIA",
+)
+
+# Low-signal credential keys. These appear constantly in ordinary source
+# (struct fields, function params, config keys), so they are only flagged when
+# assigned a concrete quoted literal, not a variable/env reference.
+ASSIGNMENT_SECRET_KEYS = (
+    "password",
+    "passwd",
+    "secret",
+    "api_key",
+    "apikey",
+    "access_key",
+    "token",
+)
+
+# Extensions to skip during file scanning
+SKIP_DIRS = frozenset(
+    {
+        ".venv",
+        "venv",
+        ".git",
+        "node_modules",
+        "__pycache__",
+        "target",
+        "build",
+        "dist",
+        ".tox",
+        ".mypy_cache",
+        ".eggs",
+    }
+)
+
+CODE_EXTENSIONS = frozenset(
+    {
+        ".py",
+        ".js",
+        ".ts",
+        ".tsx",
+        ".jsx",
+        ".rs",
+        ".go",
+        ".java",
+        ".c",
+        ".cpp",
+        ".h",
+        ".rb",
+        ".php",
+        ".swift",
+        ".kt",
+        ".sh",
+    }
+)
+
+# Secrets leak through config/env files just as readily as source — and a
+# planted credential there is never "code", so the code-only scan (G5/G9) misses
+# it. G6 therefore scans these in addition to CODE_EXTENSIONS. Banned-marker and
+# debug-artifact scans deliberately stay code-only (a TODO in a YAML is fine).
+SECRET_SCAN_EXTENSIONS = CODE_EXTENSIONS | frozenset(
+    {
+        ".env",
+        ".yaml",
+        ".yml",
+        ".json",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".properties",
+        ".xml",
+        ".tfvars",
+    }
+)
+
+# Dotfiles whose whole name is the extension (``Path(".env").suffix == ""``), so
+# they must be matched by name rather than suffix.
+SECRET_SCAN_FILENAMES = frozenset({".env", ".envrc", ".netrc", ".pgpass"})
