@@ -87,7 +87,11 @@ def _budget_exhausted(client) -> bool:
     treated as exhausted.
     """
     remaining = getattr(client, "budget_remaining", None)
-    return isinstance(remaining, (int, float)) and remaining <= 0
+    return (
+        isinstance(remaining, (int, float))
+        and not isinstance(remaining, bool)
+        and remaining <= 0
+    )
 
 
 def _apply_budget_ceiling(client, flag_budget: float) -> None:
@@ -99,7 +103,7 @@ def _apply_budget_ceiling(client, flag_budget: float) -> None:
     budget isn't numeric (e.g. a test double).
     """
     current = getattr(client, "_budget", None)
-    if isinstance(current, (int, float)):
+    if isinstance(current, (int, float)) and not isinstance(current, bool):
         client._budget = min(current, flag_budget)
     else:
         client._budget = flag_budget
@@ -141,7 +145,13 @@ def _warn_if_no_test_gate(assessment, project, report) -> None:
     # discovery) provide the protection. Don't cry wolf in that case.
     cfg = getattr(project, "config", {}) or {}
     targets = cfg.get("targets") or []
-    if any(t.get("test_command") or t.get("build_command") for t in targets):
+    # `targets` is an open, non-schema-validated config list, so a malformed
+    # project.yaml could hold non-dict entries; guard so this advisory warning
+    # never aborts the build with an AttributeError.
+    if any(
+        isinstance(t, dict) and (t.get("test_command") or t.get("build_command"))
+        for t in targets
+    ):
         return
     if get_setting(cfg, "orchestrator", "auto_targets"):
         return
