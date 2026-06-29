@@ -271,3 +271,27 @@ def test_apply_search_replace_sequential_hunks():
     ]
     result = apply_search_replace(original, edits)
     assert "a = 9" in result and "c = 7" in result and "b = 2" in result
+
+
+def test_apply_search_replace_no_midline_substring_corruption():
+    # "x = 1" is a whole-line hunk; it must NOT splice into the middle of
+    # "x = 10" (the substring-match corruption bug). No whole line matches.
+    with pytest.raises(EditConflictError, match="not found"):
+        apply_search_replace("x = 10\n", [SearchReplaceEdit("f.rs", "x = 1", "x = 99")])
+
+
+def test_apply_search_replace_line_substring_not_false_ambiguous():
+    # "total = 1" is a substring of "subtotal = 1" but a distinct whole line, so
+    # it matches exactly once (the old substring count wrongly saw 2 -> conflict).
+    result = apply_search_replace(
+        "total = 1\nsubtotal = 1\n",
+        [SearchReplaceEdit("f.rs", "total = 1", "total = 2")],
+    )
+    assert result == "total = 2\nsubtotal = 1\n"
+
+
+def test_apply_search_replace_crlf_replacement_stays_consistent():
+    # Replacement lines inherit the file's CRLF; no mixed CRLF/LF is introduced.
+    original = "a\r\nb\r\nc\r\n"
+    result = apply_search_replace(original, [SearchReplaceEdit("f.rs", "b", "B1\nB2")])
+    assert result == "a\r\nB1\r\nB2\r\nc\r\n"

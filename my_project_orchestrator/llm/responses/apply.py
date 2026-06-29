@@ -11,10 +11,11 @@ def apply_search_replace(original: str, edits: List[SearchReplaceEdit]) -> str:
     Each hunk's SEARCH snippet must resolve to exactly one location; a missing
     or ambiguous anchor raises :class:`EditConflictError` so the caller can
     retry rather than write a corrupt file. An empty SEARCH creates a new file
-    and is rejected if the file already has content. Matching first tries an
-    exact substring, then a per-line whitespace/line-ending-tolerant fallback,
-    which absorbs the trailing-space and CRLF drift models commonly introduce
-    without ever matching more than one place.
+    and is rejected if the file already has content. Matching is line-anchored
+    (never a bare substring, which would splice mid-line), with a per-line
+    whitespace/line-ending-tolerant comparison that absorbs the trailing-space
+    and CRLF drift models commonly introduce without ever matching more than one
+    place.
     """
     content = original
     for edit in edits:
@@ -32,15 +33,7 @@ def apply_search_replace(original: str, edits: List[SearchReplaceEdit]) -> str:
 
 
 def _apply_one_hunk(content: str, edit: SearchReplaceEdit) -> str:
-    exact = content.count(edit.search)
-    if exact == 1:
-        return content.replace(edit.search, edit.replace, 1)
-    if exact > 1:
-        raise EditConflictError(
-            f"{edit.path}: SEARCH block matches {exact} locations. Include "
-            "more surrounding context so it identifies exactly one place."
-        )
-    spliced, hits = _tolerant_line_splice(content, edit.search, edit.replace)
+    spliced, hits = _line_splice(content, edit.search, edit.replace)
     if hits == 1:
         return spliced
     if hits == 0:
@@ -55,17 +48,23 @@ def _apply_one_hunk(content: str, edit: SearchReplaceEdit) -> str:
     )
 
 
-def _tolerant_line_splice(content: str, search: str, replace: str) -> tuple:
-    """Locate ``search`` in ``content`` ignoring whitespace drift.
+def _line_splice(content: str, search: str, replace: str) -> tuple:
+    """Locate ``search`` as a window of whole LINES in ``content`` and replace it.
 
-    Two passes, each requiring a single matching window (any other count is a
-    conflict and the content is returned unmutated):
+    Line-anchored, never a bare substring: a single-line hunk like ``x = 1`` is
+    matched against whole lines, so it can never splice into the middle of a
+    longer line such as ``x = 10``. Two passes, each requiring exactly one
+    matching window (any other count is a conflict and the content is returned
+    unmutated):
 
     1. right-stripped / CR-free lines — absorbs trailing-space and CRLF drift,
        keeping indentation significant;
     2. fully-stripped lines — absorbs wrong indentation too, then re-indents the
        replacement to the file's actual indentation so formatting is preserved.
+
+    Replacement lines inherit the file's line ending, so a CRLF file stays CRLF.
     """
+    crlf = "\r\n" in content
     o_lines = content.split("\n")
     s_lines = search.split("\n")
     r_lines = replace.split("\n")
@@ -77,8 +76,7 @@ def _tolerant_line_splice(content: str, search: str, replace: str) -> tuple:
         return content, 0
     hits = [i for i in range(len(rstripped) - k + 1) if rstripped[i : i + k] == ns_r]
     if len(hits) == 1:
-        i = hits[0]
-        return "\n".join(o_lines[:i] + r_lines + o_lines[i + k :]), 1
+        return _join_splice(o_lines, hits[0], k, r_lines, crlf), 1
     if len(hits) > 1:
         return content, len(hits)
 
@@ -90,7 +88,17 @@ def _tolerant_line_splice(content: str, search: str, replace: str) -> tuple:
         return content, len(hits)
     i = hits[0]
     reindented = _reindent(o_lines[i : i + k], s_lines, r_lines)
-    return "\n".join(o_lines[:i] + reindented + o_lines[i + k :]), 1
+    return _join_splice(o_lines, i, k, reindented, crlf), 1
+
+
+def _join_splice(
+    o_lines: List[str], i: int, k: int, r_lines: List[str], crlf: bool
+) -> str:
+    """Splice ``r_lines`` over ``o_lines[i:i+k]``, giving the replacement lines the
+    file's line ending so a CRLF file does not end up with mixed CRLF/LF lines."""
+    if crlf:
+        r_lines = [ln if ln.endswith("\r") else ln + "\r" for ln in r_lines]
+    return "\n".join(o_lines[:i] + r_lines + o_lines[i + k :])
 
 
 def _leading_ws(line: str) -> str:
