@@ -13,6 +13,9 @@ non-zero or whose output lacks the expectation is a RED. Real stdout and exit
 code are captured as evidence.
 """
 
+import os
+import select
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -109,6 +112,10 @@ def _smoke(
 ) -> SmokeResult:
     """Launch, await readiness, probe, assert. Always tears the process down."""
     deadline = time.monotonic() + timeout
+    # Binary, unbuffered pipes so reads go through select()+os.read and are
+    # deadline-bounded (a text-mode readline() blocks until a newline, defeating
+    # the inner timeout). start_new_session puts the launch in its own process
+    # group so teardown can kill the whole tree, not just the shell.
     proc = subprocess.Popen(
         launch,
         shell=True,
@@ -116,8 +123,7 @@ def _smoke(
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+        start_new_session=True,
     )
     captured: list[str] = []
     try:
@@ -131,7 +137,8 @@ def _smoke(
 
         if probe is not None and proc.stdin is not None:
             try:
-                proc.stdin.write(probe if probe.endswith("\n") else probe + "\n")
+                data = probe if probe.endswith("\n") else probe + "\n"
+                proc.stdin.write(data.encode("utf-8"))
                 proc.stdin.flush()
             except (BrokenPipeError, OSError):
                 pass
@@ -153,13 +160,49 @@ def _smoke(
         _terminate(proc)
 
 
-def _read_available(proc: subprocess.Popen, captured: list) -> None:
-    """Append any currently-buffered stdout line without blocking forever."""
-    if proc.stdout is None:
+def _read_available(proc: subprocess.Popen, captured: list, deadline: float) -> None:
+    """Append whatever stdout is ready, waiting at most until ``deadline``.
+
+    Uses ``select`` + ``os.read`` so a process that emits no newline (or nothing
+    at all) can never block past the deadline — unlike ``readline()``, which the
+    inner timeout was silently relying on and which made the timeout a no-op.
+    """
+    fd = proc.stdout
+    if fd is None:
         return
-    line = proc.stdout.readline()
-    if line:
-        captured.append(line)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return
+    try:
+        ready, _, _ = select.select([fd], [], [], min(remaining, 0.1))
+    except (OSError, ValueError):
+        return
+    if not ready:
+        return
+    try:
+        chunk = os.read(fd.fileno(), 65536)
+    except (OSError, ValueError):
+        return
+    if chunk:
+        captured.append(chunk.decode("utf-8", "replace"))
+
+
+def _drain_remaining(proc: subprocess.Popen, captured: list) -> None:
+    """Read all output still buffered after the process has exited (non-blocking)."""
+    fd = proc.stdout
+    if fd is None:
+        return
+    while True:
+        try:
+            ready, _, _ = select.select([fd], [], [], 0)
+            if not ready:
+                return
+            chunk = os.read(fd.fileno(), 65536)
+        except (OSError, ValueError):
+            return
+        if not chunk:  # EOF
+            return
+        captured.append(chunk.decode("utf-8", "replace"))
 
 
 def _wait_for_substring(
@@ -168,15 +211,13 @@ def _wait_for_substring(
     """Read output until ``needle`` appears, the process exits, or the deadline
     passes. Returns True iff ``needle`` was seen in the cumulative output."""
     while time.monotonic() < deadline:
-        if "".join(captured).find(needle) != -1:
+        if needle in "".join(captured):
             return True
         if proc.poll() is not None:
             # Process gone; drain any remaining buffered output then check once.
-            remainder = proc.stdout.read() if proc.stdout else ""
-            if remainder:
-                captured.append(remainder)
+            _drain_remaining(proc, captured)
             return needle in "".join(captured)
-        _read_available(proc, captured)
+        _read_available(proc, captured, deadline)
     return needle in "".join(captured)
 
 
@@ -186,7 +227,9 @@ def _drain_until(
     """Read output for up to ``max_wait`` seconds (bounded by ``deadline``)."""
     stop = min(deadline, time.monotonic() + max_wait)
     while time.monotonic() < stop and proc.poll() is None:
-        _read_available(proc, captured)
+        _read_available(proc, captured, stop)
+    if proc.poll() is not None:
+        _drain_remaining(proc, captured)
 
 
 def _finish(
@@ -197,8 +240,25 @@ def _finish(
     return SmokeResult(status, evidence=evidence, exit_code=code, reason=reason)
 
 
+def _signal_group(proc: subprocess.Popen, sig: int) -> None:
+    """Send ``sig`` to the launch's whole process group so a server that forked
+    its own children (e.g. ``npm start`` -> node worker) is torn down too, not
+    just the shell. Falls back to signalling the direct child where process
+    groups are unavailable (Windows) or already gone."""
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.terminate() if sig == signal.SIGTERM else proc.kill()
+    except OSError:
+        pass
+
+
 def _terminate(proc: subprocess.Popen) -> None:
-    """Best-effort teardown: close stdin, terminate, then kill if needed."""
+    """Best-effort teardown: close stdin, SIGTERM the group, then SIGKILL it."""
     if proc.poll() is not None:
         return
     try:
@@ -206,12 +266,14 @@ def _terminate(proc: subprocess.Popen) -> None:
             proc.stdin.close()
     except OSError:
         pass
+    _signal_group(proc, signal.SIGTERM)
     try:
-        proc.terminate()
+        proc.wait(timeout=3)
+        return
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    _signal_group(proc, signal.SIGKILL)
+    try:
         proc.wait(timeout=3)
     except (subprocess.TimeoutExpired, OSError):
-        try:
-            proc.kill()
-            proc.wait(timeout=3)
-        except (subprocess.TimeoutExpired, OSError):
-            logger.debug("Smoke process did not exit after kill.")
+        logger.debug("Smoke process group did not exit after kill.")

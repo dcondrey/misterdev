@@ -1,3 +1,5 @@
+import os
+import signal
 import sys
 import time
 
@@ -114,6 +116,34 @@ def test_hanging_launch_returns_within_timeout(tmp_path):
     # Either RED (inner timeout reached, expect absent) or SKIP (outer abandon);
     # both are non-blocking and non-passing, which is what matters.
     assert res.status in (RED, SKIP)
+
+
+def test_hanging_launch_inner_deadline_fires_and_kills_process(tmp_path):
+    # A launch that records its PID then sleeps far past the timeout. The gate
+    # must (a) return via the INNER deadline (a real RED, not the outer
+    # abandon) and (b) terminate the process — the old blocking readline left it
+    # orphaned because the inner deadline never fired.
+    code = (
+        "import os, time;"
+        "open('pid', 'w').write(str(os.getpid()));"
+        "print('STARTED', flush=True);"
+        "time.sleep(120)"
+    )
+    res = run_smoke_gate(
+        tmp_path, {"launch": _py(code), "expect": "NEVER", "timeout": 2}
+    )
+    assert res.status == RED  # inner deadline fired before the outer abandon
+
+    pid = int((tmp_path / "pid").read_text())
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)  # still alive
+            time.sleep(0.1)
+        except OSError:
+            return  # process gone -> no leak, as required
+    os.kill(pid, signal.SIGKILL)  # cleanup so a failing run doesn't leak
+    raise AssertionError("launched process was leaked (not terminated by the gate)")
     assert not res.passed
 
 
