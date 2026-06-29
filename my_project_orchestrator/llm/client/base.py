@@ -1,3 +1,4 @@
+import threading
 import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
@@ -22,6 +23,12 @@ class BaseLLMClient(ABC):
     def __init__(self, config: dict):
         self.config = config
         self.cumulative_usage = LLMUsage()
+        # Guards the usage accumulators: one client instance is hit by several
+        # worker threads at once (parallel analyzers, executor waves), so the
+        # read-modify-write of cost/token counters must be serialized or
+        # concurrent calls lose updates and under-count spend.
+        self._usage_lock = threading.Lock()
+        self.cost_by_task: Dict[str, float] = {}
         self._budget = get_setting(config, "build", "budget")
         # Optional per-task cost ceiling. None disables it; a number is an
         # absolute cap; "auto" makes it a fraction of the budget remaining when
@@ -267,19 +274,18 @@ class BaseLLMClient(ABC):
         return self._resolve_task_cap()
 
     def _track_usage(self, usage: LLMUsage) -> None:
-        self.cumulative_usage.prompt_tokens += usage.prompt_tokens
-        self.cumulative_usage.completion_tokens += usage.completion_tokens
-        self.cumulative_usage.total_tokens += usage.total_tokens
-        self.cumulative_usage.estimated_cost += usage.estimated_cost
-        self.cumulative_usage.call_count += 1
-        self.cumulative_usage.cache_creation_tokens += usage.cache_creation_tokens
-        self.cumulative_usage.cache_read_tokens += usage.cache_read_tokens
-        if not hasattr(self, "cost_by_task"):
-            self.cost_by_task: Dict[str, float] = {}
         bucket = getattr(self, "_current_task", None) or "overhead"
-        self.cost_by_task[bucket] = (
-            self.cost_by_task.get(bucket, 0.0) + usage.estimated_cost
-        )
+        with self._usage_lock:
+            self.cumulative_usage.prompt_tokens += usage.prompt_tokens
+            self.cumulative_usage.completion_tokens += usage.completion_tokens
+            self.cumulative_usage.total_tokens += usage.total_tokens
+            self.cumulative_usage.estimated_cost += usage.estimated_cost
+            self.cumulative_usage.call_count += 1
+            self.cumulative_usage.cache_creation_tokens += usage.cache_creation_tokens
+            self.cumulative_usage.cache_read_tokens += usage.cache_read_tokens
+            self.cost_by_task[bucket] = (
+                self.cost_by_task.get(bucket, 0.0) + usage.estimated_cost
+            )
 
     @property
     def budget_remaining(self) -> float:

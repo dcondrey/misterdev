@@ -395,6 +395,34 @@ def test_openrouter_stream_closes_underlying_stream(monkeypatch):
     assert rec.closed is True  # HTTP connection released, not leaked
 
 
+def test_track_usage_is_thread_safe(monkeypatch):
+    # One client is shared across worker threads; concurrent _track_usage must
+    # not lose updates (the un-locked += would intermittently drop increments
+    # and under-count spend).
+    import threading
+
+    client = _make_openrouter(monkeypatch)
+    n = 300
+
+    def worker():
+        u = LLMUsage()
+        u.prompt_tokens = 1
+        u.completion_tokens = 1
+        u.total_tokens = 2
+        u.estimated_cost = 0.01
+        client._track_usage(u)
+
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert client.cumulative_usage.call_count == n
+    assert client.cumulative_usage.total_tokens == 2 * n
+    assert abs(client.cumulative_usage.estimated_cost - n * 0.01) < 1e-6
+
+
 def test_openrouter_embedding_orders_by_index(monkeypatch):
     monkeypatch.setenv("FAKE_OR_KEY", "x")
     cfg = {"llm": {"provider": "openrouter", "api_key_env_var": "FAKE_OR_KEY"}}
