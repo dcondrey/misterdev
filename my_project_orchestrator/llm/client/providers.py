@@ -59,6 +59,12 @@ def _deny_unless_training_allowed(llm_config: dict) -> str:
     return "deny"
 
 
+# Per-1M-token price assumed for a model absent from a provider's COST_PER_1M
+# table (a conservative mid-tier estimate so an unknown model is never costed
+# as free). Shared by both providers' _estimate_cost.
+_DEFAULT_COST_PER_1M = {"input": 3.0, "output": 15.0}
+
+
 class OpenRouterLLMClient(BaseLLMClient):
     """LLM client using OpenRouter API (OpenAI-compatible)."""
 
@@ -181,14 +187,7 @@ class OpenRouterLLMClient(BaseLLMClient):
             )
             usage_data = getattr(resp, "usage", None)
             if usage_data:
-                usage = LLMUsage()
-                usage.prompt_tokens = usage_data.prompt_tokens or 0
-                usage.completion_tokens = usage_data.completion_tokens or 0
-                usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
-                usage.estimated_cost = self._estimate_cost(
-                    usage.prompt_tokens, usage.completion_tokens
-                )
-                self._track_usage(usage)
+                self._track_usage(self._usage_from(usage_data))
             return resp.choices[0].message.content or ""
         except Exception as e:
             raise _api_error("OpenRouter", e) from e
@@ -210,13 +209,31 @@ class OpenRouterLLMClient(BaseLLMClient):
             body["reasoning"] = {"effort": effort}
         return body
 
+    @staticmethod
+    def _build_messages(prompt: str, system_prompt: str) -> list:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        return messages
+
+    def _usage_from(self, usage_data) -> LLMUsage:
+        """Build an LLMUsage from an OpenAI-compatible usage object (empty when
+        the provider omitted usage)."""
+        usage = LLMUsage()
+        if usage_data:
+            usage.prompt_tokens = usage_data.prompt_tokens or 0
+            usage.completion_tokens = usage_data.completion_tokens or 0
+            usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
+            usage.estimated_cost = self._estimate_cost(
+                usage.prompt_tokens, usage.completion_tokens
+            )
+        return usage
+
     def _call(self, prompt: str, system_prompt: str) -> LLMResponse:
         logger.info(f"Calling OpenRouter model: {self.model}")
         try:
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.append({"role": "user", "content": prompt})
+            messages = self._build_messages(prompt, system_prompt)
 
             tool_kwargs = {}
             if getattr(self, "_edit_tool_mode", False):
@@ -237,16 +254,7 @@ class OpenRouterLLMClient(BaseLLMClient):
             )
 
             choice = response.choices[0]
-            usage_data = response.usage
-
-            usage = LLMUsage()
-            if usage_data:
-                usage.prompt_tokens = usage_data.prompt_tokens or 0
-                usage.completion_tokens = usage_data.completion_tokens or 0
-                usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
-                usage.estimated_cost = self._estimate_cost(
-                    usage.prompt_tokens, usage.completion_tokens
-                )
+            usage = self._usage_from(response.usage)
 
             content = choice.message.content or ""
             if tool_kwargs:
@@ -265,10 +273,7 @@ class OpenRouterLLMClient(BaseLLMClient):
             raise _api_error("OpenRouter", e) from e
 
     def _call_stream(self, prompt: str, system_prompt: str):
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        messages = self._build_messages(prompt, system_prompt)
         try:
             stream = self.client.chat.completions.create(
                 model=self.model,
@@ -290,12 +295,7 @@ class OpenRouterLLMClient(BaseLLMClient):
                         yield delta
                 usage_data = getattr(chunk, "usage", None)
                 if usage_data:
-                    usage.prompt_tokens = usage_data.prompt_tokens or 0
-                    usage.completion_tokens = usage_data.completion_tokens or 0
-                    usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
-                    usage.estimated_cost = self._estimate_cost(
-                        usage.prompt_tokens, usage.completion_tokens
-                    )
+                    usage = self._usage_from(usage_data)
         except Exception as e:
             # A drop DURING streaming was previously raised raw, bypassing the
             # LLMCallError classification that retry/failover keys on.
@@ -308,7 +308,13 @@ class OpenRouterLLMClient(BaseLLMClient):
         return usage
 
     def _estimate_cost(self, prompt_tokens: int, completion_tokens: int) -> float:
-        costs = self.COST_PER_1M.get(self.model, {"input": 3.0, "output": 15.0})
+        # OpenRouter ":free" model ids are zero-cost. Without this, an unknown
+        # (uncatalogued) free model falls through to the paid default below,
+        # inflating budget accounting and making the cost-aware selector rank the
+        # free models it exists to favor as the most expensive.
+        if ":free" in self.model:
+            return 0.0
+        costs = self.COST_PER_1M.get(self.model, _DEFAULT_COST_PER_1M)
         return (prompt_tokens / 1_000_000) * costs["input"] + (
             completion_tokens / 1_000_000
         ) * costs["output"]
@@ -351,6 +357,30 @@ class AnthropicLLMClient(BaseLLMClient):
                 "Install with: pip install anthropic"
             )
 
+    def _usage_from(self, usage_data) -> LLMUsage:
+        """Build an LLMUsage from an Anthropic usage object, including cache
+        creation/read token accounting."""
+        cache_creation = getattr(usage_data, "cache_creation_input_tokens", 0) or 0
+        cache_read = getattr(usage_data, "cache_read_input_tokens", 0) or 0
+        # Coalesce None to 0 like the OpenRouter sibling: a partial/aborted final
+        # message can report null token counts, and the arithmetic below would
+        # otherwise raise TypeError.
+        input_tokens = usage_data.input_tokens or 0
+        output_tokens = usage_data.output_tokens or 0
+        return LLMUsage(
+            prompt_tokens=input_tokens,
+            completion_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            cache_creation_tokens=cache_creation,
+            cache_read_tokens=cache_read,
+            estimated_cost=self._estimate_cost(
+                input_tokens,
+                output_tokens,
+                cache_creation,
+                cache_read,
+            ),
+        )
+
     def _call(self, prompt: str, system_prompt: str) -> LLMResponse:
         logger.info(f"Calling Anthropic model: {self.model}")
         try:
@@ -378,23 +408,7 @@ class AnthropicLLMClient(BaseLLMClient):
                 if block.type == "text":
                     content += block.text
 
-            cache_creation = (
-                getattr(response.usage, "cache_creation_input_tokens", 0) or 0
-            )
-            cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
-            usage = LLMUsage(
-                prompt_tokens=response.usage.input_tokens,
-                completion_tokens=response.usage.output_tokens,
-                total_tokens=response.usage.input_tokens + response.usage.output_tokens,
-                cache_creation_tokens=cache_creation,
-                cache_read_tokens=cache_read,
-                estimated_cost=self._estimate_cost(
-                    response.usage.input_tokens,
-                    response.usage.output_tokens,
-                    cache_creation,
-                    cache_read,
-                ),
-            )
+            usage = self._usage_from(response.usage)
 
             return LLMResponse(
                 content=content,
@@ -420,28 +434,21 @@ class AnthropicLLMClient(BaseLLMClient):
         except Exception as e:
             raise _api_error("Anthropic", e) from e
 
-        with stream_cm as stream:
-            for text in stream.text_stream:
-                if text:
-                    yield text
-            final = stream.get_final_message()
+        try:
+            with stream_cm as stream:
+                for text in stream.text_stream:
+                    if text:
+                        yield text
+                final = stream.get_final_message()
+        except Exception as e:
+            # A drop DURING streaming (or in get_final_message) was previously
+            # raised raw, bypassing the LLMCallError classification that
+            # retry/failover keys on — only the stream() call above was wrapped.
+            # GeneratorExit (caller abort) is a BaseException, so it is not caught
+            # here and still propagates while the with-block closes the stream.
+            raise _api_error("Anthropic", e) from e
 
-        usage_data = final.usage
-        cache_creation = getattr(usage_data, "cache_creation_input_tokens", 0) or 0
-        cache_read = getattr(usage_data, "cache_read_input_tokens", 0) or 0
-        return LLMUsage(
-            prompt_tokens=usage_data.input_tokens,
-            completion_tokens=usage_data.output_tokens,
-            total_tokens=usage_data.input_tokens + usage_data.output_tokens,
-            cache_creation_tokens=cache_creation,
-            cache_read_tokens=cache_read,
-            estimated_cost=self._estimate_cost(
-                usage_data.input_tokens,
-                usage_data.output_tokens,
-                cache_creation,
-                cache_read,
-            ),
-        )
+        return self._usage_from(final.usage)
 
     def _estimate_cost(
         self,
@@ -450,7 +457,7 @@ class AnthropicLLMClient(BaseLLMClient):
         cache_creation: int = 0,
         cache_read: int = 0,
     ) -> float:
-        costs = self.COST_PER_1M.get(self.model, {"input": 3.0, "output": 15.0})
+        costs = self.COST_PER_1M.get(self.model, _DEFAULT_COST_PER_1M)
         inp = costs["input"]
         # Anthropic pricing: cache reads ~10% of input, cache writes ~25% more.
         return (

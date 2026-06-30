@@ -112,6 +112,16 @@ def _anthropic_usage(inp=10, out=4):
     )
 
 
+def test_anthropic_usage_from_coalesces_none_tokens(monkeypatch):
+    # A partial/aborted final message can report null token counts; _usage_from
+    # must coalesce them to 0, not raise TypeError on the arithmetic.
+    client = _make_anthropic(monkeypatch)
+    usage = client._usage_from(_anthropic_usage(inp=None, out=None))
+    assert usage.prompt_tokens == 0
+    assert usage.completion_tokens == 0
+    assert usage.total_tokens == 0
+
+
 def test_anthropic_call_parses_text_blocks_and_caches_system(monkeypatch):
     client = _make_anthropic(monkeypatch)
     captured = {}
@@ -166,6 +176,31 @@ def test_anthropic_stream_yields_and_reads_final_usage(monkeypatch):
     assert resp.usage.prompt_tokens == 5
 
 
+def test_anthropic_stream_midstream_error_wrapped(monkeypatch):
+    # A failure during streaming must surface as LLMCallError so retry/failover
+    # engages; previously only the initial stream() call was wrapped, so a drop
+    # in get_final_message propagated raw and bypassed classification.
+    client = _make_anthropic(monkeypatch)
+
+    class _Stream:
+        text_stream = ["par"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get_final_message(self):
+            raise RuntimeError("connection dropped mid-stream")
+
+    client.client = types.SimpleNamespace(
+        messages=types.SimpleNamespace(stream=lambda **kw: _Stream())
+    )
+    with pytest.raises(LLMCallError):
+        client.generate_stream("p", "s")
+
+
 def _completion(content, pt=10, ct=5, finish="stop", tool_calls=None):
     return types.SimpleNamespace(
         choices=[
@@ -209,6 +244,19 @@ def test_openrouter_call_parses_response_and_request(monkeypatch):
     # provider routing always pins data_collection (deny unless training allowed)
     assert "data_collection" in captured["extra_body"]["provider"]
     assert client.cumulative_usage.estimated_cost > 0  # usage accounted
+
+
+def test_openrouter_free_model_costs_zero(monkeypatch):
+    # ":free" model ids are zero-cost; without the short-circuit they fell
+    # through to the paid $3/$15 default, inflating budget + cost-aware ranking.
+    free = _make_openrouter(monkeypatch, model="deepseek/deepseek-r1:free")
+    assert free._estimate_cost(1_000_000, 1_000_000) == 0.0
+
+
+def test_openrouter_unknown_paid_model_uses_default(monkeypatch):
+    # A non-free, uncatalogued model still falls back to the paid default.
+    paid = _make_openrouter(monkeypatch, model="vendor/unknown-paid")
+    assert paid._estimate_cost(1_000_000, 0) == 3.0
 
 
 def test_openrouter_api_error_wrapped(monkeypatch):
