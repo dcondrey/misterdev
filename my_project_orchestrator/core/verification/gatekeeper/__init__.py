@@ -9,6 +9,7 @@ from my_project_orchestrator.core.verification.validator import _run_cmd
 from .constants import (
     BANNED_MARKERS,
     SECRET_PATTERNS,
+    SECRET_REGEXES,
     ASSIGNMENT_SECRET_KEYS,
     SKIP_DIRS,
     CODE_EXTENSIONS,
@@ -469,6 +470,9 @@ class GateKeeper:
     def _content_has_secret(content: str, is_env_file: bool = False) -> bool:
         for pattern in SECRET_PATTERNS:
             if pattern in content:
+                return True
+        for rx in SECRET_REGEXES:
+            if rx.search(content):
                 return True
         for line in content.splitlines():
             if GateKeeper._is_secret_assignment(line):

@@ -129,6 +129,43 @@ def test_secrets_scan_no_false_positive_on_common_identifiers():
     assert GateKeeper(root)._scan_secrets() == []
 
 
+def test_secrets_scan_no_false_positive_on_kebab_config():
+    # "sk-" is a substring of kebab-case tokens (disk-size, task-queue) and of
+    # ordinary URLs (/task-list). A bare-substring match would fail the security
+    # gate on benign config; the boundaried regex must not.
+    root = _make_project(
+        {
+            "infra.yaml": "disk-size: 100\ntask-queue: jobs\nmask-bits: 24\n",
+            "links.json": '{"url": "https://example.com/task-list"}\n',
+        }
+    )
+    assert GateKeeper(root)._scan_secrets() == []
+
+
+def test_secrets_scan_detects_openai_key_in_config():
+    # A real OpenAI key (sk- + a key-length run) IS flagged, even unquoted in a
+    # config value where the assignment heuristic would not fire.
+    root = _make_project(
+        {"infra.yaml": "openai: sk-abcdEF0123456789ghijKLmnop\n"},
+    )
+    flagged = " ".join(GateKeeper(root)._scan_secrets())
+    assert "infra.yaml" in flagged
+
+
+def test_secrets_scan_detects_long_digitless_key():
+    # A rare all-letter real key (48+ chars) is caught by the length branch, even
+    # without a digit; a short word-like "sk-" identifier is not.
+    root = _make_project(
+        {
+            "a.py": 'K = "sk-AbcdEFghIJklMNopQRstUVwxYZabcdEFghIJklMNopQR"\n',
+            "ui.tsx": 'cls = "sk-fading-circle"\n',
+        }
+    )
+    flagged = " ".join(GateKeeper(root)._scan_secrets())
+    assert "a.py" in flagged
+    assert "ui.tsx" not in flagged
+
+
 def test_iter_source_files_does_not_follow_symlink_cycle():
     root = _make_project({"src/main.py": "x = 1\n"})
     try:
@@ -337,7 +374,9 @@ def test_secret_introduced_in_diff_flagged():
 def test_constants():
     assert "FIXME" in BANNED_MARKERS
     assert "HACK" in BANNED_MARKERS
-    assert "sk-" in SECRET_PATTERNS
+    # "sk-" is matched by a boundaried regex now, not a bare substring, so it
+    # cannot collide with kebab-case tokens like "disk-"/"task-".
+    assert "sk-" not in SECRET_PATTERNS
     assert ".py" in CODE_EXTENSIONS
     assert ".rs" in CODE_EXTENSIONS
     assert "__pycache__" in SKIP_DIRS

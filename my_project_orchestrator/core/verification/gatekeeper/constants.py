@@ -1,3 +1,5 @@
+import re
+
 # Patterns that indicate incomplete or debug code
 BANNED_MARKERS = ("todo!", "FIXME", "HACK", "XXX", "placeholder", "dummy")
 
@@ -10,7 +12,6 @@ SECRET_PATTERNS = (
     "BEGIN RSA",
     "BEGIN EC",
     "BEGIN DSA",
-    "sk-",  # OpenAI
     "sk_live_",  # Stripe secret (live)
     "sk_test_",  # Stripe secret (test)
     "ghp_",  # GitHub PAT
@@ -25,6 +26,20 @@ SECRET_PATTERNS = (
     "AIza",  # Google API key
     "AKIA",  # AWS access key id
     "ASIA",  # AWS temporary access key id
+)
+
+# Patterns too short to match as a bare substring without colliding with ordinary
+# tokens. "sk-" alone substring-matches kebab-case identifiers/URLs (disk-size,
+# task-list, /task-…), so an OpenAI key is matched by a boundaried regex anchored
+# at a word boundary (excludes di"sk-"/ta"sk-"). The run then qualifies EITHER by
+# containing a digit (≥6 chars — catches typical high-entropy keys and short
+# fakes) OR by being very long (≥40 chars — catches a rare all-letter real key,
+# which is 48+ chars, without matching the short word-like "sk-spinner" CSS-class
+# identifiers a human writes).
+SECRET_REGEXES = (
+    re.compile(
+        r"\bsk-(?:(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{6,}|[A-Za-z0-9_-]{40,})"
+    ),  # OpenAI
 )
 
 # Low-signal credential keys. These appear constantly in ordinary source
