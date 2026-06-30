@@ -1,4 +1,6 @@
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -74,3 +76,25 @@ def test_timeout_fires():
         assert success is False
         assert "timed out" in output
         assert "1s" in output
+
+
+def test_timeout_kills_grandchildren():
+    # A backgrounded grandchild must be SIGKILLed with the process group on
+    # timeout, not orphaned to keep running (and write its marker) after the
+    # tool has already returned.
+    with tempfile.TemporaryDirectory() as td:
+        project = FakeProject(Path(td))
+        tool = make_tool()
+        marker = Path(td) / "survived.txt"
+        # The grandchild sleeps past the timeout then writes the marker; the
+        # parent shell stays alive (`sleep 5`) so the timeout fires while the
+        # grandchild is still running under the same process group.
+        grandchild = (
+            f'{sys.executable} -c "import time; time.sleep(2); '
+            f"open(r'{marker}', 'w').write('x')\""
+        )
+        success, output = tool.execute(project, f"{grandchild} & sleep 5", timeout=1)
+        assert success is False
+        assert "timed out" in output
+        time.sleep(2.5)  # past t=2s when an orphaned grandchild would write
+        assert not marker.exists(), "grandchild outlived the timed-out command"
