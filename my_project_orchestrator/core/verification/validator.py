@@ -1,7 +1,5 @@
 import ast
-import os
 import re
-import signal
 import subprocess
 from typing import Callable, Dict, List, Optional, Tuple
 from pathlib import Path
@@ -9,6 +7,7 @@ from pathlib import Path
 from my_project_orchestrator.core.planning.assessment import HealthCheck
 from my_project_orchestrator.core.gitcmd import run_git
 from my_project_orchestrator.logging_setup import setup_logger
+from my_project_orchestrator.utils.process import kill_process_group
 
 logger = setup_logger(__name__)
 
@@ -36,7 +35,12 @@ class ValidationResult:
 
     @property
     def passed(self) -> bool:
-        return self.build_ok and self.tests_ok and not self.issues
+        # A gate that was absent is non-blocking (build-only / test-only projects
+        # are valid), but if NOTHING ran at all then nothing was actually
+        # verified — don't report that as passed (mirrors why summary() shows
+        # SKIP instead of OK).
+        ran = self.build_ran or self.tests_ran or self.lint_ran
+        return ran and self.build_ok and self.tests_ok and not self.issues
 
     def _status(self, ran: bool, ok: bool, warn: bool = False) -> str:
         if not ran:
@@ -54,25 +58,6 @@ class ValidationResult:
         if self.issues:
             parts.append(f"issues={len(self.issues)}")
         return " | ".join(parts)
-
-
-def _kill_process_group(proc: subprocess.Popen) -> None:
-    """SIGKILL a timed-out command's whole process group so build/test
-    grandchildren (rustc, pytest workers) don't outlive the gate and hold locks.
-
-    Falls back to killing just the direct child when the platform has no process
-    groups (Windows) or the group is already gone.
-    """
-    if hasattr(os, "killpg"):
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            return
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-    try:
-        proc.kill()
-    except OSError:
-        pass
 
 
 def _run_cmd(
@@ -127,8 +112,14 @@ def _run_cmd(
         try:
             out, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            _kill_process_group(proc)
-            out, err = proc.communicate()
+            kill_process_group(proc)
+            # Bound the reap: a grandchild that escaped the process group (a
+            # daemonizing server) holds the inherited pipe, so an unbounded
+            # communicate() would hang the gate after the timeout already fired.
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
             _audit_command(audit, cmd, False, cwd)
             return False, f"Command timed out after {timeout}s: {full_cmd}"
         output = out
@@ -177,6 +168,7 @@ def run_validation(
             result.issues.append("Build failed during validation")
     else:
         result.build_ok = True
+        result.build_ran = False
 
     if test_command:
         logger.info(f"Validation: running test command: {test_command}")
@@ -190,6 +182,7 @@ def run_validation(
             result.issues.append("Tests failed during validation")
     else:
         result.tests_ok = True
+        result.tests_ran = False
 
     if lint_command:
         logger.info(f"Validation: running lint command: {lint_command}")
@@ -203,6 +196,7 @@ def run_validation(
             result.issues.append("Lint warnings found during validation")
     else:
         result.lint_ok = True
+        result.lint_ran = False
 
     proc = run_git("git diff --stat", project_path)
     result.diff_stats = proc.stdout.strip() if proc else "(unable to get diff stats)"

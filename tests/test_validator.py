@@ -55,6 +55,25 @@ def test_run_validation_skips_when_no_commands():
     with tempfile.TemporaryDirectory() as td:
         r = run_validation(Path(td), None, None, None)
         assert r.build_ok and r.tests_ok and r.lint_ok and r.issues == []
+        # An absent gate must report SKIP, not OK — reporting OK would hide an
+        # untested project behind a green-looking summary.
+        assert not (r.build_ran or r.tests_ran or r.lint_ran)
+        assert r.summary() == "build=SKIP | tests=SKIP | lint=SKIP"
+        # Nothing actually ran, so nothing was verified -> not passed.
+        assert r.passed is False
+
+
+def test_passed_true_for_build_only_project():
+    # A build-only project (no test/lint command) still passes on a green build;
+    # an absent gate is non-blocking (run_validation sets *_ok True, *_ran False
+    # for it), only an all-absent result fails.
+    r = ValidationResult()
+    r.build_ok = True
+    r.tests_ok = True
+    r.tests_ran = False
+    r.lint_ok = True
+    r.lint_ran = False
+    assert r.passed is True
 
 
 def test_validation_result_summary_status():
