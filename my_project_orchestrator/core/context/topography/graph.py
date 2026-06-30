@@ -587,6 +587,59 @@ class SymbolGraph:
             key=lambda s: s.start_line,
         )
 
+    def _match_files(self, file_path: str) -> Set[str]:
+        """Graph file paths an error path refers to: an exact match when present,
+        else a UNIQUE suffix match so a path reported relative to a sub-target's
+        cwd (``src/app.ts``) still resolves against the root-relative key
+        (``frontend/src/app.ts``). An ambiguous suffix yields no match rather
+        than a wrong one."""
+        exact = {s.file_path for s in self.symbols.values() if s.file_path == file_path}
+        if exact:
+            return exact
+        suffix = "/" + file_path
+        matches = {
+            s.file_path for s in self.symbols.values() if s.file_path.endswith(suffix)
+        }
+        return matches if len(matches) == 1 else set()
+
+    def symbol_at_line(self, file_path: str, line: int) -> Optional[str]:
+        """Key of the narrowest symbol enclosing a 1-indexed source line, or None.
+
+        ``start_line``/``end_line`` are 0-indexed tree-sitter rows (rendered
+        ``+1`` for humans), so a 1-indexed error line maps to row ``line - 1``.
+        The narrowest enclosing span wins so a method attributes to itself, not
+        its containing class.
+        """
+        files = self._match_files(file_path)
+        if not files:
+            return None
+        row = line - 1
+        best_key: Optional[str] = None
+        best_span: Optional[int] = None
+        for key, sym in self.symbols.items():
+            if sym.file_path not in files:
+                continue
+            if sym.start_line <= row <= sym.end_line:
+                span = sym.end_line - sym.start_line
+                if best_span is None or span < best_span:
+                    best_span = span
+                    best_key = key
+        return best_key
+
+    def callers_of(self, key: str) -> List[str]:
+        """Names of the symbols that call the symbol identified by ``key``
+        (capped). Keyed by the unique ``file_path:name`` id, so same-named
+        symbols in other files are never conflated."""
+        sym = self.symbols.get(key)
+        if sym is None:
+            return []
+        callers: List[str] = []
+        for caller_key in sym.incoming_calls:
+            caller = self.symbols.get(caller_key)
+            if caller and caller.name not in callers:
+                callers.append(caller.name)
+        return callers[:5]
+
     def file_outline(self, file_path: str) -> str:
         """A compact table of contents for one file: each symbol with its lines.
 

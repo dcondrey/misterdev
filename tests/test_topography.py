@@ -223,6 +223,38 @@ def test_get_context_for_task_uses_ranker_over_cap():
         assert "fn0" not in out
 
 
+def _bare_graph(*nodes):
+    g = SymbolGraph.__new__(SymbolGraph)
+    g.symbols = {f"{n.file_path}:{n.name}": n for n in nodes}
+    return g
+
+
+def test_symbol_at_line_maps_1indexed_to_0indexed_rows():
+    # start_line/end_line are 0-indexed tree-sitter rows; a 1-indexed line L maps
+    # to row L-1. A symbol on rows 9-9 covers exactly error line 10.
+    g = _bare_graph(SymbolNode("f", "a.py", "function", 9, 9, "x"))
+    assert g.symbol_at_line("a.py", 10) == "a.py:f"
+    assert g.symbol_at_line("a.py", 11) is None
+
+
+def test_symbol_at_line_picks_narrowest_and_unique_suffix():
+    g = _bare_graph(
+        SymbolNode("Cls", "pkg/a.py", "class", 0, 100, "x"),
+        SymbolNode("m", "pkg/a.py", "method", 40, 50, "x"),
+    )
+    # Narrowest enclosing wins, and a sub-target-relative path resolves by suffix.
+    assert g.symbol_at_line("pkg/a.py", 45) == "pkg/a.py:m"
+    assert g.symbol_at_line("a.py", 45) == "pkg/a.py:m"
+
+
+def test_callers_of_is_keyed_not_name_matched():
+    callee = SymbolNode("validate", "a.py", "function", 9, 9, "x")
+    callee.incoming_calls.add("a.py:run")
+    g = _bare_graph(callee, SymbolNode("run", "a.py", "function", 20, 30, "x"))
+    assert g.callers_of("a.py:validate") == ["run"]
+    assert g.callers_of("a.py:missing") == []
+
+
 def test_get_context_for_task_no_ranker_keeps_arbitrary_slice():
     with tempfile.TemporaryDirectory() as td:
         engine = TopographyEngine(Path(td), llm_client=None)
@@ -459,7 +491,9 @@ def test_symbol_graph_skips_hidden_and_vendor_dirs(tmp_path):
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude" / "tool.py").write_text("def hidden():\n    return 2\n")
     (tmp_path / "node_modules" / "dep").mkdir(parents=True)
-    (tmp_path / "node_modules" / "dep" / "v.py").write_text("def vendored():\n    return 3\n")
+    (tmp_path / "node_modules" / "dep" / "v.py").write_text(
+        "def vendored():\n    return 3\n"
+    )
 
     g = SymbolGraph(tmp_path)
     g.build()

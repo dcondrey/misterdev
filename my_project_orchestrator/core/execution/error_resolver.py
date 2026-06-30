@@ -35,10 +35,21 @@ _LOCATION_PATTERNS: list[re.Pattern] = [
 class ErrorLocation:
     """A single attributed error location."""
 
-    def __init__(self, file: str, line: int, snippet: str = ""):
+    def __init__(
+        self,
+        file: str,
+        line: int,
+        snippet: str = "",
+        symbol: Optional[str] = None,
+        symbol_key: Optional[str] = None,
+    ):
         self.file = file
         self.line = line
         self.snippet = snippet
+        self.symbol = symbol
+        # Unique graph key (``file_path:name``) of the attributed symbol, so
+        # caller lookup never conflates same-named symbols in other files.
+        self.symbol_key = symbol_key
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"ErrorLocation({self.file}:{self.line})"
@@ -52,13 +63,15 @@ class ErrorResolver:
     project_path:
         Root directory of the project (used to read source snippets).
     dependency_graph:
-        Optional topology graph (currently reserved for future use –
-        pass ``None`` or an empty dict if unavailable).
+        Optional symbol graph (a ``SymbolGraph`` with a ``symbols`` mapping).
+        When supplied, each error location is attributed to its enclosing symbol
+        and its callers are surfaced. Pass ``None`` when unavailable; attribution
+        then degrades to file:line + snippet only.
     """
 
     def __init__(self, project_path: Path, dependency_graph: Optional[Any] = None):
         self.project_path = project_path
-        self.graph = dependency_graph  # reserved for future topology-aware resolution
+        self.graph = dependency_graph
 
     # ------------------------------------------------------------------
     # Public API
@@ -83,8 +96,15 @@ class ErrorResolver:
                 seen.add(key)
 
                 snippet = self._read_snippet(file_str, line_no)
+                symbol_key = self._symbol_key_at(file_str, line_no)
                 locations.append(
-                    ErrorLocation(file=file_str, line=line_no, snippet=snippet)
+                    ErrorLocation(
+                        file=file_str,
+                        line=line_no,
+                        snippet=snippet,
+                        symbol=self._symbol_name(symbol_key),
+                        symbol_key=symbol_key,
+                    )
                 )
 
         if not locations:
@@ -102,6 +122,11 @@ class ErrorResolver:
         lines = ["## Error Attribution"]
         for loc in locations[:10]:  # cap to avoid bloating context
             lines.append(f"\n### {loc.file}:{loc.line}")
+            if loc.symbol:
+                lines.append(f"- Symbol: `{loc.symbol}`")
+                callers = self._callers(loc.symbol_key)
+                if callers:
+                    lines.append(f"- Called by: {', '.join(callers)}")
             if loc.snippet:
                 lines.append(f"```\n{loc.snippet}\n```")
 
@@ -134,3 +159,43 @@ class ErrorResolver:
                 except OSError:
                     return ""
         return ""
+
+    def _rel_file(self, file_str: str) -> Optional[str]:
+        """Project-relative form of an error path for symbol-graph lookup, or
+        None when it lies outside the project."""
+        try:
+            p = Path(file_str)
+            if p.is_absolute():
+                if p.is_relative_to(self.project_path):
+                    return str(p.relative_to(self.project_path))
+                return None
+            return file_str
+        except (ValueError, OSError):
+            return None
+
+    def _symbol_key_at(self, file_str: str, line_no: int) -> Optional[str]:
+        """Graph key of the symbol enclosing the error line (the 0-vs-1-indexed
+        and sub-target path handling lives on ``SymbolGraph``). None when there
+        is no usable graph or the path is outside the project."""
+        at = getattr(self.graph, "symbol_at_line", None)
+        if at is None:
+            return None
+        rel = self._rel_file(file_str)
+        if rel is None:
+            return None
+        return at(rel, line_no)
+
+    def _symbol_name(self, key: Optional[str]) -> Optional[str]:
+        """Display name for an attributed symbol key, or None."""
+        symbols = getattr(self.graph, "symbols", None)
+        if not key or not symbols:
+            return None
+        node = symbols.get(key)
+        return node.name if node else None
+
+    def _callers(self, key: Optional[str]) -> List[str]:
+        """Names of symbols that call the attributed symbol (by unique key)."""
+        of = getattr(self.graph, "callers_of", None)
+        if of is None or not key:
+            return []
+        return of(key)
