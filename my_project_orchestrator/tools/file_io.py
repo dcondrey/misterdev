@@ -18,9 +18,21 @@ class FileIOTool(BaseTool):
         Executes a file I/O action.
         Actions: read, write, exists, delete
         """
+        project_root = project.path.resolve()
         full_path = (project.path / path).resolve()
-        if not full_path.is_relative_to(project.path.resolve()):
+        if not full_path.is_relative_to(project_root):
             return False, f"Path traversal blocked: {path}"
+        # An empty/"."/"./ " path resolves to the project root itself, which passes
+        # the traversal guard above. Refuse to operate on the root so a model
+        # emitting such a path cannot delete (rmtree) the whole project.
+        if full_path == project_root:
+            return False, f"Refusing to operate on the project root: {path!r}"
+        # The orchestrator's rollback/bisect safety paths depend on version
+        # history, so a stray delete of .git would break its own ability to
+        # revert bad work. This tool edits project source, never git internals.
+        git_dir = project_root / ".git"
+        if full_path == git_dir or git_dir in full_path.parents:
+            return False, f"Refusing to operate on the git directory: {path!r}"
 
         try:
             if action == "read":
