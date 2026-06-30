@@ -165,12 +165,9 @@ class ModelLedger:
         """Persist stats atomically (write-temp-then-rename)."""
         with self._lock:
             snapshot = {k: asdict(v) for k, v in self._stats.items()}
-        from my_project_orchestrator.utils.file_utils import ensure_artifact_dir
+        from my_project_orchestrator.utils.file_utils import atomic_write_json
 
-        ensure_artifact_dir(self.path.parent)
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        atomic_write_json(self.path, snapshot, indent=2, sort_keys=True)
 
     def stat(self, model: str, category: str = "", complexity: str = "") -> ModelStat:
         """Return the stat cell for a key, creating an empty one if absent."""

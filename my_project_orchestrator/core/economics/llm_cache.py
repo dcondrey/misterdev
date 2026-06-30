@@ -67,20 +67,15 @@ class LLMCache:
         timestamp: float = 0.0,
     ) -> None:
         """Store a gate-passing output (atomic write)."""
-        from my_project_orchestrator.utils.file_utils import ensure_artifact_dir
+        from my_project_orchestrator.utils.file_utils import atomic_write_json
 
-        ensure_artifact_dir(self.dir)
         key = self._key(system_prompt, prompt)
         path = self._path(key)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(
-                {"output": output, "model": model, "created_at": timestamp, "key": key},
-                indent=2,
-            ),
-            encoding="utf-8",
+        atomic_write_json(
+            path,
+            {"output": output, "model": model, "created_at": timestamp, "key": key},
+            indent=2,
         )
-        tmp.replace(path)
         self._evict_if_needed()
 
     def _evict_if_needed(self) -> None:

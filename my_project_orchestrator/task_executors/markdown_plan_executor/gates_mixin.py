@@ -10,6 +10,18 @@ from .helpers import logger, _extract_acceptance_command, JUDGE_MIN_BUDGET_FRACT
 
 
 class GatesMixin:
+    @staticmethod
+    def _prior_failures_history(prior_errors: List[str]) -> str:
+        """Render all-but-the-latest prior attempt errors as a retry-context
+        header, or '' when there is no earlier failure to summarize."""
+        if len(prior_errors) <= 1:
+            return ""
+        past = "\n".join(f"- {e}" for e in prior_errors[:-1])
+        return (
+            "### Previous Attempt Failures (a different approach is required)\n"
+            f"{past}\n\n"
+        )
+
     def _build_error_context(
         self,
         prior_errors: List[str],
@@ -24,13 +36,7 @@ class GatesMixin:
         from re-submitting the same broken fix across retries.
         """
         prior_errors.append(f"Attempt {attempt + 1}: {classify_error(output)}")
-        history = ""
-        if len(prior_errors) > 1:
-            past = "\n".join(f"- {e}" for e in prior_errors[:-1])
-            history = (
-                "### Previous Attempt Failures (a different approach is required)\n"
-                f"{past}\n\n"
-            )
+        history = self._prior_failures_history(prior_errors)
         return f"{history}{classified}\n\n{attributed_error}"
 
     @staticmethod
@@ -174,13 +180,7 @@ class GatesMixin:
         than re-submitting a change that only satisfies the build/test gates.
         """
         prior_errors.append(f"Attempt {attempt + 1}: acceptance criteria not met")
-        history = ""
-        if len(prior_errors) > 1:
-            past = "\n".join(f"- {e}" for e in prior_errors[:-1])
-            history = (
-                "### Previous Attempt Failures (a different approach is required)\n"
-                f"{past}\n\n"
-            )
+        history = self._prior_failures_history(prior_errors)
         return (
             f"{history}### Acceptance criterion not met\n"
             f"The build and tests passed, but the task's acceptance criterion "

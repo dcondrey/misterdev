@@ -462,19 +462,8 @@ def _extract_path_from_preceding(text: str) -> Optional[str]:
 
 
 def _find_last_quoted_path(text: str, quote: str) -> Optional[str]:
-    """Find the last `path.ext` in text."""
-    end = len(text)
-    while True:
-        close = text.rfind(quote, 0, end)
-        if close < 0:
-            return None
-        open_pos = text.rfind(quote, 0, close)
-        if open_pos < 0:
-            return None
-        candidate = text[open_pos + len(quote) : close]
-        if _looks_like_path(candidate):
-            return candidate
-        end = open_pos
+    """Find the last `path.ext` in text — the same-delimiter special case."""
+    return _find_last_delimited_path(text, quote, quote)
 
 
 def _find_last_delimited_path(text: str, opener: str, closer: str) -> Optional[str]:

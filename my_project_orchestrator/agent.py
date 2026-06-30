@@ -988,6 +988,18 @@ class ProjectOrchestrator:
                 parts.append(f"- {t.id}: {t.title}")
         return "\n".join(parts)
 
+    @staticmethod
+    def _wave_commits(executor, project, tasks) -> list:
+        """Collect ``(task_id, sha)`` for each task that has a recorded commit,
+        skipping tasks with none. Shared by the regression-revert and
+        integration-gate paths."""
+        commits = []
+        for t in tasks:
+            sha = executor.find_task_commit(project, t.id)
+            if sha:
+                commits.append((t.id, sha))
+        return commits
+
     def _maybe_rollback_regression(
         self,
         project: Project,
@@ -1004,11 +1016,7 @@ class ProjectOrchestrator:
         ex = MarkdownPlanExecutor()
         if not ex._is_git_repo(project):
             return
-        commits = []
-        for t in report.completed_tasks:
-            sha = ex.find_task_commit(project, t.id)
-            if sha:
-                commits.append((t.id, sha))
+        commits = self._wave_commits(ex, project, report.completed_tasks)
         if not commits:
             return
         logger.warning("Post-build regression detected; bisecting task commits...")
@@ -1072,11 +1080,7 @@ class ProjectOrchestrator:
             f"Integration gate (count): failures rose {baseline_failures} -> "
             f"{after}; reverting wave commits until restored."
         )
-        commits = []
-        for t in wave_tasks:
-            sha = executor.find_task_commit(project, t.id)
-            if sha:
-                commits.append((t.id, sha))
+        commits = self._wave_commits(executor, project, wave_tasks)
         reverted: list[str] = []
         for tid, sha in reversed(commits):
             if executor.revert_task_commit(project, sha):
@@ -1190,11 +1194,7 @@ class ProjectOrchestrator:
         if ok:
             return []
 
-        commits = []
-        for t in wave_tasks:
-            sha = executor.find_task_commit(project, t.id)
-            if sha:
-                commits.append((t.id, sha))
+        commits = self._wave_commits(executor, project, wave_tasks)
         if not commits:
             logger.warning(
                 "Integration gate: suite regressed but no task commits found to revert."

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Protocol, Set
 
 from my_project_orchestrator.logging_setup import setup_logger
-from my_project_orchestrator.utils.file_utils import ensure_artifact_dir
+from my_project_orchestrator.utils.file_utils import atomic_write_json
 
 logger = setup_logger(__name__)
 
@@ -147,10 +147,7 @@ class EmbeddingCache:
         store = self._load()
         for text, vector in items.items():
             store[self._key(text)] = vector
-        ensure_artifact_dir(self.path.parent)
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(json.dumps(store), encoding="utf-8")
-        tmp.replace(self.path)
+        atomic_write_json(self.path, store)
 
 
 class SemanticRanker:

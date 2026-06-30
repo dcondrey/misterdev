@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Any
 
-from my_project_orchestrator.utils.file_utils import ensure_artifact_dir
+from my_project_orchestrator.utils.file_utils import atomic_write_json
 
 from ._log import logger
 from .nodes import SymbolNode, _symbol_to_dict, _symbol_from_dict
@@ -84,12 +84,8 @@ class _TopographyCache:
 
     def save(self) -> None:
         try:
-            ensure_artifact_dir(self.path.parent)
-            payload = json.dumps(
-                {"format": _CACHE_FORMAT_VERSION, "files": self.entries}
+            atomic_write_json(
+                self.path, {"format": _CACHE_FORMAT_VERSION, "files": self.entries}
             )
-            tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-            tmp.write_text(payload, encoding="utf-8")
-            tmp.replace(self.path)
         except OSError as e:
             logger.debug(f"Topography cache write failed (non-fatal): {e}")

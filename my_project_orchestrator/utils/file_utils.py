@@ -1,9 +1,10 @@
 import fnmatch
+import json
 import os
 import re
 import tempfile
 from pathlib import Path
-from typing import List
+from typing import Any, List
 
 
 def ensure_artifact_dir(directory: Path) -> Path:
@@ -91,6 +92,15 @@ def atomic_write(file_path: str | Path, content: str) -> None:
     """
     path = Path(file_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_replace(path, content)
+
+
+def _atomic_replace(path: Path, content: str) -> None:
+    """Temp-file-then-rename core, assuming ``path.parent`` already exists.
+
+    Split out so callers that have already created the directory (e.g. via
+    ``ensure_artifact_dir``) don't mkdir it a second time.
+    """
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -102,6 +112,26 @@ def atomic_write(file_path: str | Path, content: str) -> None:
         except OSError:
             pass
         raise
+
+
+def atomic_write_json(
+    file_path: str | Path,
+    obj: Any,
+    *,
+    indent: int | None = None,
+    sort_keys: bool = False,
+) -> None:
+    """Serialize ``obj`` to JSON and write it atomically into a gitignored
+    artifact dir.
+
+    Centralizes the ``ensure_artifact_dir`` + temp-file-then-rename that the
+    cache/ledger writers each reimplemented, reusing the crash-safe write core so
+    a partial JSON file is never observed. ``ensure_artifact_dir`` already
+    creates the directory, so the write core skips a redundant mkdir.
+    """
+    path = Path(file_path)
+    ensure_artifact_dir(path.parent)
+    _atomic_replace(path, json.dumps(obj, indent=indent, sort_keys=sort_keys))
 
 
 def write_file(file_path: str | Path, content: str) -> None:
