@@ -15,7 +15,7 @@ import json
 import math
 import threading
 import time
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -113,7 +113,10 @@ class ModelStat:
         n = self.attempts
         if n == 0:
             return 0.0
-        p = self.successes / n
+        # Clamp to [0,1]: a torn read (or float drift from decay scaling) could
+        # make successes/attempts exceed 1, and p*(1-p) < 0 would raise ValueError
+        # from math.sqrt below.
+        p = min(1.0, max(0.0, self.successes / n))
         z2 = _Z * _Z
         denom = 1 + z2 / n
         center = p + z2 / (2 * n)
@@ -170,14 +173,20 @@ class ModelLedger:
         atomic_write_json(self.path, snapshot, indent=2, sort_keys=True)
 
     def stat(self, model: str, category: str = "", complexity: str = "") -> ModelStat:
-        """Return the stat cell for a key, creating an empty one if absent."""
+        """Return a snapshot of the stat cell for a key (empty if absent).
+
+        Returns a COPY taken under the lock, not the live object: the selector
+        reads several fields of the result without the lock, so handing out the
+        live cell would let it observe a half-applied ``record()``/``_decay_stat``
+        update (e.g. attempts scaled before successes -> a torn read).
+        """
         key = self._key(model, category, complexity)
         with self._lock:
             if key not in self._stats:
                 self._stats[key] = ModelStat(
                     model=model, category=category, complexity=complexity
                 )
-            return self._stats[key]
+            return replace(self._stats[key])
 
     def record(
         self,

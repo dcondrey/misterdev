@@ -28,6 +28,14 @@ class BaseLLMClient(ABC):
         # read-modify-write of cost/token counters must be serialized or
         # concurrent calls lose updates and under-count spend.
         self._usage_lock = threading.Lock()
+        # Per-task ROUTING/ATTRIBUTION state (active model, current task, reasoning
+        # effort, edit-tool mode) is thread-local: parallel executor workers share
+        # ONE client instance (see agent._WorktreeProjectView), so a plain instance
+        # attribute would let one worker's with_model()/track_task() clobber
+        # another's mid-call — issuing a request to the wrong model or attributing
+        # its cost to the wrong task. The shared accounting below stays shared.
+        self._tls = threading.local()
+        self._default_model: Optional[str] = None
         self.cost_by_task: Dict[str, float] = {}
         self._budget = get_setting(config, "build", "budget")
         # Optional per-task cost ceiling. None disables it; a number is an
@@ -38,6 +46,47 @@ class BaseLLMClient(ABC):
             config, "orchestrator", "max_cost_per_task"
         )
         self._task_caps: Dict[str, Optional[float]] = {}
+
+    @property
+    def model(self) -> Optional[str]:
+        """Active model: a thread-local ``with_model`` override, else the
+        configured default (set once at construction, shared across threads).
+
+        Tolerates a partially-constructed instance (``_tls``/``_default_model``
+        absent) so unit tests that build a client via ``__new__`` to exercise a
+        pure method still read ``model``."""
+        override = getattr(getattr(self, "_tls", None), "model", None)
+        return override or getattr(self, "_default_model", None)
+
+    @model.setter
+    def model(self, value: Optional[str]) -> None:
+        # Construction sets the shared default; per-call overrides go through
+        # with_model() (thread-local), never this setter.
+        self._default_model = value
+
+    @property
+    def _current_task(self) -> Optional[str]:
+        return getattr(self._tls, "current_task", None)
+
+    @_current_task.setter
+    def _current_task(self, value: Optional[str]) -> None:
+        self._tls.current_task = value
+
+    @property
+    def _reasoning_effort(self) -> Optional[str]:
+        return getattr(self._tls, "reasoning_effort", None)
+
+    @_reasoning_effort.setter
+    def _reasoning_effort(self, value: Optional[str]) -> None:
+        self._tls.reasoning_effort = value
+
+    @property
+    def _edit_tool_mode(self) -> bool:
+        return getattr(self._tls, "edit_tool_mode", False)
+
+    @_edit_tool_mode.setter
+    def _edit_tool_mode(self, value: bool) -> None:
+        self._tls.edit_tool_mode = value
 
     def generate(self, prompt: str, system_prompt: str = "") -> LLMResponse:
         """Generate a response with retry and budget enforcement.
@@ -121,13 +170,25 @@ class BaseLLMClient(ABC):
 
     @contextmanager
     def with_model(self, model: str):
-        """Temporarily override the active model (for per-task routing)."""
-        original = getattr(self, "model", None)
-        self.model = model
+        """Temporarily override the active model for per-task routing.
+
+        The override is thread-local (a shared client is used by parallel
+        workers), so it must set/restore ``_tls.model`` directly rather than the
+        ``model`` setter, which writes the shared default.
+        """
+        had_override = hasattr(self._tls, "model")
+        previous = getattr(self._tls, "model", None)
+        self._tls.model = model
         try:
             yield
         finally:
-            self.model = original
+            if had_override:
+                self._tls.model = previous
+            else:
+                try:
+                    del self._tls.model
+                except AttributeError:
+                    pass
 
     @contextmanager
     def with_reasoning_effort(self, effort: Optional[str]):

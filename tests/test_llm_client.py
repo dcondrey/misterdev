@@ -471,6 +471,40 @@ def test_track_usage_is_thread_safe(monkeypatch):
     assert abs(client.cumulative_usage.estimated_cost - n * 0.01) < 1e-6
 
 
+def test_per_task_routing_state_is_thread_local(monkeypatch):
+    # Parallel executor workers share ONE client. Each worker's with_model /
+    # track_task / with_reasoning_effort override must be visible only to its own
+    # thread; a plain instance attribute would let workers clobber each other and
+    # issue a call with the wrong model or attribute cost to the wrong task.
+    import threading
+
+    client = _make_openrouter(monkeypatch)
+    n = 6
+    barrier = threading.Barrier(n)
+    results = {}
+
+    def worker(i):
+        with (
+            client.with_model(f"m{i}"),
+            client.track_task(f"t{i}"),
+            client.with_reasoning_effort(f"e{i}"),
+        ):
+            barrier.wait()  # all threads have set overrides -> forces interleaving
+            results[i] = (client.model, client._current_task, client._reasoning_effort)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    for i in range(n):
+        assert results[i] == (f"m{i}", f"t{i}", f"e{i}"), results[i]
+    # No dangling override on the main thread: falls back to the configured model.
+    assert client.model == "test/model"
+    assert client._current_task is None
+
+
 def test_openrouter_embedding_orders_by_index(monkeypatch):
     monkeypatch.setenv("FAKE_OR_KEY", "x")
     cfg = {"llm": {"provider": "openrouter", "api_key_env_var": "FAKE_OR_KEY"}}

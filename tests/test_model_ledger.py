@@ -69,6 +69,24 @@ def test_quality_score_zero_when_unseen():
     assert ModelStat(model="a").quality_score() == 0.0
 
 
+def test_quality_score_clamps_inconsistent_counts():
+    # A torn read (or float drift) can make successes exceed attempts; the score
+    # must clamp p to [0,1] and return a valid bound instead of raising
+    # ValueError from sqrt of a negative.
+    torn = ModelStat(model="a", attempts=2.0, successes=3.0)
+    score = torn.quality_score()
+    assert 0.0 <= score <= 1.0
+
+
+def test_stat_returns_independent_snapshot(ledger_path):
+    ledger = ModelLedger(ledger_path)
+    ledger.record("m", "feature", "medium", success=True, timestamp=100.0)
+    snap = ledger.stat("m", "feature", "medium")
+    snap.attempts += 999  # mutate the returned copy
+    # The ledger's own cell is untouched by mutating the snapshot.
+    assert ledger.stat("m", "feature", "medium").attempts == 1.0
+
+
 def test_selection_score_explores_unseen_model(ledger_path):
     ledger = ModelLedger(ledger_path)
     # A proven model.
@@ -167,7 +185,9 @@ def test_within_build_records_are_not_decayed(ledger_path):
 
 
 def test_stale_outcomes_decay_on_new_record(ledger_path):
-    from my_project_orchestrator.core.economics.model_ledger import _DEFAULT_HALF_LIFE_SECONDS
+    from my_project_orchestrator.core.economics.model_ledger import (
+        _DEFAULT_HALF_LIFE_SECONDS,
+    )
 
     ledger = ModelLedger(ledger_path)
     # Two successes far in the past, then one fresh success a half-life later.
@@ -185,7 +205,9 @@ def test_stale_outcomes_decay_on_new_record(ledger_path):
 
 
 def test_decay_preserves_success_rate(ledger_path):
-    from my_project_orchestrator.core.economics.model_ledger import _DEFAULT_HALF_LIFE_SECONDS
+    from my_project_orchestrator.core.economics.model_ledger import (
+        _DEFAULT_HALF_LIFE_SECONDS,
+    )
 
     ledger = ModelLedger(ledger_path)
     ledger.record("m", "feature", "medium", success=True, timestamp=0.0)
@@ -203,7 +225,5 @@ def test_decay_preserves_success_rate(ledger_path):
 def test_decay_disabled_keeps_raw_counts(ledger_path):
     ledger = ModelLedger(ledger_path, half_life_seconds=0)
     ledger.record("m", "feature", "medium", success=True, timestamp=0.0)
-    ledger.record(
-        "m", "feature", "medium", success=True, timestamp=10 * 365 * 86400.0
-    )
+    ledger.record("m", "feature", "medium", success=True, timestamp=10 * 365 * 86400.0)
     assert ledger.stat("m", "feature", "medium").attempts == 2
