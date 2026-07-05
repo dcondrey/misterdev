@@ -17,24 +17,22 @@ class ToolManager:
 
     def __init__(self, tools_config: list):
         self.tools = {}
-        for tc in tools_config:
-            # We would typically use a factory here based on tc['type']
-            from misterdev.tools.command import CommandTool
-            from misterdev.tools.formatter import FormatterTool
-            from misterdev.tools.git_tool import GitTool
-            from misterdev.tools.file_io import FileIOTool
+        # Importing the package registers the built-in tools; the registry also
+        # discovers third-party tools from the ``misterdev.tools`` entry-point
+        # group, so a plugin adds a tool type with no change here.
+        import misterdev.tools  # noqa: F401 - registration side effect
+        from misterdev.plugins import TOOLS
 
+        for tc in tools_config:
             tool_type = tc.get("type")
-            if tool_type == "formatter":
-                tool = FormatterTool(tc)
-            elif tool_type == "git":
-                tool = GitTool(tc)
-            elif tool_type == "file_io":
-                tool = FileIOTool(tc)
-            elif tool_type in ["test_runner", "command"]:
-                tool = CommandTool(tc)
-            else:
-                tool = CommandTool(tc)  # Fallback
+            tool_cls = TOOLS.get(tool_type)
+            if tool_cls is None:
+                if tool_type:
+                    logger.warning(
+                        f"Unknown tool type {tool_type!r}; falling back to command"
+                    )
+                tool_cls = TOOLS.get("command")
+            tool = tool_cls(tc)
             self.tools[tool.name] = tool
 
     def get_tool(self, name: str):
@@ -141,11 +139,12 @@ class Project:
         """
         if not self._mcp_built:
             self._mcp_built = True
-            servers = (self.config.get("mcp") or {}).get("servers") or []
+            mcp_cfg = self.config.get("mcp") or {}
+            servers = mcp_cfg.get("servers") or []
             if servers:
                 from misterdev.core.integration.mcp import MCPManager
 
-                manager = MCPManager(servers)
+                manager = MCPManager(servers, allow_tools=mcp_cfg.get("allow_tools"))
                 self._mcp = manager if manager.enabled else None
         return self._mcp
 

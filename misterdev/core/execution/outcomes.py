@@ -32,3 +32,19 @@ class GateOutcome:
     @property
     def skipped(self) -> bool:
         return self.status == SKIP
+
+
+class GateContext:
+    """Inputs a registered plugin gate receives.
+
+    ``project_path`` is the repo (or target subdir) root; ``commands`` are the
+    resolved build/test/lint/typecheck commands; ``env_activate`` is the optional
+    host-venv activation prefix. A plugin gate is ``callable(GateContext) ->
+    GateOutcome`` registered on ``misterdev.plugins.GATES``; a RED outcome blocks
+    the build, SKIP/GREEN do not.
+    """
+
+    def __init__(self, project_path, commands, env_activate=None):
+        self.project_path = project_path
+        self.commands = commands
+        self.env_activate = env_activate

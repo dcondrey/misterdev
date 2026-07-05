@@ -27,7 +27,8 @@ class ContextMixin:
         if not get_setting(project.config, "orchestrator", "mcp_tool_use"):
             return ""
         mcp = getattr(project, "mcp", None)
-        if mcp is None:
+        local_tools = self._gather_safe_tools(project)
+        if mcp is None and not local_tools:
             return ""
         max_rounds = get_setting(project.config, "orchestrator", "mcp_max_tool_rounds")
 
@@ -40,10 +41,41 @@ class ContextMixin:
                 _ask,
                 task_description=task.description,
                 max_rounds=max_rounds,
+                local_tools=local_tools,
             )
         except Exception as e:  # gathering is best-effort; never sink the build
             logger.warning(f"MCP tool-gathering skipped (error: {e}).")
             return ""
+
+    def _gather_safe_tools(self, project: Project) -> dict:
+        """Configured tools that opt into the gathering loop, as
+        ``{name: (description, call)}``.
+
+        A tool participates only if it is in ``project.config['tools']`` (operator
+        opted in) AND its class sets ``gather_safe = True`` — so a mutating tool
+        (command, file_io write/delete) is never exposed to this read-only
+        context-gathering pass; a plugin ships a read-only tool by declaring the
+        flag. Off by default: no built-in tool is gather-safe, so behaviour is
+        unchanged unless a gather-safe tool is configured.
+        """
+        import misterdev.tools  # noqa: F401 - registers built-in tools
+        from misterdev.plugins import TOOLS
+
+        local: dict = {}
+        for tc in project.config.get("tools") or []:
+            tool_cls = TOOLS.get(tc.get("type"))
+            if tool_cls is None or not getattr(tool_cls, "gather_safe", False):
+                continue
+            instance = tool_cls(tc)
+            name = tc.get("name") or tc.get("type")
+            desc = getattr(tool_cls, "gather_description", f"{tc.get('type')} tool")
+
+            def _call(args, _instance=instance):
+                ok, out = _instance.execute(project, **(args or {}))
+                return str(out) if ok else None
+
+            local[name] = (desc, _call)
+        return local
 
     def _mcp_awareness(self, project: Project) -> str:
         """Render the available-MCP-tools section, or "" when off / no tools.

@@ -338,7 +338,35 @@ class GateKeeper:
         if diff_issues:
             issues.extend(diff_issues)
 
+        # Plugin gates: third-party gates registered on misterdev.plugins.GATES
+        # run after the built-ins and can only ADD blocking issues (a RED
+        # outcome), never remove one.
+        issues.extend(self._run_plugin_gates(commands))
+
         return len(issues) == 0, issues, health
+
+    def _run_plugin_gates(self, commands: Dict[str, Optional[str]]) -> List[str]:
+        """Run each registered plugin gate; collect a blocking issue per RED.
+
+        A gate that raises or returns nothing is skipped (best-effort, like the
+        optional built-in gates) so a third-party gate can never break the build
+        pipeline itself — only fail it deliberately with a RED outcome.
+        """
+        from misterdev.plugins import GATES
+        from misterdev.core.execution.outcomes import GateContext, RED
+
+        ctx = GateContext(self.project_path, commands, self.env_activate)
+        found: List[str] = []
+        for name in GATES.names():
+            gate = GATES.get(name)
+            try:
+                outcome = gate(ctx)
+            except Exception as e:
+                logger.warning(f"Plugin gate {name!r} raised, skipping: {e}")
+                continue
+            if outcome is not None and outcome.status == RED:
+                found.append(f"G-plugin[{name}]: {outcome.reason or 'failed'}")
+        return found
 
     def _scan_banned_markers(self) -> List[str]:
         """G5: Scan ADDED lines for banned markers (TODO!, FIXME, HACK, etc.).

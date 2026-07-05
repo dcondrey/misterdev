@@ -28,7 +28,7 @@ running gathered-context block and fed back into the next round's prompt.
 
 import json
 import re
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from misterdev.core.integration.mcp import MCPManager
 from misterdev.llm.responses import (
@@ -49,15 +49,15 @@ _CALL_RE = re.compile(
     re.IGNORECASE,
 )
 
-_GATHER_HEADER = "## Information gathered via MCP tools\n"
+_GATHER_HEADER = "## Information gathered via tools\n"
 
 _INSTRUCTION = (
-    "You may gather information using the MCP tools below BEFORE editing. "
+    "You may gather information using the tools below BEFORE editing. "
     "To call a tool, reply with EXACTLY one line:\n"
     '    CALL <server>.<tool> {{"arg": value}}\n'
     "(the JSON arguments object is optional). To gather nothing further and "
     "proceed to editing, reply with NO_TOOL. Request at most one tool per reply.\n\n"
-    "## Available MCP tools\n{tools}\n"
+    "## Available tools\n{tools}\n"
 )
 
 
@@ -98,23 +98,36 @@ def gather_context(
     task_description: str = "",
     max_rounds: int = 3,
     tools_cap: int = 25,
+    local_tools: Optional[
+        Dict[str, Tuple[str, Callable[[dict], Optional[str]]]]
+    ] = None,
 ) -> str:
     """Run the bounded tool-gathering loop; return the gathered-context block.
 
-    ``manager`` is the MCP manager (``None`` or one with no tools yields ""),
-    ``ask`` is a callable that takes a prompt and returns the model's text reply
-    (``None``/empty stops the loop). ``max_rounds`` hard-caps the iterations; a
-    value < 1 disables gathering. Returns a context string (empty when nothing
-    was gathered) suitable for prepending to the task context. Never raises: any
-    failure is logged and degrades to whatever was gathered so far.
+    ``manager`` is the MCP manager (may be ``None``). ``local_tools`` maps a
+    registered gather-safe tool's name to ``(description, call)`` and is exposed
+    to the model as ``local.<name>``, so plugin tools and MCP tools are called
+    through the one loop. ``ask`` takes a prompt and returns the model's reply
+    (``None``/empty stops). ``max_rounds`` hard-caps the iterations; < 1 disables.
+    Returns a context string (empty when nothing was gathered), suitable for
+    prepending to the task context. Never raises: any failure is logged and
+    degrades to whatever was gathered so far.
     """
-    if manager is None or max_rounds < 1:
+    local_tools = local_tools or {}
+    if (manager is None and not local_tools) or max_rounds < 1:
         return ""
-    try:
-        tools = manager.describe_tools(cap=tools_cap)
-    except Exception as e:  # registry/discovery problem; degrade to no gathering
-        logger.debug(f"MCP gather: tool discovery failed: {e}")
-        return ""
+    tools = ""
+    if manager is not None:
+        try:
+            tools = manager.describe_tools(cap=tools_cap) or ""
+        except Exception as e:  # discovery problem; degrade to local tools only
+            logger.debug(f"gather: MCP tool discovery failed: {e}")
+            tools = ""
+    if local_tools:
+        local_desc = "\n".join(
+            f"- local.{name}: {desc}" for name, (desc, _) in local_tools.items()
+        )
+        tools = f"{tools}\n{local_desc}" if tools else local_desc
     if not tools:
         return ""
 
@@ -144,10 +157,19 @@ def gather_context(
 
         server, tool, args = parsed
         logger.info(
-            f"MCP gather round {round_idx + 1}/{max_rounds}: CALL {server}.{tool} "
+            f"gather round {round_idx + 1}/{max_rounds}: CALL {server}.{tool} "
             f"args={sorted(args.keys())}"
         )
-        result = manager.call_tool(server, tool, args)
+        if server == "local" and tool in local_tools:
+            try:
+                result = local_tools[tool][1](args)
+            except Exception as e:  # a plugin tool must not sink the build
+                logger.debug(f"gather: local tool {tool!r} error: {e}")
+                result = None
+        elif manager is not None:
+            result = manager.call_tool(server, tool, args)
+        else:
+            result = None
         if result is None:
             # Tool error / unknown server / timeout already logged by call_tool.
             gathered.append(f"### {server}.{tool} -> (no result / error)")
@@ -159,6 +181,6 @@ def gather_context(
     return (
         "\n\n"
         + _GATHER_HEADER
-        + "These results were gathered via MCP tools to inform the edit below.\n\n"
+        + "These results were gathered via tools to inform the edit below.\n\n"
         + "\n\n".join(gathered)
     )

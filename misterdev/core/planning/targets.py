@@ -64,6 +64,26 @@ def _has_marker(d: Path) -> bool:
     return any(d.glob("*.csproj")) or any(d.glob("*.sln"))
 
 
+def _plugin_target_for(d: Path):
+    """First registered target plugin whose markers match ``d``, or None.
+
+    A target plugin is any object exposing ``markers`` (filenames or globs) and
+    ``commands(dir) -> dict`` (build/test/lint/typecheck keys), so a third party
+    can add a language/build system the built-in markers don't cover. See
+    ``misterdev.plugins.TARGETS``.
+    """
+    from misterdev.plugins import TARGETS
+
+    for name in TARGETS.names():
+        target = TARGETS.get(name)
+        for marker in getattr(target, "markers", ()):
+            if any(ch in marker for ch in "*?[") and any(d.glob(marker)):
+                return target
+            if (d / marker).exists():
+                return target
+    return None
+
+
 def discover_targets(project_path: str, max_depth: int = 3) -> List[Dict[str, Any]]:
     """Auto-detect sub-projects (targets) in a polyglot monorepo.
 
@@ -90,18 +110,27 @@ def discover_targets(project_path: str, max_depth: int = 3) -> List[Dict[str, An
             return
         if d.name in _SKIP_DIRS or (rel and d.name.startswith(".")):
             return
-        if rel and _has_marker(d):
-            build = detect_build_command(d)
-            test = detect_test_command(d)
+        plugin = _plugin_target_for(d) if rel else None
+        if rel and (_has_marker(d) or plugin is not None):
+            if plugin is not None:
+                cmds = plugin.commands(d) or {}
+                build = cmds.get("build_command")
+                test = cmds.get("test_command")
+            else:
+                cmds = {}
+                build = detect_build_command(d)
+                test = detect_test_command(d)
             if build or test:
-                targets.append(
-                    {
-                        "name": rel.replace("/", "-"),
-                        "path": rel,
-                        "build_command": build,
-                        "test_command": test,
-                    }
-                )
+                target = {
+                    "name": rel.replace("/", "-"),
+                    "path": rel,
+                    "build_command": build,
+                    "test_command": test,
+                }
+                for extra in ("lint_command", "typecheck_command"):
+                    if cmds.get(extra):
+                        target[extra] = cmds[extra]
+                targets.append(target)
             return  # do not descend into a found sub-project
         try:
             children = sorted(c for c in d.iterdir() if c.is_dir())

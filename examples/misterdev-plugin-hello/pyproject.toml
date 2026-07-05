@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "misterdev-plugin-hello"
+version = "0.1.0"
+description = "Example misterdev plugin: a gather-safe tool and a gate."
+requires-python = ">=3.10"
+dependencies = ["misterdev"]
+
+[tool.setuptools]
+py-modules = ["misterdev_plugin_hello"]
+
+# These entry points are the whole contract: misterdev discovers them at
+# runtime, so installing this package adds the capabilities with zero edits to
+# misterdev. A tool -> a class; a gate -> a callable returning a GateOutcome.
+[project.entry-points."misterdev.tools"]
+hello = "misterdev_plugin_hello:HelloTool"
+
+[project.entry-points."misterdev.gates"]
+no_shouting = "misterdev_plugin_hello:no_shouting_gate"
