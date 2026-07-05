@@ -134,6 +134,31 @@ Plain `misterdev` with no subcommand launches interactive planning.
 The `prompt` is free text or a mode word — `debug`, `complete`, `review`, or `new <description>`.
 </details>
 
+## Drive it from an AI client (MCP server)
+
+misterdev also ships **as an MCP server** (`misterdev-mcp`), so you can drive it
+in plain English from Claude Desktop, Claude Code, Cursor, or any MCP client —
+no flags to remember. The client just calls a tool (`build`, `scan`, `status`,
+`list_projects`, `run`); the **entire orchestration runs inside misterdev's own
+process** with its own model and context budget, and only a short summary
+returns to the client — your codebase never enters the client's context window.
+
+```jsonc
+// Claude Desktop config (claude_desktop_config.json)
+{
+  "mcpServers": {
+    "misterdev": {
+      "command": "misterdev-mcp",
+      "env": { "OPENROUTER_API_KEY": "sk-..." }
+    }
+  }
+}
+```
+
+Then just ask: *"Have misterdev add rate limiting to the API, keep it under $5."*
+Mutating tools (`build`, `run`) refuse a dirty working tree and carry a
+conservative default budget. Requires the `mcp` extra: `pip install 'misterdev[mcp]'`.
+
 ## Extending misterdev
 
 A plugin is an ordinary Python package that declares entry points in the `misterdev.*` groups. Install it, and misterdev picks it up — no core edits.

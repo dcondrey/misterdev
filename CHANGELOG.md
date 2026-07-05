@@ -32,5 +32,9 @@ The forthcoming **0.1.0** — first public release.
 - **Agentic MCP tool use** — a bounded gathering loop can call MCP tools,
   including remote gateways (e.g. Glama) over streamable-http with auth,
   constrained by a tool allowlist.
+- **misterdev as an MCP server** — the `misterdev-mcp` entry point exposes
+  build/scan/status/list/run as MCP tools so any AI client can drive misterdev
+  conversationally; orchestration runs in-process, keeping the codebase out of
+  the client's context window.
 
 [Unreleased]: https://github.com/dcondrey/misterdev/commits/main

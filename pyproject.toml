@@ -110,3 +110,4 @@ dev = [
 
 [project.scripts]
 misterdev = "misterdev.cli:main"
+misterdev-mcp = "misterdev.mcp_server:main"
