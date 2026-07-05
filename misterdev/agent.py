@@ -425,6 +425,9 @@ class ProjectOrchestrator:
         usage = project.llm_client.cumulative_usage
         report.llm_calls = usage.call_count
         report.llm_tokens = usage.total_tokens
+        report.llm_prompt_tokens = getattr(usage, "prompt_tokens", 0)
+        report.llm_completion_tokens = getattr(usage, "completion_tokens", 0)
+        report.llm_cache_read_tokens = getattr(usage, "cache_read_tokens", 0)
         report.llm_cost = usage.estimated_cost
         report.save(project.path)
         return report.to_markdown()
@@ -857,8 +860,10 @@ class ProjectOrchestrator:
         usage = project.llm_client.cumulative_usage
         report.llm_calls = usage.call_count
         report.llm_tokens = usage.total_tokens
+        report.llm_prompt_tokens = getattr(usage, "prompt_tokens", 0)
+        report.llm_completion_tokens = getattr(usage, "completion_tokens", 0)
+        report.llm_cache_read_tokens = getattr(usage, "cache_read_tokens", 0)
         report.llm_cost = usage.estimated_cost
-        report.llm_cache_read_tokens = usage.cache_read_tokens
         report.cost_by_task = dict(getattr(project.llm_client, "cost_by_task", {}))
 
         report.save(project.path)

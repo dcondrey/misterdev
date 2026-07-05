@@ -292,6 +292,19 @@ def test_report_to_dict_includes_degraded_subsystems():
     assert d["degraded_subsystems"] == ["Session audit: nope"]
 
 
+def test_report_to_dict_includes_token_split():
+    r = _make_report()
+    r.llm_calls = 5
+    r.llm_tokens = 12000
+    r.llm_prompt_tokens = 11000
+    r.llm_completion_tokens = 1000
+    r.llm_cache_read_tokens = 4000
+    d = r.to_dict()
+    assert d["llm_prompt_tokens"] == 11000
+    assert d["llm_completion_tokens"] == 1000
+    assert d["llm_cache_read_tokens"] == 4000
+
+
 def test_report_to_dict_degraded_empty_by_default():
     r = _make_report()
     assert r.to_dict()["degraded_subsystems"] == []
@@ -329,7 +342,11 @@ def test_failed_tasks_table_includes_reason(tmp_path):
     from misterdev.core.reporting.report import BuildReport
     from misterdev.core.models import Task, ExecutionResult
     from misterdev.core.planning.assessment import (
-        ProjectAssessment, HealthCheck, ProjectStructure, TechnicalDebt, RiskAssessment,
+        ProjectAssessment,
+        HealthCheck,
+        ProjectStructure,
+        TechnicalDebt,
+        RiskAssessment,
     )
     from misterdev.core.modes import BuildMode
     from datetime import datetime, timezone
@@ -340,10 +357,16 @@ def test_failed_tasks_table_includes_reason(tmp_path):
         tech_debt=TechnicalDebt(score=1),
         risk=RiskAssessment(level="low"),
     )
-    rep = BuildReport(BuildMode.SMART, "x", a, datetime(2026, 1, 1, tzinfo=timezone.utc))
-    t = Task(id="T-9", description="d", project_ref="p", status="failed", title="Do thing")
+    rep = BuildReport(
+        BuildMode.SMART, "x", a, datetime(2026, 1, 1, tzinfo=timezone.utc)
+    )
+    t = Task(
+        id="T-9", description="d", project_ref="p", status="failed", title="Do thing"
+    )
     t.execution_history.append(
-        ExecutionResult(status="failed", message="m", logs="Build failed: cannot find module")
+        ExecutionResult(
+            status="failed", message="m", logs="Build failed: cannot find module"
+        )
     )
     rep.failed_tasks.append(t)
     md = rep.to_markdown() if hasattr(rep, "to_markdown") else rep.render()

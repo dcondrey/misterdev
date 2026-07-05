@@ -67,6 +67,12 @@ class BuildReport:
         self.validation_passed: Optional[bool] = None
         self.llm_calls: int = 0
         self.llm_tokens: int = 0
+        # Split so a run's token profile is legible: input (prompt/context) vs
+        # output (completion). A large input:output ratio means the run is
+        # context-bound — the lever is narrower context / prompt caching, not
+        # shorter outputs.
+        self.llm_prompt_tokens: int = 0
+        self.llm_completion_tokens: int = 0
         self.llm_cost: float = 0.0
         self.llm_cache_read_tokens: int = 0
         self.cost_by_task: dict = {}
@@ -95,6 +101,9 @@ class BuildReport:
             "validation_passed": self.validation_passed,
             "llm_calls": self.llm_calls,
             "llm_tokens": self.llm_tokens,
+            "llm_prompt_tokens": self.llm_prompt_tokens,
+            "llm_completion_tokens": self.llm_completion_tokens,
+            "llm_cache_read_tokens": self.llm_cache_read_tokens,
             "llm_cost": self.llm_cost,
             "degraded_subsystems": list(self.degraded_subsystems),
             "goal_gaps": list(self.goal_gaps),
@@ -321,11 +330,26 @@ class BuildReport:
                 f"- {self.llm_calls} calls, {self.llm_tokens:,} tokens, "
                 f"${self.llm_cost:.4f} estimated cost"
             )
+            if self.llm_prompt_tokens or self.llm_completion_tokens:
+                lines.append(
+                    f"- Tokens: {self.llm_prompt_tokens:,} input (context) / "
+                    f"{self.llm_completion_tokens:,} output"
+                )
             if self.llm_cache_read_tokens > 0 and self.llm_tokens > 0:
                 rate = 100.0 * self.llm_cache_read_tokens / self.llm_tokens
                 lines.append(
                     f"- Cache: {self.llm_cache_read_tokens:,} tokens read from cache ({rate:.0f}% of total)"
                 )
+            # Actionable token-efficiency signal: a run whose input dwarfs its
+            # output is context-bound — the lever is narrower context / more
+            # prompt-cache reuse, not shorter completions.
+            if self.llm_completion_tokens > 0:
+                ratio = self.llm_prompt_tokens / self.llm_completion_tokens
+                if ratio >= 8:
+                    lines.append(
+                        f"- Token profile: context-bound ({ratio:.0f}:1 input:output). "
+                        "Consider enabling prompt caching and narrowing context."
+                    )
             if self.cost_by_task:
                 top = sorted(
                     self.cost_by_task.items(), key=lambda kv: kv[1], reverse=True

@@ -34,6 +34,14 @@ def _print_report(project_path: str) -> None:
             f"failed {len(rpt.get('failed', []))}, "
             f"deferred {len(rpt.get('deferred', []))}"
         )
+        p_in = rpt.get("llm_prompt_tokens", 0) or 0
+        p_out = rpt.get("llm_completion_tokens", 0) or 0
+        p_cache = rpt.get("llm_cache_read_tokens", 0) or 0
+        if p_in or p_out:
+            cached = f", {p_cache:,} cached" if p_cache else ""
+            console.print(
+                f"  [dim]tokens: {p_in:,} input / {p_out:,} output{cached}[/]"
+            )
     else:
         console.print("[dim]No saved build report found.[/]")
 
