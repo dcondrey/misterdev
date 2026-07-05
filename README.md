@@ -233,7 +233,7 @@ Key knobs:
 - **MCP** — declare servers under `mcp.servers` and enable tool use with `orchestrator.mcp_enabled` / `orchestrator.mcp_tool_use`; point at a remote gateway for hosted tool catalogs.
 - **Targets** — a `targets:` block gives a polyglot monorepo per-language build/test/lint, routed per task.
 
-**Guides:** the [`examples/`](examples) directory walks through plugin authoring end to end; `project.yaml.example` documents every configuration key.
+**Guides:** [Getting started](docs/getting-started.md) · [Configuration](docs/configuration.md) · [Plugins](docs/plugins.md) · [MCP](docs/mcp.md). `project.yaml.example` documents every configuration key.
 
 ## Requirements
 
