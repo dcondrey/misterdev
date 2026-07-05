@@ -36,5 +36,8 @@ The forthcoming **0.1.0** — first public release.
   build/scan/status/list/run as MCP tools so any AI client can drive misterdev
   conversationally; orchestration runs in-process, keeping the codebase out of
   the client's context window.
+- **Natural-language CLI** — `misterdev "<plain English>"` maps intent to an
+  action with misterdev's own model, previews it, and confirms before mutating —
+  no flags to memorize. Subcommands still work unchanged.
 
 [Unreleased]: https://github.com/dcondrey/misterdev/commits/main

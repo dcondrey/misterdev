@@ -80,10 +80,23 @@ def _print_report(project_path: str) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Project Orchestrator CLI")
-    parser.add_argument(
-        "--version", action="version", version="misterdev 0.1.0"
+    # Natural-language mode: when the first argument isn't a known subcommand
+    # (and isn't a flag), treat the whole line as plain English and let
+    # misterdev's model route it — no flags to memorize. Known subcommands fall
+    # through to the flag-based parser below, so power users are unaffected.
+    import sys
+
+    _known = {"scan", "list", "status", "report", "run", "plan", "build"}
+    argv = sys.argv[1:]
+    if argv and not argv[0].startswith("-") and argv[0] not in _known:
+        from misterdev.nl_cli import route
+
+        sys.exit(route(" ".join(argv), ProjectOrchestrator()))
+
+    parser = argparse.ArgumentParser(
+        description="misterdev — autonomous build orchestrator"
     )
+    parser.add_argument("--version", action="version", version="misterdev 0.1.0")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # 'scan' command

@@ -100,7 +100,18 @@ misterdev can connect to **Model Context Protocol** servers and let the model ca
 
 ## CLI reference
 
-The `misterdev` command drives everything:
+**Don't want to remember flags?** If the first argument isn't a subcommand,
+misterdev treats the whole line as plain English, maps it to an action with its
+own model, shows you a preview, and asks before anything mutating:
+
+```console
+$ misterdev "fix the failing tests but keep it cheap, and run stuff in parallel"
+  → I'll run: misterdev build . fix the failing tests --budget 5 --parallel
+    proceed? [Y/n]
+```
+
+The flag-based commands below still work exactly as written, for scripts and
+power users. The `misterdev` command drives everything:
 
 | Command | What it does |
 | --- | --- |
