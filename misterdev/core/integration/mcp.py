@@ -18,10 +18,12 @@ nothing here ever raises into the caller.
 
 The official ``mcp`` Python SDK is imported lazily inside the worker so the
 dependency is optional: without it the registry is empty and the manager is a
-no-op. stdio transport is supported (the SDK launches the server as a
-subprocess); other transports degrade to "server absent".
+no-op. stdio (subprocess), streamable-http, and sse transports are supported;
+the last two connect to a remote ``url`` with optional auth headers, which is how
+misterdev reaches a hosted MCP gateway (e.g. Glama) that fronts many servers.
 """
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -75,13 +77,22 @@ def _normalize_servers(servers: Any) -> List[Dict[str, Any]]:
             logger.warning(f"Ignoring non-mapping mcp.servers entry: {entry!r}")
             continue
         name = entry.get("name")
-        command = entry.get("command")
-        if not name or not command:
-            logger.warning(f"Ignoring mcp server without name/command: {entry!r}")
-            continue
         transport = (entry.get("transport") or "stdio").lower()
-        if transport != "stdio":
-            # Only stdio is supported today; anything else is simply absent.
+        remote = transport in ("http", "streamable-http", "streamable_http", "sse")
+        if remote:
+            # A remote server (e.g. a hosted MCP gateway) is addressed by url.
+            if not name or not entry.get("url"):
+                logger.warning(
+                    f"Ignoring remote mcp server without name/url: {entry!r}"
+                )
+                continue
+        elif transport == "stdio":
+            if not name or not entry.get("command"):
+                logger.warning(
+                    f"Ignoring stdio mcp server without name/command: {entry!r}"
+                )
+                continue
+        else:
             logger.debug(
                 f"MCP server '{name}' uses unsupported transport {transport!r}; skipping."
             )
@@ -113,11 +124,22 @@ class MCPManager:
         *,
         connect_timeout: float = _DEFAULT_CONNECT_TIMEOUT,
         call_timeout: float = _DEFAULT_CALL_TIMEOUT,
+        allow_tools: Optional[List[str]] = None,
     ):
         self.servers = _normalize_servers(servers)
         self.connect_timeout = float(connect_timeout)
         self.call_timeout = float(call_timeout)
+        # Optional allowlist of callable tools (``server.tool`` or bare ``tool``).
+        # None means allow all; an empty/populated set restricts which tools a
+        # remote gateway (e.g. Glama, which can front many servers) may expose to
+        # the model — the model can only see and call what you allow.
+        self.allow_tools: Optional[set] = set(allow_tools) if allow_tools else None
         self._tools: Optional[List[MCPTool]] = None  # lazy, cached
+
+    def _allowed(self, server: str, name: str) -> bool:
+        if self.allow_tools is None:
+            return True
+        return f"{server}.{name}" in self.allow_tools or name in self.allow_tools
 
     @property
     def enabled(self) -> bool:
@@ -147,10 +169,13 @@ class MCPManager:
                 what=f"MCP tool discovery ({name})",
             )
             for t in discovered:
+                tool_name = t.get("name", "")
+                if not self._allowed(name, tool_name):
+                    continue
                 tools.append(
                     MCPTool(
                         server=name,
-                        name=t.get("name", ""),
+                        name=tool_name,
                         description=t.get("description") or "",
                         input_schema=t.get("input_schema") or {},
                     )
@@ -180,6 +205,11 @@ class MCPManager:
         cfg = next((s for s in self.servers if s["name"] == server), None)
         if cfg is None:
             logger.warning(f"MCP call_tool: no configured server named '{server}'.")
+            return None
+        if not self._allowed(server, name):
+            logger.warning(
+                f"MCP call_tool: {server}.{name} not in allow_tools; refused."
+            )
             return None
         logger.info(
             f"MCP call_tool: {server}.{name} args={list((arguments or {}).keys())}"
@@ -235,28 +265,79 @@ def _server_params(server: Dict[str, Any]):
     )
 
 
+def _auth_headers(server: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """Auth headers for a remote server: explicit ``headers`` plus a Bearer token
+    read from ``api_key_env`` (so the token stays in the environment, never in
+    config on disk). Returns None when there is nothing to send."""
+    import os
+
+    headers = {str(k): str(v) for k, v in (server.get("headers") or {}).items()}
+    env_var = server.get("api_key_env")
+    if env_var:
+        token = os.environ.get(str(env_var))
+        if token:
+            headers.setdefault("Authorization", f"Bearer {token}")
+        else:
+            logger.warning(
+                f"MCP server '{server.get('name')}': api_key_env {env_var!r} is unset."
+            )
+    return headers or None
+
+
+@asynccontextmanager
+async def _open_session(server: Dict[str, Any]):
+    """Yield an initialized MCP ``ClientSession`` over the server's transport.
+
+    stdio launches a subprocess; ``http``/``streamable-http`` and ``sse`` connect
+    to a remote endpoint (``url``) with optional auth headers — this is what lets
+    misterdev reach a hosted MCP gateway (e.g. Glama) that fronts many servers.
+    The ``ClientSession`` handling is identical across transports.
+    """
+    from mcp import ClientSession
+
+    transport = (server.get("transport") or "stdio").lower()
+    if transport in ("http", "streamable-http", "streamable_http"):
+        from mcp.client.streamable_http import streamablehttp_client
+
+        async with streamablehttp_client(
+            server["url"], headers=_auth_headers(server)
+        ) as (read, write, _get_session_id):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                yield session
+    elif transport == "sse":
+        from mcp.client.sse import sse_client
+
+        async with sse_client(server["url"], headers=_auth_headers(server)) as (
+            read,
+            write,
+        ):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                yield session
+    else:
+        from mcp.client.stdio import stdio_client
+
+        async with stdio_client(_server_params(server)) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                yield session
+
+
 def _list_tools(server: Dict[str, Any]) -> List[Dict[str, Any]]:
     import asyncio
 
     async def _main() -> List[Dict[str, Any]]:
-        from mcp import ClientSession
-        from mcp.client.stdio import stdio_client
-
-        params = _server_params(server)
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.list_tools()
-                out: List[Dict[str, Any]] = []
-                for tool in result.tools:
-                    out.append(
-                        {
-                            "name": tool.name,
-                            "description": tool.description or "",
-                            "input_schema": getattr(tool, "inputSchema", None) or {},
-                        }
-                    )
-                return out
+        async with _open_session(server) as session:
+            result = await session.list_tools()
+            return [
+                {
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "input_schema": getattr(tool, "inputSchema", None) or {},
+                }
+                for tool in result.tools
+            ]
 
     return asyncio.run(_main())
 
@@ -267,18 +348,12 @@ def _call_tool(
     import asyncio
 
     async def _main() -> Optional[str]:
-        from mcp import ClientSession
-        from mcp.client.stdio import stdio_client
-
-        params = _server_params(server)
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.call_tool(name, arguments=arguments)
-                if getattr(result, "isError", False):
-                    logger.debug(f"MCP tool {name} returned an error result.")
-                    return None
-                return _result_text(result)
+        async with _open_session(server) as session:
+            result = await session.call_tool(name, arguments=arguments)
+            if getattr(result, "isError", False):
+                logger.debug(f"MCP tool {name} returned an error result.")
+                return None
+            return _result_text(result)
 
     return asyncio.run(_main())
 
