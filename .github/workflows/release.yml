@@ -29,6 +29,11 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    # Gated: enable by setting the repo variable PYPI_ENABLED=true AFTER you have
+    # configured PyPI Trusted Publishing (see the comment at the top of this
+    # file). Until then a tag builds + tests but does not attempt to publish, so
+    # a release never red-fails on an unconfigured publisher.
+    if: ${{ vars.PYPI_ENABLED == 'true' }}
     environment: pypi
     permissions:
       id-token: write # required for Trusted Publishing
