@@ -1,0 +1,13 @@
+.git
+.venv
+build/
+dist/
+*.egg-info/
+.orchestrator/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+.coverage
+htmlcov/
+assets/
+docs/devplan-archive/

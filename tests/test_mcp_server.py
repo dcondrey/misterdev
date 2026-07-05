@@ -39,6 +39,22 @@ def test_all_expected_tools_registered():
     assert {"scan", "list_projects", "status", "build", "run"} <= names
 
 
+def test_tool_definitions_are_well_documented():
+    # Guards the Glama TDQS score: every tool needs a substantive description, a
+    # title + behavioral annotations, and every parameter needs a description.
+    tools = {t.name: t for t in asyncio.run(mcp_server.mcp.list_tools())}
+    for t in tools.values():
+        assert t.description and len(t.description) > 60, t.name
+        assert t.annotations is not None and t.annotations.title, t.name
+        for pname, prop in t.inputSchema.get("properties", {}).items():
+            assert prop.get("description"), f"{t.name}.{pname} needs a description"
+    # Behavioral transparency: honest read-only vs. destructive hints.
+    assert tools["status"].annotations.readOnlyHint is True
+    assert tools["list_projects"].annotations.readOnlyHint is True
+    assert tools["build"].annotations.destructiveHint is True
+    assert tools["run"].annotations.destructiveHint is True
+
+
 def test_build_routes_and_composes_flags(monkeypatch):
     _patch(monkeypatch)
     out = mcp_server.build(
