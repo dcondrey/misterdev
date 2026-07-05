@@ -238,7 +238,9 @@ def test_red_when_text_missing(monkeypatch, tmp_path):
 def test_text_check_ignores_substring_only_in_markup(monkeypatch, tmp_path):
     # "header" appears only as a tag name / class, never as visible text, so the
     # text: check must NOT consider it present (was a false positive vs raw HTML).
-    page = _FakePage(html='<html><body><header class="header">Hi</header></body></html>')
+    page = _FakePage(
+        html='<html><body><header class="header">Hi</header></body></html>'
+    )
     _patch_pw(monkeypatch, page)
     res = run_web_gate(
         tmp_path,
@@ -253,7 +255,9 @@ def test_text_check_ignores_substring_only_in_markup(monkeypatch, tmp_path):
 
 
 def test_text_check_matches_rendered_text(monkeypatch, tmp_path):
-    page = _FakePage(html='<html><body><header class="nav">Welcome</header></body></html>')
+    page = _FakePage(
+        html='<html><body><header class="nav">Welcome</header></body></html>'
+    )
     _patch_pw(monkeypatch, page)
     res = run_web_gate(
         tmp_path,
@@ -482,6 +486,7 @@ def _png(color, size=(4, 4)):
 
 
 def test_image_diff_pillow_pixel_path():
+    pytest.importorskip("PIL")  # optional 'web' extra; skip cleanly when absent
     # Real PNGs exercise the Pillow per-pixel comparison (not the byte fallback).
     red = _png((255, 0, 0))
     assert _image_diff_fraction(red, red) == 0.0

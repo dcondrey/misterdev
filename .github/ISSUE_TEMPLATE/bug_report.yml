@@ -1,0 +1,37 @@
+name: Bug report
+description: Something misterdev did wrong.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please do not include real secrets (API keys,
+        tokens) in logs you paste — redact them first.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The command you ran and the relevant config, minimized if possible.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Relevant output (secrets redacted).
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: misterdev version & Python
+      placeholder: "misterdev 0.1.0, Python 3.12"
+    validations:
+      required: true
