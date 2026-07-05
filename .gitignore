@@ -9,3 +9,7 @@ __pycache__/
 .coverage.*
 htmlcov/
 .env
+
+# build artifacts
+build/
+dist/

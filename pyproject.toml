@@ -1,14 +1,39 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "misterdev"
 version = "0.1.0"
-description = "A modular and extensible framework to automate development workflows."
+description = "An autonomous, extensible LLM build orchestrator that plans, edits, and verifies code across languages."
 readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "COMMERCIAL_LICENSE.md"]
 authors = [
     { name = "David Condrey", email = "david@writerslogic.com" }
+]
+keywords = [
+    "llm",
+    "ai-agent",
+    "code-generation",
+    "orchestration",
+    "developer-tools",
+    "mcp",
+    "model-context-protocol",
+    "tree-sitter",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Build Tools",
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
 ]
 requires-python = ">=3.10"
 dependencies = [
@@ -31,10 +56,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-topography = [
-    "tree-sitter>=0.21.0",
-    "tree-sitter-python>=0.21.0",
-]
 # Local, offline embeddings for semantic context ranking (no API key). Heavy
 # (pulls onnxruntime); enable when you want dense ranking without OpenRouter.
 local-embeddings = [
@@ -63,6 +84,20 @@ mcp = [
 
 [tool.setuptools.packages.find]
 include = ["misterdev*"]
+
+[tool.setuptools.package-data]
+# Ship the PEP 561 marker so downstreams get the inline types.
+misterdev = ["py.typed"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[project.urls]
+Homepage = "https://github.com/dcondrey/misterdev"
+Repository = "https://github.com/dcondrey/misterdev"
+Issues = "https://github.com/dcondrey/misterdev/issues"
+Changelog = "https://github.com/dcondrey/misterdev/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
