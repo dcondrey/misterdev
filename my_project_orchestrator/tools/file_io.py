@@ -2,7 +2,7 @@ from typing import Any, Tuple, Optional
 import os
 
 from my_project_orchestrator.tools.base_tool import BaseTool
-from my_project_orchestrator.utils.file_utils import read_file, write_file
+from my_project_orchestrator.utils.file_utils import read_file_capped, write_file
 from my_project_orchestrator.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -38,7 +38,7 @@ class FileIOTool(BaseTool):
             if action == "read":
                 if not full_path.exists():
                     return False, f"File not found: {path}"
-                return True, read_file(full_path)
+                return True, read_file_capped(full_path)
 
             elif action == "write":
                 if content is None:

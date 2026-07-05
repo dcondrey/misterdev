@@ -101,6 +101,25 @@ def test_file_io_delete_git_dir_blocked():
             assert (git / "config").exists(), ".git must survive the attempt"
 
 
+def test_file_io_read_is_capped():
+    # A model-requested read of an over-large in-project file is bounded (with a
+    # truncation marker), not loaded whole into memory / the LLM context.
+    from my_project_orchestrator.utils import file_utils
+
+    with tempfile.TemporaryDirectory() as td:
+        big = Path(td) / "huge.txt"
+        big.write_text("A" * (file_utils._MAX_READ_CHARS + 5000))
+
+        class FP:
+            path = Path(td)
+
+        fio = FileIOTool({"name": "FileIO", "type": "file_io"})
+        ok, content = fio.execute(FP(), action="read", path="huge.txt")
+        assert ok
+        assert len(content) <= file_utils._MAX_READ_CHARS + 100
+        assert "truncated" in content
+
+
 def test_file_io_normal_path_works():
     with tempfile.TemporaryDirectory() as td:
 

@@ -55,6 +55,20 @@ ASSIGNMENT_SECRET_KEYS = (
     "token",
 )
 
+# In a quoted credential VALUE these mark an environment/variable REFERENCE (the
+# secret is read from elsewhere), so the literal is a reference, not a leak, and
+# is skipped. Deliberately specific: a bare "env" substring test also skipped a
+# real credential that merely contains those three letters (e.g. "Denver7x9").
+ENV_REFERENCE_MARKERS = (
+    "os.environ",
+    "getenv",
+    "process.env",
+    "${",
+    "{{",
+    "%(",
+    "$env",
+)
+
 # Extensions to skip during file scanning
 SKIP_DIRS = frozenset(
     {

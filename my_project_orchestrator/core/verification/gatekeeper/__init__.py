@@ -11,6 +11,7 @@ from .constants import (
     SECRET_PATTERNS,
     SECRET_REGEXES,
     ASSIGNMENT_SECRET_KEYS,
+    ENV_REFERENCE_MARKERS,
     SKIP_DIRS,
     CODE_EXTENSIONS,
     SECRET_SCAN_EXTENSIONS,
@@ -538,7 +539,7 @@ class GateKeeper:
                     if (
                         len(literal) >= 6
                         and not literal.startswith("${")
-                        and "env" not in low
+                        and not any(m in low for m in ENV_REFERENCE_MARKERS)
                     ):
                         return True
         return False

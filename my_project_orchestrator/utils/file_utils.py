@@ -82,6 +82,22 @@ def read_file(file_path: str | Path) -> str:
         return f.read()
 
 
+# Cap a model-requested read: a multi-GB in-project file (build artifact, data
+# dump) would otherwise load whole into memory and the LLM context, a token/cost
+# blowout. 2 MB matches the gatekeeper scan bound.
+_MAX_READ_CHARS = 2_000_000
+
+
+def read_file_capped(file_path: str | Path, max_chars: int = _MAX_READ_CHARS) -> str:
+    """Read up to ``max_chars`` characters, appending a truncation marker when the
+    file is larger, so the caller (and the model) knows the content is partial."""
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+        data = f.read(max_chars + 1)
+    if len(data) > max_chars:
+        return data[:max_chars] + f"\n...[truncated: file exceeds {max_chars} chars]"
+    return data
+
+
 def atomic_write(file_path: str | Path, content: str) -> None:
     """Write content via a temp file + atomic rename.
 

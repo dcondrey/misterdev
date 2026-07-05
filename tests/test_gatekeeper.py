@@ -129,6 +129,16 @@ def test_secrets_scan_no_false_positive_on_common_identifiers():
     assert GateKeeper(root)._scan_secrets() == []
 
 
+def test_secret_assignment_flags_value_containing_env_substring():
+    # A real credential that merely contains the letters "env" (Denver) must be
+    # flagged; the old bare-substring skip let it through.
+    assert GateKeeper._is_secret_assignment('password = "Denver7x9!"')
+    # Genuine env/variable references are still skipped (read from elsewhere).
+    assert not GateKeeper._is_secret_assignment('password = "${DB_PASSWORD}"')
+    assert not GateKeeper._is_secret_assignment('api_key = "os.environ[KEY]"')
+    assert not GateKeeper._is_secret_assignment('token = "process.env.TOKEN"')
+
+
 def test_secrets_scan_no_false_positive_on_kebab_config():
     # "sk-" is a substring of kebab-case tokens (disk-size, task-queue) and of
     # ordinary URLs (/task-list). A bare-substring match would fail the security
