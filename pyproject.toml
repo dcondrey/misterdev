@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "misterdev"
-version = "0.1.0"
+dynamic = ["version"]
 description = "An autonomous, extensible LLM build orchestrator that plans, edits, and verifies code across languages."
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -81,6 +81,9 @@ web = [
 mcp = [
     "mcp>=1.0.0",
 ]
+
+[tool.setuptools.dynamic]
+version = { attr = "misterdev.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["misterdev*"]

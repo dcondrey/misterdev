@@ -5,6 +5,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
+from misterdev import __version__
 from misterdev.agent import ProjectOrchestrator
 from misterdev.logging_setup import setup_logger
 
@@ -96,7 +97,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="misterdev — autonomous build orchestrator"
     )
-    parser.add_argument("--version", action="version", version="misterdev 0.1.0")
+    parser.add_argument(
+        "--version", action="version", version=f"misterdev {__version__}"
+    )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # 'scan' command
