@@ -1,167 +1,183 @@
-# Project Orchestrator
+<p align="center">
+  <img src="assets/logo.gif" alt="misterdev" width="220">
+</p>
 
-**Autonomous, test-gated development framework.**
+<h1 align="center">misterdev</h1>
 
-Project Orchestrator drives an LLM through a deterministic *analyze → spec →
-decompose → execute → validate → report* loop, applying surgical code edits and
-merging only changes that keep your build, tests, and lint green. It is
-polyglot, scales to large files, and verifies correctness before it ever
-reports done.
+<p align="center">
+  <strong>An autonomous LLM build orchestrator that plans a goal into tasks, edits your code with surgical precision, and verifies every change through correctness gates before it ever reports done.</strong>
+</p>
 
----
+<p align="center">
+  <a href="https://pypi.org/project/misterdev/"><img src="https://img.shields.io/pypi/v/misterdev" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/misterdev/"><img src="https://img.shields.io/pypi/pyversions/misterdev" alt="Python versions"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
+  <a href="https://github.com/dcondrey/misterdev/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/dcondrey/misterdev/ci.yml?branch=main" alt="CI"></a>
+</p>
 
-## Capabilities
-
-### Surgical editing that scales to large files
-- **Anchored SEARCH/REPLACE edits.** The model emits only the changed regions;
-  they are applied against the on-disk file, so a 5,000-line module is edited
-  without reprinting it (and without truncating past the output-token limit).
-- **Forgiving application.** Matching tries exact, then tolerates trailing-space
-  / CRLF drift, then wrong indentation (re-indenting the replacement) — always
-  requiring a single unique match, so a partial file is never written; a missed
-  anchor retries instead.
-- **Windowed context.** Large target files are sent as a symbol outline plus
-  verbatim windows of the task-relevant symbols, so context (and cost) scales
-  with the edit, not the file. Small files are sent whole.
-
-### Polyglot understanding
-- **Tree-sitter symbol graph** for Python, Rust, TypeScript/TSX, JavaScript/JSX,
-  C, C++, C#, Swift, and Kotlin (best-effort).
-- **Per-file outlines** (a symbol table of contents) and a **whole-project
-  structural map** feed planning and editing.
-- **Build/test/lint detection** for pytest, npm, cargo, SwiftPM, CMake/ctest,
-  Meson, Make, and `dotnet`; **error classification** and **test-count parsing**
-  across Rust/clang/gcc/swiftc/Roslyn, XCTest, ctest, and VSTest.
-
-### Correctness verification
-- **Tree-sitter syntax gate** catches real syntax errors before the expensive
-  build, understanding strings/comments (a brace in a literal never false-fails).
-- **Gate sequence** G1 build → G2 lint → G3 tests → G3.5 golden suite →
-  **G3.6 optional mutation score** → G4 typecheck →
-  **G4.5 optional LSP semantic diagnostics** → **G4.6 optional runtime smoke** →
-  **G4.7 optional web verification** → **G4.8 optional vision verification** →
-  G5 banned-marker → G6 secrets → G9 diff hygiene. Build/test/golden/typecheck
-  failures block. An optional **goal-completion check** runs after the gates
-  settle (advisory by default).
-- **Optional container substrate** (`environment.type: docker`): gate commands
-  run inside a throwaway, uid-mapped OCI container against the bind-mounted repo
-  so the toolchain is pinned and reproducible. Rootless-first engine detection
-  (podman → docker → nerdctl → colima); falls back to local execution when no
-  engine is reachable. Git stays host-side.
-- **Optional runtime smoke gate** (`runtime.smoke`): launches the built
-  artifact, waits for a readiness signal, sends a probe, and asserts the
-  expected response — a cheap end-to-end liveness check. Daemon-threaded with a
-  hard timeout so it can never block; missing config or timeout is a SKIP.
-- **Optional web verification gate** (`orchestrator.web_verify`, `runtime.web`):
-  a headless browser (Playwright) optionally starts a dev server, loads a URL,
-  and runs declarative `checks` — `dom:<selector>`, `text:<substring>`,
-  `no-console-errors`, `axe` (accessibility), `screenshot` (pixel-diff vs a
-  seeded baseline) — capturing a real screenshot as evidence. RED only on a
-  genuinely failed check. Daemon-threaded with a hard timeout; no config or no
-  Playwright/browser is a SKIP. Install with `.[web]` plus `playwright install`.
-- **Optional vision verification gate** (`orchestrator.vision_verify`,
-  `runtime.vision`): a vision model judges whether a captured screenshot
-  satisfies a stated visual requirement (`assert`), affirm→GREEN / deny→RED.
-  When the web gate also runs, its captured screenshot is reused automatically
-  as the vision input (no need to repeat the path) unless `runtime.vision.capture`
-  is set explicitly. Daemon-threaded with a hard timeout; no config / no model /
-  no network is a SKIP. Uses the project's LLM client.
-- **Optional MCP tool-host substrate** (`orchestrator.mcp_enabled`,
-  `mcp.servers`): connects to configured MCP (Model Context Protocol) servers
-  over stdio, discovers their tools (`project.mcp.tools`), and can call one
-  (`project.mcp.call_tool`). When enabled, the discovered tools are described to
-  the model in the task context so it knows they exist (awareness only —
-  additive, the single-shot build loop is unchanged). Daemon-threaded with hard
-  timeouts so a missing SDK, an unstartable server, or a hang is simply absent,
-  never a block or an error. Install with `.[mcp]`.
-- **Optional agentic MCP tool use** (`orchestrator.mcp_tool_use`,
-  `orchestrator.mcp_max_tool_rounds`): off by default and purely additive on top
-  of the substrate above. When on (and an MCP manager with discovered tools
-  exists), a BOUNDED pre-edit loop lets the model request MCP tool calls to
-  gather information before editing. Each round the model is shown the available
-  tools and may reply with one line `CALL <server>.<tool> {json-args}` (or
-  `NO_TOOL` to stop); the call runs through the timeout-guarded, never-raising
-  `MCPManager.call_tool`, and the result is prepended to the task context. The
-  loop is hard-capped by `mcp_max_tool_rounds` (default 3) and stops as soon as
-  the model requests no tool. Any failure (no tools, model error, unparseable
-  request, tool error) degrades to "gather nothing" — when the flag is off the
-  executor path is byte-identical to today.
-- **Optional mutation-score gate** (`orchestrator.mutation_gate`, `mutation`):
-  runs the project's configured mutation-testing command (tool-agnostic — mutmut,
-  cosmic-ray, cargo-mutants, Stryker, ...), parses a score, and RED-blocks (G3.6)
-  only when it is below `mutation.min_score`. Proves the suite kills injected
-  faults, not just passes. Daemon-threaded with a hard timeout; no config, an
-  unparseable score, or a timeout is a SKIP (never a RED).
-- **Optional goal-completion check** (`orchestrator.goal_check`): after the gate
-  loop settles, an LLM judge reads the goal, the tasks' acceptance criteria, and
-  the build's cumulative diff and reports whether the goal is actually met —
-  "gates green != goal met". ADVISORY by default (gaps are recorded in the report
-  and logged but do not fail the build); set `block_on_goal_gap` to make an unmet
-  goal fail. Daemon-threaded with a hard timeout; no goal/criteria/client, an
-  unparseable verdict, or a timeout is a SKIP.
-- **Optional adversarial critic** (`orchestrator.adversarial_critic`, `critic.model`):
-  an **independent second component** that reviews each candidate edit *before it
-  is applied* and either approves it or returns concrete objections (misread
-  requirements, missed edge cases, leaks, swallowed errors, security holes). A
-  rejection feeds those objections back to the generator as the next attempt's
-  context — a generate→critique→regenerate loop. Independence is the point: set
-  `critic.model` to a **different** model so the reviewer doesn't share the
-  generator's blind spots (a same-model critic still runs but is weaker, and that
-  is logged). It reviews the **unified diff** of each change (what actually
-  changed), and `critic.panel` > 1 runs that many reviewers concurrently through
-  different perspective lenses (correctness / edge-cases / safety / requirements),
-  rejecting only on a **majority** so a lone false rejection can't block. It is
-  advisory, never authoritative — the build/test gates remain
-  ground truth, and `critic_max_rejections` (default 2) caps how many
-  regenerations it may force before deferring to those gates. Off by default and
-  byte-identical when off; daemon-threaded with a hard timeout, so no client / an
-  unparseable verdict / a timeout is a SKIP that lets the edit proceed.
-- **Spec-as-tests** (`orchestrator.spec_as_tests`, `spec_as_tests_block`): turns a
-  task's acceptance criteria into a failing pre-implementation test, then requires
-  it to pass once the task is built (real red→green TDD per task). The generated
-  test is written under `.orchestrator/spec_tests/` — **outside** the project
-  suite — so it is never collected by the project tests and can never flip the
-  integration-gate baseline; it is run scoped to its own file after the task's
-  gates pass. ADVISORY by default (a still-red spec test is logged/recorded but
-  doesn't fail the task, since the generated test may itself be imperfect); set
-  `spec_as_tests_block` for strict enforcement. Off by default and byte-identical
-  when off. Scoped runs support pytest/jest-style suites; other languages SKIP.
-- **Multi-target (polyglot) gate routing** (`targets:` in project.yaml): a
-  monorepo with sub-projects in different languages (e.g. a Rust core + a
-  TypeScript web client) declares each with its own build/test/lint; a task's
-  gate is routed to the target that owns its files, so a frontend edit is checked
-  with `npm run typecheck`, not `cargo`. Omit `targets` for a single-language
-  project — the path is byte-identical.
-- **Regression safety:** branch-per-task, integration gate per wave with
-  `git bisect`-style revert of the culprit, test-tamper detection, dirty-tree
-  guard. On a **red baseline** (suite already failing) the gate runs in *count
-  mode* instead of disabling: it reverts any wave that **raises** the full-suite
-  failure count, so a task gated only on its own scoped tests can't worsen the
-  overall suite and still commit.
-
-### Model & context orchestration
-- Providers: **OpenRouter** and **Anthropic**, with failover, cost/budget
-  ceilings, and **accurate token budgeting via tiktoken**.
-- Optional dynamic model selection (UCB cost-aware ladder) and free-model
-  harvesting.
-- **Semantic context ranking** with pluggable embedding backends —
-  `local` (offline [fastembed], no API key) or `openrouter` — blended with a
-  lexical identifier signal; degrades to lexical-only if unavailable.
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#what-it-does">What it does</a> ·
+  <a href="#cli-reference">CLI</a> ·
+  <a href="#extending-misterdev">Extending</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#development">Development</a> ·
+  <a href="#license">License</a>
+</p>
 
 ---
 
-## Quick start
+Point misterdev at a repository and a goal. It reads the codebase as a symbol graph, decomposes the goal into concrete tasks, and works each one in a try-edit-verify loop: it emits an anchored SEARCH/REPLACE edit, applies it against the file on disk, and runs the change through a sequence of correctness gates — build, tests, lint, typecheck, and any optional gates you enable. A gate that fails RED blocks the change; a gate that has nothing to check SKIPs and never blocks. When a change regresses the suite, misterdev reverts it through git. Nothing merges unless it stays green.
 
-### Install
-```bash
-uv pip install -e .                      # core
-uv pip install -e '.[local-embeddings]'  # + offline embeddings (optional)
-uv pip install -e '.[lsp]'               # + LSP semantic gate (optional)
-uv pip install -e '.[web]' && playwright install chromium  # + web verify gate
-uv pip install -e '.[mcp]'               # + MCP tool-host substrate (optional)
+```console
+$ misterdev build . "add rate limiting to the public API"
+
+  planning   goal → 3 tasks  (model: anthropic/claude-sonnet-4-6, budget $100.00)
+  task 1/3   middleware: token-bucket limiter          api/limiter.py
+    edit     1 hunk applied · syntax ok
+    gates    build GREEN · tests GREEN (142 passed) · lint GREEN · typecheck GREEN
+  task 2/3   wire limiter into request pipeline         api/app.py
+    edit     2 hunks applied
+    gates    build GREEN · tests RED (1 failed) → rolling back, regenerating
+    edit     2 hunks applied (attempt 2)
+    gates    build GREEN · tests GREEN (145 passed) · lint GREEN · typecheck GREEN
+  task 3/3   docs + config surface                      README.md, config.py
+    gates    all GREEN
+
+  done       3/3 tasks · 145 tests green · $0.38 over 11 calls
 ```
 
-### Configure — `project.yaml` in the repo root
+Because misterdev only trusts its gates, the loop is honest: "the model said it's done" is never the finish line — the build, the tests, and the diff are.
+
+## Install
+
+```bash
+pip install misterdev
+# or
+uv pip install misterdev
+```
+
+Python 3.10 – 3.13. Optional extras add capability without bloating the core install:
+
+```bash
+pip install 'misterdev[local-embeddings]'   # offline semantic context ranking (fastembed, no API key)
+pip install 'misterdev[lsp]'                 # LSP semantic-diagnostics gate
+pip install 'misterdev[web]'                 # headless-browser web verification gate (+ playwright install chromium)
+pip install 'misterdev[mcp]'                 # Model Context Protocol tool-host substrate
+```
+
+Extras are all opt-in and timeout-bounded. When an extra's runtime dependency is absent, the gate it powers SKIPs rather than failing.
+
+## What it does
+
+### Autonomous build loop
+
+Give misterdev a goal and it drives the whole cycle: analyze the project, plan tasks, edit, and validate — repeating until the goal is met or the budget is spent. Edits are **anchored SEARCH/REPLACE** hunks: the model emits only the changed regions, which are applied against the on-disk file, so a 5,000-line module is edited without reprinting it and without hitting the output-token ceiling. Matching tries exact first, then tolerates whitespace and indentation drift, always requiring a single unique anchor so a partial file is never written.
+
+### Polyglot symbol-graph context
+
+A tree-sitter symbol graph gives misterdev structural understanding of **Python, Rust, TypeScript/JavaScript, Go, Java, C/C++, C#, Swift, and Kotlin**. Per-file outlines plus a whole-project structural map feed planning and editing, and large files are sent as a symbol outline plus verbatim windows of the task-relevant symbols — so context and cost scale with the edit, not with the file.
+
+### Correctness gates
+
+Every change runs through an ordered gate sequence: **build → lint → tests → typecheck**, with optional gates layered on top — an **adversarial critic** (an independent second model that reviews each diff before it is applied), **goal-check**, **claim-verifier**, **mutation** scoring, **runtime-smoke**, **web**, and **vision** verification. A gate that fails **RED** blocks the change; a gate with nothing to check **SKIPs** and never blocks. Regressions are reverted via git, so a working tree only ever moves forward.
+
+### Dynamic model selection
+
+misterdev keeps a per-model **performance ledger** and pairs it with a **cost-aware selector** that picks for quality-per-dollar, **harvests free models** where they hold up, and caches responses to avoid paying twice. It runs against **OpenRouter or Anthropic** with automatic failover, and token budgeting keeps spend inside the ceiling you set.
+
+### Parallel worktrees
+
+Disjoint tasks run concurrently, each in its own **isolated git worktree**, so independent work doesn't contend for the tree. An **integration gate** re-checks each wave against the full suite and reverts any task that regresses it — parallelism without cross-contamination.
+
+### Extensibility
+
+Tools, gates, and targets **self-register through Python entry points**. `pip install misterdev-plugin-x` adds a capability with **zero edits to the core** — misterdev discovers the entry point at runtime and wires it in. A working example lives at [`examples/misterdev-plugin-hello`](examples/misterdev-plugin-hello). See [Extending misterdev](#extending-misterdev).
+
+### Agentic MCP
+
+misterdev can connect to **Model Context Protocol** servers and let the model call their discovered tools mid-build — bounded, opt-in, and constrained by a tool allowlist. Transports include stdio and **remote streamable-http with auth**, so you can point it at a hosted MCP gateway like **Glama** and give the build access to a whole catalog of tools without running any of them locally.
+
+## CLI reference
+
+The `misterdev` command drives everything:
+
+| Command | What it does |
+| --- | --- |
+| `misterdev scan <dir>` | Discover projects under a directory and register them. |
+| `misterdev list` | List all registered projects. |
+| `misterdev status [path]` | Show a project's tasks and their state. |
+| `misterdev report [path]` | Summarize the latest build's cost/tokens, per-model ledger performance, and the audit trail. Read-only — nothing is re-run. |
+| `misterdev run [path]` | Run pending (or a specific `--task`) tasks for a project. `--dry-run`, `--force`, `--status`. |
+| `misterdev plan [path]` | Analyze the project, recommend work, and compose a plan interactively. `--budget`, `--no-rollback`. |
+| `misterdev build [path] [prompt]` | The autonomous build/debug/complete workflow. See flags below. |
+
+Plain `misterdev` with no subcommand launches interactive planning.
+
+<details>
+<summary><strong><code>misterdev build</code> flags</strong></summary>
+
+| Flag | Effect |
+| --- | --- |
+| `--budget <float>` | Max dollar budget for the run (default 100). |
+| `--commit` | Commit after each completed task. |
+| `--parallel` | Execute independent tasks concurrently in isolated worktrees. |
+| `--dry-run` | Plan only; show tasks without executing. |
+| `--interactive`, `-i` | Wait for confirmation between tasks. |
+| `--no-verify` | Skip the final validation phase. |
+| `--no-suggest` | Skip the suggest scan. |
+| `--no-rollback` | Disable auto-bisect/revert of a regressing task. |
+| `--focus <area>` | Restrict work to a specific area. |
+| `--allow-dirty` | Allow building over uncommitted changes. |
+| `--max-tasks <n>` | Cap the tasks this run will plan/execute (bounds cost). |
+
+The `prompt` is free text or a mode word — `debug`, `complete`, `review`, or `new <description>`.
+</details>
+
+## Extending misterdev
+
+A plugin is an ordinary Python package that declares entry points in the `misterdev.*` groups. Install it, and misterdev picks it up — no core edits.
+
+A **tool** is a class; a **gate** is a callable returning a `GateOutcome`:
+
+```python
+# misterdev_plugin_hello.py
+from misterdev.core.execution.outcomes import GateOutcome, GREEN, RED
+
+
+class HelloTool:
+    gather_safe = True  # opt into the agentic gathering loop
+    gather_description = "Return a friendly greeting for a name."
+
+    def __init__(self, config: dict):
+        self.name = config.get("name", "hello")
+
+    def execute(self, project, name: str = "world", **_ignored):
+        return True, f"Hello, {name}!"
+
+
+def no_shouting_gate(ctx) -> GateOutcome:
+    build = (ctx.commands or {}).get("build_command") or ""
+    if build and build.isupper():
+        return GateOutcome(RED, "build_command is ALL CAPS; please calm down")
+    return GateOutcome(GREEN)
+```
+
+```toml
+# pyproject.toml — the entry points are the whole contract
+[project.entry-points."misterdev.tools"]
+hello = "misterdev_plugin_hello:HelloTool"
+
+[project.entry-points."misterdev.gates"]
+no_shouting = "misterdev_plugin_hello:no_shouting_gate"
+```
+
+Targets register the same way through the `misterdev.targets` group. The full, runnable example — tool, gate, `pyproject.toml`, and notes — is at [`examples/misterdev-plugin-hello`](examples/misterdev-plugin-hello).
+
+## Configuration
+
+Drop a `project.yaml` in the repo root. A minimal config names the language and the build/test/lint commands; everything else has a sensible default.
+
 ```yaml
 name: "My App"
 language: "python"
@@ -169,83 +185,52 @@ build_command: "python -m compileall -q ."
 test_command: "pytest -q"
 lint_command: "ruff check ."
 llm:
-  provider: "openrouter"
+  provider: "openrouter"            # openrouter | anthropic
   model: "anthropic/claude-sonnet-4-6"
   api_key_env_var: "OPENROUTER_API_KEY"
-  embedding_backend: "auto"   # auto | local | openrouter | none
-tools:
-  - name: "Git"
-    type: "git"
 ```
 
-### Run
+Key knobs:
+
+- **Model & budget** — `llm.model`, provider/failover, and the run's dollar ceiling (also `--budget`).
+- **Gates** — optional gates (adversarial critic, mutation, runtime-smoke, web, vision, goal-check) are off by default and enabled under the `orchestrator.*` keys.
+- **MCP** — declare servers under `mcp.servers` and enable tool use with `orchestrator.mcp_enabled` / `orchestrator.mcp_tool_use`; point at a remote gateway for hosted tool catalogs.
+- **Targets** — a `targets:` block gives a polyglot monorepo per-language build/test/lint, routed per task.
+
+**Guides:** the [`examples/`](examples) directory walks through plugin authoring end to end; `project.yaml.example` documents every configuration key.
+
+## Requirements
+
+- Python **3.10 – 3.13**
+- **git** (branch-per-task, worktrees, and rollback all run through it)
+- An API key for **OpenRouter** or **Anthropic**
+- Optional per-gate toolchains — a Playwright browser for the web gate, a language server for the LSP gate, an MCP SDK for the tool-host substrate (all installed via the matching extra)
+
+## Development
+
 ```bash
-misterdev scan ./projects                  # discover & register
-misterdev build ./projects/my-app "add OAuth2 login"
-misterdev build ./projects/my-app --dry-run "..."   # plan only
-misterdev                                  # interactive planning
-misterdev report ./projects/my-app         # cost + model + audit summary
+git clone https://github.com/dcondrey/misterdev
+cd misterdev
+uv sync
+uv run ruff check .
+uv run pytest -q
 ```
 
-`report` aggregates the project's `.orchestrator/` artifacts into one view: the
-latest build's cost/tokens/tasks, per-model performance from the ledger (attempts,
-gate-pass rate, first-try rate, mean $/success — so a model choice is legible),
-and the audit trail (commands ok/failed, edits per file, governance escalations).
-Read-only; nothing is re-run.
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md), and open an issue or a pull request on [GitHub](https://github.com/dcondrey/misterdev).
+
+## License
+
+misterdev is **dual-licensed**:
+
+- **[AGPL-3.0-or-later](LICENSE)** — free for open-source use under the terms of the GNU Affero General Public License.
+- **[Commercial license](COMMERCIAL_LICENSE.md)** — for use in a closed-source or proprietary product without AGPL obligations.
+
+Choose the one that fits your project.
 
 ---
 
-## Architecture
-- **`core/`** — state machine, models, decomposition, gates, topography (symbol
-  graph + syntax gate), embeddings, optional LSP gate, container substrate
-  (`container.py`), runtime smoke gate (`runtime.py`), web verification gate
-  (`web_verify.py`), vision verification gate (`vision_verify.py`), mutation-score
-  gate (`mutation_gate.py`), goal-completion check (`goal_check.py`), spec-as-tests
-  generator (`spec_tests.py`, deferred), MCP tool-host substrate (`mcp.py`),
-  governance layer (`governance.py`, risk classifier + approval gate) and
-  append-only audit trail (`audit.py`).
-- **`llm/`** — provider clients, failover, token budgeting, SEARCH/REPLACE
-  response parsing.
-- **`task_executors/`** — the try-test-fix inner loop and edit application.
-- **`analyzers/`** — project assessment (structure, completeness, health).
-- **`tools/`** — Git, command runner, formatters, file I/O.
-
----
-
-## Safety & integrity
-- Token/dollar **budget ceilings**; per-task and global caps.
-- **Validation gates** block regressions; the **golden suite** is model-blind.
-- **Branch-per-task** with revert-on-failure; **dirty-tree guard** refuses to
-  run over uncommitted work.
-- `--interactive` confirms each task; `--dry-run` plans without executing.
-- **Governance layer** (opt-in, `orchestrator.governance: true`): a precise risk
-  classifier gates executor commands that are destructive/irreversible/paid
-  (`rm -rf`, `git push --force`, `DROP TABLE`, `kubectl delete`, `terraform
-  destroy`, cloud `delete`, `docker system prune`, deploy/publish, pipe-to-shell)
-  while ordinary build/test/lint commands run untouched. In autonomous mode a
-  risky command is **blocked** with an escalation record unless
-  `governance.auto_approve` is set. **Off by default — the command path is
-  byte-identical to today when off.** Extra patterns via
-  `governance.approval_required`.
-- **Append-only audit trail** at `.orchestrator/audit.jsonl` (on by default,
-  gitignored): one structured JSONL line per command run + exit, edit, and gate
-  decision. Never raises into the build — an unwritable path degrades to a no-op.
-- **Container egress control** (`governance.network: none`): runs gate commands
-  with `--network none`. *Honest limit:* this constrains **containerized**
-  execution only (`environment.type: docker`); host execution and git keep their
-  normal network.
-- **Container sandbox limits** (all opt-in, container-only, off path unchanged):
-  `environment.memory` / `cpus` / `pids_limit` bound a runaway gate (fork bomb,
-  memory hog); `cap_drop: ["ALL"]` drops Linux capabilities and `security_opt`
-  (`no-new-privileges`, a `seccomp=` profile) hardens running model-generated
-  code. The bind-mounted repo stays writable so build/test still work.
-
----
-
-## Testing
-```bash
-uv run pytest -q                       # full suite
-RUN_LSP_INTEGRATION=1 uv run pytest tests/test_lsp.py   # opt-in live LSP test
-RUN_WEB_INTEGRATION=1 uv run pytest tests/test_web_verify.py     # live browser
-RUN_VISION_INTEGRATION=1 uv run pytest tests/test_vision_verify.py  # live VLM
-```
+<p align="center">
+  Built by <strong>David Condrey</strong> ·
+  <a href="https://github.com/dcondrey/misterdev">github.com/dcondrey/misterdev</a><br>
+  <sub>The static mark lives at <code>assets/logo.svg</code>.</sub>
+</p>
