@@ -9,7 +9,9 @@ type.
 
 ## [Unreleased]
 
-The forthcoming **0.1.0** — first public release.
+## [0.1.0] - 2026-07-05
+
+First public release.
 
 ### Features
 
@@ -40,4 +42,5 @@ The forthcoming **0.1.0** — first public release.
   action with misterdev's own model, previews it, and confirms before mutating —
   no flags to memorize. Subcommands still work unchanged.
 
-[Unreleased]: https://github.com/dcondrey/misterdev/commits/main
+[Unreleased]: https://github.com/dcondrey/misterdev/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/dcondrey/misterdev/releases/tag/v0.1.0
