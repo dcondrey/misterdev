@@ -4,14 +4,14 @@ complexity: small
 depends_on:
 - '001'
 files_to_modify:
-- my_project_orchestrator/agent.py
-- my_project_orchestrator/cli.py
+- misterdev/agent.py
+- misterdev/cli.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Add dry-run mode to run_project for dependency visualization
 ---
 
-Add a `--dry-run` flag to `project-orchestrator run` that shows the execution plan without running anything. This helps users verify dependency ordering and wave structure before committing to an expensive LLM-powered run.
+Add a `--dry-run` flag to `misterdev run` that shows the execution plan without running anything. This helps users verify dependency ordering and wave structure before committing to an expensive LLM-powered run.
 
 1. In `cli.py`, add `--dry-run` flag to the `run` subcommand:
    ```python

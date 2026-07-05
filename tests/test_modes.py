@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.modes import (
+from misterdev.core.modes import (
     BuildMode,
     parse_flags,
     resolve_mode,

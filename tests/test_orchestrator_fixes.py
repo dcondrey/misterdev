@@ -14,17 +14,17 @@ from pathlib import Path
 
 import pytest
 
-from my_project_orchestrator.utils.file_utils import atomic_write
-from my_project_orchestrator.task_executors.markdown_plan_executor import (
+from misterdev.utils.file_utils import atomic_write
+from misterdev.task_executors.markdown_plan_executor import (
     MarkdownPlanExecutor,
     _detect_language,
     _LANG_MAP,
 )
-from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
-from my_project_orchestrator.core.execution.error_classifier import classify_error, ErrorCategory
-from my_project_orchestrator.core.verification.validator import ValidationResult, CodeValidator
-from my_project_orchestrator.core.context.change_tracker import ChangeTracker
-from my_project_orchestrator.core.planning.sovereign import EphemeralCodeManager
+from misterdev.core.verification.gatekeeper import GateKeeper
+from misterdev.core.execution.error_classifier import classify_error, ErrorCategory
+from misterdev.core.verification.validator import ValidationResult, CodeValidator
+from misterdev.core.context.change_tracker import ChangeTracker
+from misterdev.core.planning.sovereign import EphemeralCodeManager
 
 
 class _FakeProject:
@@ -147,12 +147,12 @@ def test_shell_skips_delimiter_check():
 
 def test_formatter_runs_project_wide_without_placeholder():
     from unittest.mock import patch
-    from my_project_orchestrator.tools.formatter import FormatterTool
+    from misterdev.tools.formatter import FormatterTool
 
     tool = FormatterTool.__new__(FormatterTool)
     tool.config = {"command": "ruff format ."}
     with patch(
-        "my_project_orchestrator.tools.command.CommandTool.execute",
+        "misterdev.tools.command.CommandTool.execute",
         autospec=True,
         return_value=(True, ""),
     ) as m:
@@ -163,12 +163,12 @@ def test_formatter_runs_project_wide_without_placeholder():
 
 def test_formatter_substitutes_path_when_placeholder_present():
     from unittest.mock import patch
-    from my_project_orchestrator.tools.formatter import FormatterTool
+    from misterdev.tools.formatter import FormatterTool
 
     tool = FormatterTool.__new__(FormatterTool)
     tool.config = {"command": "rustfmt {path}"}
     with patch(
-        "my_project_orchestrator.tools.command.CommandTool.execute",
+        "misterdev.tools.command.CommandTool.execute",
         autospec=True,
         return_value=(True, ""),
     ) as m:
@@ -222,7 +222,7 @@ def _write_task(devplan: Path, tid: str, modify):
 
 
 def _make_tm(root: Path, auto: bool):
-    from my_project_orchestrator.core.task import TaskManager
+    from misterdev.core.task import TaskManager
 
     class _P:
         path = root
@@ -266,7 +266,7 @@ def test_ephemeral_context_manager_cleans_up():
 
 
 def test_commit_task_does_not_sweep_unrelated_untracked():
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 
@@ -313,7 +313,7 @@ def test_commit_task_does_not_sweep_unrelated_untracked():
 def test_commit_task_empty_file_list_does_not_sweep():
     """With no files, commit must be empty -- never fall back to git add -A,
     which would sweep unrelated untracked work (the rideshare data-loss path)."""
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 
@@ -356,7 +356,7 @@ def test_commit_task_empty_file_list_does_not_sweep():
 
 
 def test_generate_probes_does_not_crash_on_json_braces():
-    from my_project_orchestrator.core.planning.sovereign import ProbeGenerator
+    from misterdev.core.planning.sovereign import ProbeGenerator
 
     class _LLM:
         def generate_code(self, prompt, system_prompt=""):
@@ -373,7 +373,7 @@ def test_generate_probes_does_not_crash_on_json_braces():
 
 def test_execute_parallel_worktrees_merges_back():
     from unittest.mock import MagicMock
-    import my_project_orchestrator.agent as agent_mod
+    import misterdev.agent as agent_mod
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -418,7 +418,7 @@ def test_execute_parallel_worktrees_merges_back():
 
 
 def test_code_gen_abort_check():
-    from my_project_orchestrator.llm.client import code_gen_abort_check
+    from misterdev.llm.client import code_gen_abort_check
 
     assert code_gen_abort_check("I'll help you write this function...")
     assert code_gen_abort_check("x" * 2500)  # long, no code fence
@@ -427,7 +427,7 @@ def test_code_gen_abort_check():
 
 
 def test_generate_stream_aborts_early():
-    from my_project_orchestrator.llm.client import BaseLLMClient, code_gen_abort_check
+    from misterdev.llm.client import BaseLLMClient, code_gen_abort_check
 
     class _Streamer(BaseLLMClient):
         def __init__(self, parts):
@@ -460,7 +460,7 @@ def test_generate_stream_aborts_early():
 
 
 def test_bisect_first_failing_pure():
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         _bisect_first_failing,
     )
 
@@ -473,7 +473,7 @@ def test_bisect_first_failing_pure():
 
 
 def test_bisect_regression_end_to_end_git():
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 
@@ -517,7 +517,7 @@ def test_bisect_regression_end_to_end_git():
 
 
 def test_cache_read_is_cheaper_than_fresh_input():
-    from my_project_orchestrator.llm.client import AnthropicLLMClient
+    from misterdev.llm.client import AnthropicLLMClient
 
     c = AnthropicLLMClient.__new__(AnthropicLLMClient)
     c.model = "claude-opus-4-8"  # 15/75 per 1M
@@ -533,7 +533,7 @@ def test_cache_read_is_cheaper_than_fresh_input():
 
 
 def test_cost_attributed_per_task():
-    from my_project_orchestrator.llm.client import BaseLLMClient, LLMResponse, LLMUsage
+    from misterdev.llm.client import BaseLLMClient, LLMResponse, LLMUsage
 
     class _C(BaseLLMClient):
         def __init__(self):
@@ -563,7 +563,7 @@ def test_cost_attributed_per_task():
 
 
 def test_with_model_restores_original():
-    from my_project_orchestrator.llm.client import BaseLLMClient
+    from misterdev.llm.client import BaseLLMClient
 
     class _C(BaseLLMClient):
         def __init__(self):
@@ -615,7 +615,7 @@ def test_resolve_model_by_complexity_and_strategy():
 
 
 def _make_failover(primary, fallbacks):
-    from my_project_orchestrator.llm.client import FailoverLLMClient, BaseLLMClient
+    from misterdev.llm.client import FailoverLLMClient, BaseLLMClient
 
     fc = FailoverLLMClient.__new__(FailoverLLMClient)
     BaseLLMClient.__init__(fc, {"build": {}})
@@ -630,7 +630,7 @@ class _StubClient:
         self.model = model
 
     def _call(self, prompt, system_prompt):
-        from my_project_orchestrator.llm.client import LLMResponse, LLMUsage
+        from misterdev.llm.client import LLMResponse, LLMUsage
 
         if self.behavior == "ok":
             return LLMResponse(content="ok", model=self.model, usage=LLMUsage())
@@ -638,7 +638,7 @@ class _StubClient:
 
 
 def test_failover_advances_on_retryable_error():
-    from my_project_orchestrator.llm.client import LLMCallError
+    from misterdev.llm.client import LLMCallError
 
     fc = _make_failover(
         _StubClient(LLMCallError("503 overloaded", retryable=True), model="primary"),
@@ -650,7 +650,7 @@ def test_failover_advances_on_retryable_error():
 
 
 def test_failover_stops_on_non_retryable():
-    from my_project_orchestrator.llm.client import LLMCallError
+    from misterdev.llm.client import LLMCallError
 
     fc = _make_failover(
         _StubClient(LLMCallError("400 bad request", retryable=False), model="primary"),
@@ -661,7 +661,7 @@ def test_failover_stops_on_non_retryable():
 
 
 def test_failover_factory_wraps_when_configured(monkeypatch):
-    from my_project_orchestrator.llm import client as cl
+    from misterdev.llm import client as cl
 
     monkeypatch.setattr(cl, "_create_single_client", lambda cfg: _StubClient("ok"))
     wrapped = cl.create_llm_client(
@@ -676,7 +676,7 @@ def test_failover_factory_wraps_when_configured(monkeypatch):
 
 
 def test_progress_needs_rerun_on_hash_change():
-    from my_project_orchestrator.core.execution.progress import ProgressTracker
+    from misterdev.core.execution.progress import ProgressTracker
 
     with tempfile.TemporaryDirectory() as td:
         pt = ProgressTracker(Path(td))
@@ -690,7 +690,7 @@ def test_progress_needs_rerun_on_hash_change():
 
 
 def test_compute_task_hash_changes_with_spec():
-    from my_project_orchestrator.core.execution.progress import compute_task_hash
+    from misterdev.core.execution.progress import compute_task_hash
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -711,7 +711,7 @@ def test_compute_task_hash_changes_with_spec():
 
 
 def test_rust_contracts_tree_sitter_multiline():
-    from my_project_orchestrator.core.context.contracts import _extract_public_symbols
+    from misterdev.core.context.contracts import _extract_public_symbols
 
     src = (
         "pub struct Engine<T: Clone> {\n"
@@ -747,7 +747,7 @@ def test_rust_contracts_tree_sitter_multiline():
 
 
 def test_topography_typescript_symbols():
-    from my_project_orchestrator.core.context.topography import SymbolGraph, _get_ts_parsers
+    from misterdev.core.context.topography import SymbolGraph, _get_ts_parsers
 
     if "typescript" not in _get_ts_parsers():
         pytest.skip("typescript grammar not installed")
@@ -770,7 +770,7 @@ def test_topography_typescript_symbols():
 
 
 def test_walk_limited_prunes_and_bounds_depth():
-    from my_project_orchestrator.analyzers.project_analyzer import _walk_limited
+    from misterdev.analyzers.project_analyzer import _walk_limited
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -790,8 +790,8 @@ def test_walk_limited_prunes_and_bounds_depth():
 
 
 def test_preflight_flags_dangling_dependency():
-    from my_project_orchestrator.core.verification.preflight import PreflightValidator
-    from my_project_orchestrator.core.models import Task
+    from misterdev.core.verification.preflight import PreflightValidator
+    from misterdev.core.models import Task
 
     good = Task(
         id="001-a",
@@ -814,8 +814,8 @@ def test_preflight_flags_dangling_dependency():
 
 
 def test_preflight_clean_plan_has_no_errors():
-    from my_project_orchestrator.core.verification.preflight import PreflightValidator
-    from my_project_orchestrator.core.models import Task
+    from misterdev.core.verification.preflight import PreflightValidator
+    from misterdev.core.models import Task
 
     a = Task(
         id="001-a",
@@ -859,7 +859,7 @@ def _mock_task(tid, deps=None):
 
 def _patched_run(tmp, tasks, dry_run=False):
     from unittest.mock import patch, MagicMock
-    import my_project_orchestrator.agent as agent_mod
+    import misterdev.agent as agent_mod
 
     project = MagicMock()
     project.name = "p"
@@ -880,14 +880,14 @@ def _patched_run(tmp, tasks, dry_run=False):
             agent_mod.ProjectOrchestrator, "_get_or_register", return_value=project
         ),
         patch(
-            "my_project_orchestrator.agent.topological_sort", side_effect=lambda x: x
+            "misterdev.agent.topological_sort", side_effect=lambda x: x
         ),
-        patch("my_project_orchestrator.agent.Scratchpad"),
-        patch("my_project_orchestrator.agent.ContractRegistry"),
-        patch("my_project_orchestrator.agent.ChangeTracker"),
-        patch("my_project_orchestrator.agent.StrategyOptimizer") as MockStrat,
-        patch("my_project_orchestrator.agent.ProgressTracker") as MockProg,
-        patch("my_project_orchestrator.agent.MarkdownPlanExecutor") as MockExec,
+        patch("misterdev.agent.Scratchpad"),
+        patch("misterdev.agent.ContractRegistry"),
+        patch("misterdev.agent.ChangeTracker"),
+        patch("misterdev.agent.StrategyOptimizer") as MockStrat,
+        patch("misterdev.agent.ProgressTracker") as MockProg,
+        patch("misterdev.agent.MarkdownPlanExecutor") as MockExec,
     ):
         MockProg.return_value.completed = []
         MockProg.return_value.is_done.return_value = False
@@ -917,9 +917,9 @@ def test_run_project_executes_in_dependency_order():
 
 def _fresh_report():
     from datetime import datetime, timezone
-    from my_project_orchestrator.core.reporting.report import BuildReport
-    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
-    from my_project_orchestrator.core.modes import BuildMode
+    from misterdev.core.reporting.report import BuildReport
+    from misterdev.core.planning.assessment import ProjectAssessment
+    from misterdev.core.modes import BuildMode
 
     return BuildReport(
         BuildMode.COMPLETE, "p", ProjectAssessment(), datetime.now(timezone.utc)
@@ -967,8 +967,8 @@ def _budget_project(tmp, max_cost_per_task=None, budget_remaining=100.0):
 
 def test_per_task_cost_cap_reverts_and_defers_not_failure():
     from unittest.mock import patch, MagicMock
-    import my_project_orchestrator.agent as agent_mod
-    from my_project_orchestrator.core.modes import BuildFlags
+    import misterdev.agent as agent_mod
+    from misterdev.core.modes import BuildFlags
 
     with tempfile.TemporaryDirectory() as td:
         project = _budget_project(td, max_cost_per_task=0.05)
@@ -999,12 +999,12 @@ def test_per_task_cost_cap_reverts_and_defers_not_failure():
 
         with (
             patch.object(agent_mod, "MarkdownPlanExecutor", _Exec),
-            patch("my_project_orchestrator.agent.Scratchpad"),
-            patch("my_project_orchestrator.agent.RealTimeAligner"),
-            patch("my_project_orchestrator.agent.ContractRegistry"),
-            patch("my_project_orchestrator.agent.ChangeTracker"),
-            patch("my_project_orchestrator.agent.ProgressTracker") as MockProg,
-            patch("my_project_orchestrator.agent.StrategyOptimizer") as MockStrat,
+            patch("misterdev.agent.Scratchpad"),
+            patch("misterdev.agent.RealTimeAligner"),
+            patch("misterdev.agent.ContractRegistry"),
+            patch("misterdev.agent.ChangeTracker"),
+            patch("misterdev.agent.ProgressTracker") as MockProg,
+            patch("misterdev.agent.StrategyOptimizer") as MockStrat,
         ):
             MockProg.return_value.completed = []
             MockProg.return_value.needs_rerun.return_value = True
@@ -1022,8 +1022,8 @@ def test_per_task_cost_cap_reverts_and_defers_not_failure():
 
 def test_budget_exhausted_before_wave_defers_gracefully():
     from unittest.mock import patch, MagicMock
-    import my_project_orchestrator.agent as agent_mod
-    from my_project_orchestrator.core.modes import BuildFlags
+    import misterdev.agent as agent_mod
+    from misterdev.core.modes import BuildFlags
 
     with tempfile.TemporaryDirectory() as td:
         project = _budget_project(td, budget_remaining=0.0)
@@ -1061,9 +1061,9 @@ def test_budget_exhausted_before_wave_defers_gracefully():
 
 def test_report_save_writes_markdown_and_json():
     from datetime import datetime, timezone
-    from my_project_orchestrator.core.reporting.report import BuildReport
-    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
-    from my_project_orchestrator.core.modes import BuildMode
+    from misterdev.core.reporting.report import BuildReport
+    from misterdev.core.planning.assessment import ProjectAssessment
+    from misterdev.core.modes import BuildMode
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1080,7 +1080,7 @@ def test_report_save_writes_markdown_and_json():
 
 # --- health-check command detection (tests=none blindness) ------------------
 def test_detect_test_command_pytest_uv():
-    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+    from misterdev.analyzers.project_analyzer import detect_test_command
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1090,7 +1090,7 @@ def test_detect_test_command_pytest_uv():
 
 
 def test_detect_test_command_pytest_no_uv():
-    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+    from misterdev.analyzers.project_analyzer import detect_test_command
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1101,7 +1101,7 @@ def test_detect_test_command_pytest_no_uv():
 
 
 def test_detect_test_command_npm_and_cargo_and_none():
-    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+    from misterdev.analyzers.project_analyzer import detect_test_command
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1120,7 +1120,7 @@ def test_detect_test_command_npm_and_cargo_and_none():
 def test_detect_test_command_node_test_runner():
     # The rideshare bug: package.json with no `test` script but a *.test.js suite
     # must resolve to `node --test`, not be left ungated.
-    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+    from misterdev.analyzers.project_analyzer import detect_test_command
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1133,7 +1133,7 @@ def test_detect_test_command_node_test_runner():
 def test_detect_test_command_rust_with_tests_dir_uses_cargo():
     # Regression: Rust uses tests/ for integration tests; a bare tests/ dir must
     # NOT shadow cargo with pytest.
-    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+    from misterdev.analyzers.project_analyzer import detect_test_command
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1145,7 +1145,7 @@ def test_detect_test_command_rust_with_tests_dir_uses_cargo():
 
 def test_detect_test_command_bare_tests_dir_is_not_pytest():
     # A tests/ dir with no Python signal and no python test files -> not pytest.
-    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+    from misterdev.analyzers.project_analyzer import detect_test_command
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1155,7 +1155,7 @@ def test_detect_test_command_bare_tests_dir_is_not_pytest():
 
 
 def test_detect_test_command_pytest_from_py_test_files():
-    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+    from misterdev.analyzers.project_analyzer import detect_test_command
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1167,7 +1167,7 @@ def test_detect_test_command_pytest_from_py_test_files():
 
 
 def test_detect_test_command_go():
-    from my_project_orchestrator.analyzers.project_analyzer import detect_test_command
+    from misterdev.analyzers.project_analyzer import detect_test_command
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1176,7 +1176,7 @@ def test_detect_test_command_go():
 
 
 def test_has_test_files():
-    from my_project_orchestrator.analyzers.project_analyzer import has_test_files
+    from misterdev.analyzers.project_analyzer import has_test_files
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1188,16 +1188,16 @@ def test_has_test_files():
 
 def test_warn_if_no_test_gate_records_when_tests_exist_without_command():
     import types
-    from my_project_orchestrator.agent import _warn_if_no_test_gate
-    from my_project_orchestrator.core.reporting.report import BuildReport
-    from my_project_orchestrator.core.planning.assessment import (
+    from misterdev.agent import _warn_if_no_test_gate
+    from misterdev.core.reporting.report import BuildReport
+    from misterdev.core.planning.assessment import (
         ProjectAssessment,
         HealthCheck,
         ProjectStructure,
         TechnicalDebt,
         RiskAssessment,
     )
-    from my_project_orchestrator.core.modes import BuildMode
+    from misterdev.core.modes import BuildMode
     from datetime import datetime, timezone
 
     def _assessment(test_command):
@@ -1241,8 +1241,8 @@ def test_analyze_project_fills_test_command_when_llm_returns_null():
     """The real regression: LLM left test_command null -> tests=none. The
     deterministic fallback must populate the assessment so the suite runs."""
     from unittest.mock import patch
-    from my_project_orchestrator.analyzers import project_analyzer
-    from my_project_orchestrator.core.planning.assessment import HealthCheck
+    from misterdev.analyzers import project_analyzer
+    from misterdev.core.planning.assessment import HealthCheck
 
     class _EmptyLLM:
         def generate_code(self, prompt, system_prompt=""):
@@ -1263,7 +1263,7 @@ def test_analyze_project_fills_test_command_when_llm_returns_null():
 
 # --- model preflight health check -------------------------------------------
 def test_health_check_ok_and_failure_preserve_budget():
-    from my_project_orchestrator.llm.client import BaseLLMClient, LLMResponse, LLMUsage
+    from misterdev.llm.client import BaseLLMClient, LLMResponse, LLMUsage
 
     class _OK(BaseLLMClient):
         model = "good/model"
@@ -1321,8 +1321,8 @@ def _commit_task(root, task_id, mutate):
 
 def test_integration_gate_reverts_regressing_task():
     from types import SimpleNamespace
-    from my_project_orchestrator.agent import ProjectOrchestrator
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.agent import ProjectOrchestrator
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 
@@ -1385,8 +1385,8 @@ def test_integration_gate_reverts_regressing_task():
 
 def test_integration_gate_noop_when_suite_stays_green():
     from types import SimpleNamespace
-    from my_project_orchestrator.agent import ProjectOrchestrator
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.agent import ProjectOrchestrator
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 
@@ -1411,8 +1411,8 @@ def test_integration_gate_noop_when_suite_stays_green():
 
 # --- interactive planner: advisor + goal selection --------------------------
 def test_recommend_work_parses_and_normalizes():
-    from my_project_orchestrator.core.planning.advisor import recommend_work
-    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
+    from misterdev.core.planning.advisor import recommend_work
+    from misterdev.core.planning.assessment import ProjectAssessment
 
     class _LLM:
         def generate_code(self, prompt, system_prompt=""):
@@ -1430,8 +1430,8 @@ def test_recommend_work_parses_and_normalizes():
 
 
 def test_recommend_work_bad_json_returns_empty():
-    from my_project_orchestrator.core.planning.advisor import recommend_work
-    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
+    from misterdev.core.planning.advisor import recommend_work
+    from misterdev.core.planning.assessment import ProjectAssessment
 
     class _LLM:
         def generate_code(self, prompt, system_prompt=""):
@@ -1442,9 +1442,9 @@ def test_recommend_work_bad_json_returns_empty():
 
 def test_choose_goal_number_text_and_quit():
     from unittest.mock import patch
-    from my_project_orchestrator.agent import ProjectOrchestrator
-    from my_project_orchestrator.core.planning.advisor import Recommendation
-    from my_project_orchestrator.core.modes import BuildMode
+    from misterdev.agent import ProjectOrchestrator
+    from misterdev.core.planning.advisor import Recommendation
+    from misterdev.core.modes import BuildMode
 
     orch = ProjectOrchestrator()
     recs = [
@@ -1452,25 +1452,25 @@ def test_choose_goal_number_text_and_quit():
         Recommendation("Add feature X", "users want it", "feature"),
     ]
 
-    with patch("my_project_orchestrator.agent.Prompt.ask", return_value="1"):
+    with patch("misterdev.agent.Prompt.ask", return_value="1"):
         goal, mode = orch._choose_goal(recs)
     assert goal == "Fix imports" and mode == BuildMode.DEBUG
 
     with patch(
-        "my_project_orchestrator.agent.Prompt.ask", return_value="make it faster"
+        "misterdev.agent.Prompt.ask", return_value="make it faster"
     ):
         goal, mode = orch._choose_goal(recs)
     assert goal == "make it faster"
 
-    with patch("my_project_orchestrator.agent.Prompt.ask", return_value="q"):
+    with patch("misterdev.agent.Prompt.ask", return_value="q"):
         goal, mode = orch._choose_goal(recs)
     assert goal is None
 
 
 def test_interactive_plan_cancels_when_no_goal():
     from unittest.mock import patch, MagicMock
-    from my_project_orchestrator.agent import ProjectOrchestrator
-    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
+    from misterdev.agent import ProjectOrchestrator
+    from misterdev.core.planning.assessment import ProjectAssessment
 
     orch = ProjectOrchestrator()
     project = MagicMock()
@@ -1483,10 +1483,10 @@ def test_interactive_plan_cancels_when_no_goal():
     with (
         patch.object(orch, "_get_or_register", return_value=project),
         patch(
-            "my_project_orchestrator.agent.analyze_project",
+            "misterdev.agent.analyze_project",
             return_value=ProjectAssessment(),
         ),
-        patch("my_project_orchestrator.agent.recommend_work", return_value=[]),
+        patch("misterdev.agent.recommend_work", return_value=[]),
         patch.object(orch, "_choose_goal", return_value=(None, None)),
         patch.object(orch, "_run_pipeline") as mock_pipeline,
     ):
@@ -1497,9 +1497,9 @@ def test_interactive_plan_cancels_when_no_goal():
 
 def test_interactive_plan_runs_pipeline_with_confirm():
     from unittest.mock import patch, MagicMock
-    from my_project_orchestrator.agent import ProjectOrchestrator
-    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
-    from my_project_orchestrator.core.modes import BuildMode
+    from misterdev.agent import ProjectOrchestrator
+    from misterdev.core.planning.assessment import ProjectAssessment
+    from misterdev.core.modes import BuildMode
 
     orch = ProjectOrchestrator()
     project = MagicMock()
@@ -1512,10 +1512,10 @@ def test_interactive_plan_runs_pipeline_with_confirm():
     with (
         patch.object(orch, "_get_or_register", return_value=project),
         patch(
-            "my_project_orchestrator.agent.analyze_project",
+            "misterdev.agent.analyze_project",
             return_value=ProjectAssessment(),
         ),
-        patch("my_project_orchestrator.agent.recommend_work", return_value=[]),
+        patch("misterdev.agent.recommend_work", return_value=[]),
         patch.object(
             orch, "_choose_goal", return_value=("Fix imports", BuildMode.DEBUG)
         ),
@@ -1528,7 +1528,7 @@ def test_interactive_plan_runs_pipeline_with_confirm():
 
 # --- health-check test-count parsing (tests=none display bug) ----------------
 def test_parse_test_counts_pytest_and_cargo():
-    from my_project_orchestrator.core.verification.validator import _parse_test_counts
+    from misterdev.core.verification.validator import _parse_test_counts
 
     assert _parse_test_counts("332 passed in 34.18s") == (332, 0)
     assert _parse_test_counts("3 failed, 317 passed in 53s") == (320, 3)
@@ -1538,7 +1538,7 @@ def test_parse_test_counts_pytest_and_cargo():
 
 
 def test_run_health_check_populates_test_count():
-    from my_project_orchestrator.core.verification.validator import run_health_check
+    from misterdev.core.verification.validator import run_health_check
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1551,8 +1551,8 @@ def test_run_health_check_populates_test_count():
 
 
 def test_health_ground_truth_string():
-    from my_project_orchestrator.analyzers.project_analyzer import _health_ground_truth
-    from my_project_orchestrator.core.planning.assessment import HealthCheck
+    from misterdev.analyzers.project_analyzer import _health_ground_truth
+    from misterdev.core.planning.assessment import HealthCheck
 
     h = HealthCheck(builds=True, tests_pass=True, test_count=332, test_failures=0)
     g = _health_ground_truth(h)
@@ -1562,7 +1562,7 @@ def test_health_ground_truth_string():
 # --- stale cross-build progress no longer causes spurious skips --------------
 def test_task_hash_reflects_content_for_idless_llm_tasks():
     from types import SimpleNamespace
-    from my_project_orchestrator.core.execution.progress import compute_task_hash
+    from misterdev.core.execution.progress import compute_task_hash
 
     a = SimpleNamespace(
         id="T-001",
@@ -1586,7 +1586,7 @@ def test_task_hash_reflects_content_for_idless_llm_tasks():
 
 def test_needs_rerun_skips_stale_idmatch_without_hash():
     from types import SimpleNamespace
-    from my_project_orchestrator.core.execution.progress import ProgressTracker, compute_task_hash
+    from misterdev.core.execution.progress import ProgressTracker, compute_task_hash
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -1611,7 +1611,7 @@ def test_needs_rerun_skips_stale_idmatch_without_hash():
 
 # --- ephemeral probe name with path chars must not crash (live build #3) -----
 def test_ephemeral_script_name_with_slash_does_not_crash():
-    from my_project_orchestrator.core.planning.sovereign import EphemeralCodeManager
+    from misterdev.core.planning.sovereign import EphemeralCodeManager
 
     with tempfile.TemporaryDirectory() as td:
         with EphemeralCodeManager(Path(td)) as mgr:
@@ -1625,7 +1625,7 @@ def test_ephemeral_script_name_with_slash_does_not_crash():
 
 # --- LLM-identifier sanitization (root of the whole crash class) -------------
 def test_safe_ref_slug_neutralizes_path_and_ref_chars():
-    from my_project_orchestrator.utils.file_utils import safe_ref_slug
+    from misterdev.utils.file_utils import safe_ref_slug
 
     assert (
         safe_ref_slug("CLI Runner / Invocation Probe") == "CLI_Runner_Invocation_Probe"
@@ -1638,9 +1638,9 @@ def test_safe_ref_slug_neutralizes_path_and_ref_chars():
 
 
 def test_decompose_sanitizes_task_ids_and_deps():
-    from my_project_orchestrator.core.planning.decomposer import decompose_spec
-    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
-    from my_project_orchestrator.core.modes import BuildMode
+    from misterdev.core.planning.decomposer import decompose_spec
+    from misterdev.core.planning.assessment import ProjectAssessment
+    from misterdev.core.modes import BuildMode
 
     class _LLM:
         def generate_code(self, prompt, system_prompt=""):
@@ -1659,10 +1659,10 @@ def test_decompose_sanitizes_task_ids_and_deps():
 # --- offline executor end-to-end (first real coverage of execute()) ----------
 def _fake_project(repo: Path, monkeypatch, edit_response: str):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    from my_project_orchestrator.config import DEFAULT_CONFIG
-    from my_project_orchestrator.core.execution.project import Project
+    from misterdev.config import DEFAULT_CONFIG
+    from misterdev.core.execution.project import Project
     from tests.test_llm_client import FakeLLMClient
-    from my_project_orchestrator.llm.client import LLMResponse, LLMUsage
+    from misterdev.llm.client import LLMResponse, LLMUsage
 
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy
     cfg["name"] = "fixture"
@@ -1681,7 +1681,7 @@ def test_executor_execute_commits_real_and_out_of_scope_files(monkeypatch):
     and an out-of-scope-but-in-root file are committed, and the commit is
     findable by the integration gate. No live API, no git detach, no orphans."""
     from types import SimpleNamespace
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 
@@ -1770,7 +1770,7 @@ def test_executor_execute_commits_real_and_out_of_scope_files(monkeypatch):
 
 # --- working-tree safety: dirty guard + formatter-spillover cleanup ----------
 def test_working_tree_dirty_detects_changes_and_ignores_gitignored():
-    from my_project_orchestrator.agent import ProjectOrchestrator
+    from misterdev.agent import ProjectOrchestrator
     from types import SimpleNamespace
 
     orch = ProjectOrchestrator()
@@ -1798,7 +1798,7 @@ def test_working_tree_dirty_detects_changes_and_ignores_gitignored():
 
 def test_build_aborts_on_dirty_tree():
     from unittest.mock import MagicMock, patch
-    from my_project_orchestrator.agent import ProjectOrchestrator
+    from misterdev.agent import ProjectOrchestrator
 
     orch = ProjectOrchestrator()
     project = MagicMock()
@@ -1816,7 +1816,7 @@ def test_build_aborts_on_dirty_tree():
 def test_commit_task_discards_formatter_spillover():
     """A project-wide formatter dirties files outside the task; those must not
     be carried across the branch switch and left as a permanently dirty tree."""
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 
@@ -1877,13 +1877,13 @@ class _ScriptedLLM:
 
     def __init__(self):
         self.cumulative_usage = __import__(
-            "my_project_orchestrator.llm.client", fromlist=["LLMUsage"]
+            "misterdev.llm.client", fromlist=["LLMUsage"]
         ).LLMUsage()
         self._budget = 100.0
         self.calls = []
 
     def generate(self, prompt, system_prompt=""):
-        from my_project_orchestrator.llm.client import LLMResponse
+        from misterdev.llm.client import LLMResponse
 
         return LLMResponse(
             content=self.generate_code(prompt, system_prompt), finish_reason="stop"
@@ -1930,25 +1930,25 @@ class _ScriptedLLM:
         return nullcontext()
 
     def generate_stream(self, prompt, system_prompt="", abort_check=None):
-        from my_project_orchestrator.llm.client import LLMResponse
+        from misterdev.llm.client import LLMResponse
 
         return LLMResponse(content=self.generate_code(prompt, system_prompt))
 
 
 def test_full_pipeline_offline_smart_build(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    from my_project_orchestrator.config import DEFAULT_CONFIG
-    from my_project_orchestrator.core.execution.project import Project
-    from my_project_orchestrator.core.planning.assessment import (
+    from misterdev.config import DEFAULT_CONFIG
+    from misterdev.core.execution.project import Project
+    from misterdev.core.planning.assessment import (
         ProjectAssessment,
         HealthCheck,
     )
-    from my_project_orchestrator.core.modes import BuildMode, BuildFlags
-    from my_project_orchestrator.core.reporting.report import BuildReport
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.core.modes import BuildMode, BuildFlags
+    from misterdev.core.reporting.report import BuildReport
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
-    from my_project_orchestrator.agent import ProjectOrchestrator
+    from misterdev.agent import ProjectOrchestrator
 
     with tempfile.TemporaryDirectory() as td:
         repo = Path(td)
@@ -2030,11 +2030,11 @@ def test_build_pipeline_offline_converges_and_writes_report(monkeypatch):
     # network). Asserts the build converges with gates green and persists a
     # report file under .orchestrator/reports.
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    from my_project_orchestrator.config import DEFAULT_CONFIG
-    from my_project_orchestrator.core.execution.project import Project
-    from my_project_orchestrator.core.modes import BuildMode, BuildFlags
-    from my_project_orchestrator.core.reporting.report import BuildReport
-    from my_project_orchestrator.agent import ProjectOrchestrator
+    from misterdev.config import DEFAULT_CONFIG
+    from misterdev.core.execution.project import Project
+    from misterdev.core.modes import BuildMode, BuildFlags
+    from misterdev.core.reporting.report import BuildReport
+    from misterdev.agent import ProjectOrchestrator
     from datetime import datetime, timezone
 
     with tempfile.TemporaryDirectory() as td:
@@ -2085,7 +2085,7 @@ def test_build_pipeline_offline_converges_and_writes_report(monkeypatch):
 
 # --- metacognition: LLM returning objects must not crash the audit -----------
 def test_save_lessons_handles_dict_rules_without_crashing():
-    from my_project_orchestrator.core.planning.metacognition import SessionAuditor
+    from misterdev.core.planning.metacognition import SessionAuditor
 
     class _LLM:
         def generate_code(self, prompt, system_prompt=""):
@@ -2103,7 +2103,7 @@ def test_save_lessons_handles_dict_rules_without_crashing():
 
 # --- consolidated JSON-array extraction (was duplicated 4x) ------------------
 def test_extract_json_array_handles_prose_fences_and_garbage():
-    from my_project_orchestrator.llm.responses import extract_json_array
+    from misterdev.llm.responses import extract_json_array
 
     assert extract_json_array("Here: [1, 2, 3] done") == [1, 2, 3]
     assert extract_json_array('```json\n["a","b"]\n```') == ["a", "b"]
@@ -2118,8 +2118,8 @@ def test_lazy_topography_not_built_at_registration(monkeypatch):
     """Project construction must NOT eagerly build the symbol graph -- every
     CLI command registers all known projects, so eager scanning is wasted."""
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    from my_project_orchestrator.config import DEFAULT_CONFIG
-    from my_project_orchestrator.core.execution.project import Project
+    from misterdev.config import DEFAULT_CONFIG
+    from misterdev.core.execution.project import Project
 
     with tempfile.TemporaryDirectory() as td:
         repo = Path(td)
@@ -2143,7 +2143,7 @@ class _CountingLLM:
         self.budget_remaining = budget_remaining
         self._budget = budget_remaining
         self.cumulative_usage = __import__(
-            "my_project_orchestrator.llm.client", fromlist=["LLMUsage"]
+            "misterdev.llm.client", fromlist=["LLMUsage"]
         ).LLMUsage()
         self.cost_by_task = {}
 
@@ -2162,7 +2162,7 @@ class _ScriptedGate:
         pass
 
     def run_gates(self, commands):
-        from my_project_orchestrator.core.planning.assessment import HealthCheck
+        from misterdev.core.planning.assessment import HealthCheck
 
         idx = min(_ScriptedGate._calls, len(_ScriptedGate.sequence) - 1)
         success, issues = _ScriptedGate.sequence[idx]
@@ -2181,12 +2181,12 @@ def _run_convergence_pipeline(gate_sequence, max_iterations, budget=100.0):
     scripted gate and a counting _execute_tasks. Returns (report, exec_calls,
     decompose_calls)."""
     from unittest.mock import patch
-    import my_project_orchestrator.agent as agent_mod
-    from my_project_orchestrator.config import DEFAULT_CONFIG
-    from my_project_orchestrator.core.execution.project import Project
-    from my_project_orchestrator.core.planning.assessment import ProjectAssessment, HealthCheck
-    from my_project_orchestrator.core.modes import BuildMode, BuildFlags
-    from my_project_orchestrator.core.reporting.report import BuildReport
+    import misterdev.agent as agent_mod
+    from misterdev.config import DEFAULT_CONFIG
+    from misterdev.core.execution.project import Project
+    from misterdev.core.planning.assessment import ProjectAssessment, HealthCheck
+    from misterdev.core.modes import BuildMode, BuildFlags
+    from misterdev.core.reporting.report import BuildReport
     from datetime import datetime, timezone
 
     _ScriptedGate.sequence = list(gate_sequence)
@@ -2245,12 +2245,12 @@ def _run_convergence_pipeline_with_cfg(gate_sequence, orchestrator_cfg):
     """Like _run_convergence_pipeline but sets the orchestrator config block
     verbatim, so the absent-key default (single pass) can be exercised."""
     from unittest.mock import patch
-    import my_project_orchestrator.agent as agent_mod
-    from my_project_orchestrator.config import DEFAULT_CONFIG
-    from my_project_orchestrator.core.execution.project import Project
-    from my_project_orchestrator.core.planning.assessment import ProjectAssessment, HealthCheck
-    from my_project_orchestrator.core.modes import BuildMode, BuildFlags
-    from my_project_orchestrator.core.reporting.report import BuildReport
+    import misterdev.agent as agent_mod
+    from misterdev.config import DEFAULT_CONFIG
+    from misterdev.core.execution.project import Project
+    from misterdev.core.planning.assessment import ProjectAssessment, HealthCheck
+    from misterdev.core.modes import BuildMode, BuildFlags
+    from misterdev.core.reporting.report import BuildReport
     from datetime import datetime, timezone
 
     _ScriptedGate.sequence = list(gate_sequence)
@@ -2377,7 +2377,7 @@ def test_convergence_stops_on_budget_exhaustion():
 
 
 def test_combine_commands():
-    from my_project_orchestrator.agent import _combine_commands
+    from misterdev.agent import _combine_commands
 
     assert (
         _combine_commands("pytest", "pytest tests/golden")
@@ -2391,7 +2391,7 @@ def test_combine_commands():
 
 def test_check_golden_config_warns_on_half_configuration(caplog):
     import logging
-    from my_project_orchestrator.agent import _check_golden_config
+    from misterdev.agent import _check_golden_config
 
     with caplog.at_level(logging.WARNING):
         _check_golden_config({"orchestrator": {"golden_command": "pytest g"}})
@@ -2413,7 +2413,7 @@ def test_check_golden_config_warns_on_half_configuration(caplog):
 
 
 def test_apply_budget_ceiling_takes_tighter_cap():
-    from my_project_orchestrator.agent import _apply_budget_ceiling
+    from misterdev.agent import _apply_budget_ceiling
 
     class _C:
         pass
@@ -2434,10 +2434,10 @@ def test_apply_budget_ceiling_takes_tighter_cap():
 
 def test_warn_if_baseline_broken_records_only_on_failure():
     from datetime import datetime, timezone
-    from my_project_orchestrator.agent import _warn_if_baseline_broken
-    from my_project_orchestrator.core.planning.assessment import ProjectAssessment, HealthCheck
-    from my_project_orchestrator.core.modes import BuildMode
-    from my_project_orchestrator.core.reporting.report import BuildReport
+    from misterdev.agent import _warn_if_baseline_broken
+    from misterdev.core.planning.assessment import ProjectAssessment, HealthCheck
+    from misterdev.core.modes import BuildMode
+    from misterdev.core.reporting.report import BuildReport
 
     def _report(builds):
         a = ProjectAssessment()
@@ -2454,23 +2454,23 @@ def test_warn_if_baseline_broken_records_only_on_failure():
 
 
 def test_enable_ab_mcts_default_off():
-    from my_project_orchestrator.config import DEFAULT_CONFIG
+    from misterdev.config import DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG["orchestrator"]["enable_ab_mcts"] is False
 
 
 def test_warn_if_no_test_gate_silent_for_multi_target():
     import types
-    from my_project_orchestrator.agent import _warn_if_no_test_gate
-    from my_project_orchestrator.core.reporting.report import BuildReport
-    from my_project_orchestrator.core.planning.assessment import (
+    from misterdev.agent import _warn_if_no_test_gate
+    from misterdev.core.reporting.report import BuildReport
+    from misterdev.core.planning.assessment import (
         ProjectAssessment,
         HealthCheck,
         ProjectStructure,
         TechnicalDebt,
         RiskAssessment,
     )
-    from my_project_orchestrator.core.modes import BuildMode
+    from misterdev.core.modes import BuildMode
     from datetime import datetime, timezone
 
     def _assess():

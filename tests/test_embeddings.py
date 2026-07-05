@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from my_project_orchestrator.core.economics.embeddings import (
+from misterdev.core.economics.embeddings import (
     EmbeddingCache,
     SemanticRanker,
     cosine_similarity,
@@ -47,7 +47,7 @@ def test_local_embedding_client_reranks_end_to_end():
     # similarity to the query.
     import types
 
-    from my_project_orchestrator.llm.client import LocalEmbeddingClient
+    from misterdev.llm.client import LocalEmbeddingClient
 
     vectors = {
         "parse the auth token": [1.0, 0.0],
@@ -153,7 +153,7 @@ def test_pick_price_beats_preference():
 
 
 def test_tokenize_splits_identifiers():
-    from my_project_orchestrator.core.economics.embeddings import _tokenize
+    from misterdev.core.economics.embeddings import _tokenize
 
     toks = _tokenize("def getUserName(user_id): db_lookup")
     for expected in ("get", "user", "name", "id", "db", "lookup", "def"):
@@ -162,7 +162,7 @@ def test_tokenize_splits_identifiers():
 
 
 def test_lexical_overlap_recall():
-    from my_project_orchestrator.core.economics.embeddings import _lexical_overlap, _tokenize
+    from misterdev.core.economics.embeddings import _lexical_overlap, _tokenize
 
     q = _tokenize("parse config file")
     assert _lexical_overlap(q, _tokenize("def parse_config(): ...")) > 0

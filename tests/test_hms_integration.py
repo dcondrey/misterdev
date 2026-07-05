@@ -9,9 +9,9 @@ Skips if HMS project is not available at /Volumes/A/hms/.
 import pytest
 from pathlib import Path
 
-from my_project_orchestrator.config import ConfigManager
-from my_project_orchestrator.core.task import TaskManager
-from my_project_orchestrator.core.planning.decomposer import topological_sort
+from misterdev.config import ConfigManager
+from misterdev.core.task import TaskManager
+from misterdev.core.planning.decomposer import topological_sort
 
 HMS_PATH = Path("/Volumes/A/hms")
 HMS_AVAILABLE = HMS_PATH.exists() and (HMS_PATH / "project.yaml").exists()

@@ -3,12 +3,12 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "my-project-orchestrator"
+name = "misterdev"
 version = "0.1.0"
 description = "A modular and extensible framework to automate development workflows."
 readme = "README.md"
 authors = [
-    { name = "Developer", email = "developer@example.com" }
+    { name = "David Condrey", email = "david@writerslogic.com" }
 ]
 requires-python = ">=3.10"
 dependencies = [
@@ -62,7 +62,7 @@ mcp = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["my_project_orchestrator*"]
+include = ["misterdev*"]
 
 [dependency-groups]
 dev = [
@@ -74,4 +74,4 @@ dev = [
 ]
 
 [project.scripts]
-project-orchestrator = "my_project_orchestrator.cli:main"
+misterdev = "misterdev.cli:main"

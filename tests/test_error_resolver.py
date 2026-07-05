@@ -1,11 +1,11 @@
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.execution.error_resolver import (
+from misterdev.core.execution.error_resolver import (
     ErrorResolver,
     ErrorLocation,
 )
-from my_project_orchestrator.core.context.topography import SymbolGraph, SymbolNode
+from misterdev.core.context.topography import SymbolGraph, SymbolNode
 
 
 def _graph(*nodes):

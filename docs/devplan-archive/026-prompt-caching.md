@@ -2,10 +2,10 @@
 category: feat
 complexity: medium
 context_files:
-- my_project_orchestrator/task_executors/markdown_plan_executor.py
+- misterdev/task_executors/markdown_plan_executor.py
 depends_on: []
 files_to_modify:
-- my_project_orchestrator/llm/client.py
+- misterdev/llm/client.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Add Anthropic prompt caching for repeated context blocks

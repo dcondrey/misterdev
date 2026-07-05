@@ -11,8 +11,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
-from my_project_orchestrator.core.config import DEFAULT_CONFIG
-from my_project_orchestrator.core.economics.context_budget import ContextBudget
+from misterdev.core.config import DEFAULT_CONFIG
+from misterdev.core.economics.context_budget import ContextBudget
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +115,7 @@ class TestExecuteParallelMaxWorkers:
     """_execute_parallel should use orchestrator.max_workers from project.config."""
 
     def _make_orchestrator(self):
-        from my_project_orchestrator.agent import ProjectOrchestrator
+        from misterdev.agent import ProjectOrchestrator
 
         return ProjectOrchestrator()
 
@@ -139,7 +139,7 @@ class TestExecuteParallelMaxWorkers:
         tasks = self._make_tasks(3)  # 3 tasks, max_workers=8 → min(3,8)=3
 
         with patch(
-            "my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor"
+            "misterdev.agent.concurrent.futures.ThreadPoolExecutor"
         ) as MockPool:
             mock_ctx = MagicMock()
             MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
@@ -147,7 +147,7 @@ class TestExecuteParallelMaxWorkers:
             mock_ctx.submit.return_value = MagicMock()
 
             with patch(
-                "my_project_orchestrator.agent.concurrent.futures.as_completed",
+                "misterdev.agent.concurrent.futures.as_completed",
                 return_value=[],
             ):
                 orchestrator._execute_parallel(tasks, executor, project)
@@ -162,7 +162,7 @@ class TestExecuteParallelMaxWorkers:
         tasks = self._make_tasks(2)
 
         with patch(
-            "my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor"
+            "misterdev.agent.concurrent.futures.ThreadPoolExecutor"
         ) as MockPool:
             mock_ctx = MagicMock()
             MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
@@ -170,7 +170,7 @@ class TestExecuteParallelMaxWorkers:
             mock_ctx.submit.return_value = MagicMock()
 
             with patch(
-                "my_project_orchestrator.agent.concurrent.futures.as_completed",
+                "misterdev.agent.concurrent.futures.as_completed",
                 return_value=[],
             ):
                 orchestrator._execute_parallel(tasks, executor, project)
@@ -186,7 +186,7 @@ class TestExecuteParallelMaxWorkers:
         tasks = self._make_tasks(6)  # 6 tasks, default max_workers=4 → min(6,4)=4
 
         with patch(
-            "my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor"
+            "misterdev.agent.concurrent.futures.ThreadPoolExecutor"
         ) as MockPool:
             mock_ctx = MagicMock()
             MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
@@ -194,7 +194,7 @@ class TestExecuteParallelMaxWorkers:
             mock_ctx.submit.return_value = MagicMock()
 
             with patch(
-                "my_project_orchestrator.agent.concurrent.futures.as_completed",
+                "misterdev.agent.concurrent.futures.as_completed",
                 return_value=[],
             ):
                 orchestrator._execute_parallel(tasks, executor, project)
@@ -209,7 +209,7 @@ class TestExecuteParallelMaxWorkers:
         tasks = self._make_tasks(10)  # 10 tasks, default max_workers=4 → min(10,4)=4
 
         with patch(
-            "my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor"
+            "misterdev.agent.concurrent.futures.ThreadPoolExecutor"
         ) as MockPool:
             mock_ctx = MagicMock()
             MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
@@ -217,7 +217,7 @@ class TestExecuteParallelMaxWorkers:
             mock_ctx.submit.return_value = MagicMock()
 
             with patch(
-                "my_project_orchestrator.agent.concurrent.futures.as_completed",
+                "misterdev.agent.concurrent.futures.as_completed",
                 return_value=[],
             ):
                 orchestrator._execute_parallel(tasks, executor, project)
@@ -234,7 +234,7 @@ class TestExecuteParallelDisjoint:
     """Shared mode runs only disjoint-file tasks in one concurrent batch."""
 
     def _make_orchestrator(self):
-        from my_project_orchestrator.agent import ProjectOrchestrator
+        from misterdev.agent import ProjectOrchestrator
 
         return ProjectOrchestrator()
 
@@ -276,7 +276,7 @@ class TestExecuteParallelDisjoint:
             return fut
 
         with patch(
-            "my_project_orchestrator.agent.concurrent.futures.ThreadPoolExecutor"
+            "misterdev.agent.concurrent.futures.ThreadPoolExecutor"
         ) as MockPool:
             mock_ctx = MagicMock()
             MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
@@ -284,7 +284,7 @@ class TestExecuteParallelDisjoint:
             mock_ctx.submit.side_effect = fake_submit
 
             with patch(
-                "my_project_orchestrator.agent.concurrent.futures.as_completed",
+                "misterdev.agent.concurrent.futures.as_completed",
                 side_effect=lambda d: list(d),
             ):
                 results = orchestrator._execute_parallel(tasks, executor, project)
@@ -313,8 +313,8 @@ class TestExecuteTasksMaxConsecutiveFailures:
         self, orchestrator_cfg: dict, num_tasks: int = 5
     ):
         """Helper: run _execute_tasks with all-failing tasks and return the report mock."""
-        from my_project_orchestrator.agent import ProjectOrchestrator
-        from my_project_orchestrator.core.modes import BuildFlags
+        from misterdev.agent import ProjectOrchestrator
+        from misterdev.core.modes import BuildFlags
 
         orchestrator = ProjectOrchestrator()
 
@@ -348,13 +348,13 @@ class TestExecuteTasksMaxConsecutiveFailures:
             tasks.append(t)
 
         with (
-            patch("my_project_orchestrator.agent.Scratchpad"),
-            patch("my_project_orchestrator.agent.RealTimeAligner"),
-            patch("my_project_orchestrator.agent.ContractRegistry"),
-            patch("my_project_orchestrator.agent.ProgressTracker") as MockProgress,
-            patch("my_project_orchestrator.agent.ChangeTracker"),
-            patch("my_project_orchestrator.agent.StrategyOptimizer") as MockStrategy,
-            patch("my_project_orchestrator.agent.MarkdownPlanExecutor") as MockExecutor,
+            patch("misterdev.agent.Scratchpad"),
+            patch("misterdev.agent.RealTimeAligner"),
+            patch("misterdev.agent.ContractRegistry"),
+            patch("misterdev.agent.ProgressTracker") as MockProgress,
+            patch("misterdev.agent.ChangeTracker"),
+            patch("misterdev.agent.StrategyOptimizer") as MockStrategy,
+            patch("misterdev.agent.MarkdownPlanExecutor") as MockExecutor,
         ):
             mock_progress = MockProgress.return_value
             mock_progress.completed = []
@@ -382,8 +382,8 @@ class TestExecuteTasksMaxConsecutiveFailures:
 
     def test_default_limit_when_no_config(self):
         """Without orchestrator config, falls back to default of 3."""
-        from my_project_orchestrator.agent import ProjectOrchestrator
-        from my_project_orchestrator.core.modes import BuildFlags
+        from misterdev.agent import ProjectOrchestrator
+        from misterdev.core.modes import BuildFlags
 
         orchestrator = ProjectOrchestrator()
 
@@ -416,13 +416,13 @@ class TestExecuteTasksMaxConsecutiveFailures:
             tasks.append(t)
 
         with (
-            patch("my_project_orchestrator.agent.Scratchpad"),
-            patch("my_project_orchestrator.agent.RealTimeAligner"),
-            patch("my_project_orchestrator.agent.ContractRegistry"),
-            patch("my_project_orchestrator.agent.ProgressTracker") as MockProgress,
-            patch("my_project_orchestrator.agent.ChangeTracker"),
-            patch("my_project_orchestrator.agent.StrategyOptimizer") as MockStrategy,
-            patch("my_project_orchestrator.agent.MarkdownPlanExecutor") as MockExecutor,
+            patch("misterdev.agent.Scratchpad"),
+            patch("misterdev.agent.RealTimeAligner"),
+            patch("misterdev.agent.ContractRegistry"),
+            patch("misterdev.agent.ProgressTracker") as MockProgress,
+            patch("misterdev.agent.ChangeTracker"),
+            patch("misterdev.agent.StrategyOptimizer") as MockStrategy,
+            patch("misterdev.agent.MarkdownPlanExecutor") as MockExecutor,
         ):
             mock_progress = MockProgress.return_value
             mock_progress.completed = []
@@ -506,7 +506,7 @@ def _accessed_config_keys():
     import ast
     from pathlib import Path
 
-    pkg = Path(__file__).resolve().parent.parent / "my_project_orchestrator"
+    pkg = Path(__file__).resolve().parent.parent / "misterdev"
     keys: set[str] = set()
     for py in pkg.rglob("*.py"):
         try:
@@ -569,7 +569,7 @@ def test_every_tuning_config_key_is_wired():
 
 def test_default_config_generated_from_schema():
     from dataclasses import asdict
-    from my_project_orchestrator.config import (
+    from misterdev.config import (
         DEFAULT_CONFIG,
         BuildSettings,
         OrchestratorSettings,
@@ -583,7 +583,7 @@ def test_default_config_generated_from_schema():
 
 
 def test_warn_unknown_keys_flags_typos_only():
-    from my_project_orchestrator.config import warn_unknown_keys
+    from misterdev.config import warn_unknown_keys
 
     unknown = warn_unknown_keys(
         {
@@ -596,7 +596,7 @@ def test_warn_unknown_keys_flags_typos_only():
 
 def test_config_manager_warns_on_unknown_yaml_key(tmp_path, caplog):
     import logging
-    from my_project_orchestrator.config import ConfigManager
+    from misterdev.config import ConfigManager
 
     (tmp_path / "project.yaml").write_text("build:\n  buildtimeout: 300\n")
     with caplog.at_level(logging.WARNING):
@@ -610,7 +610,7 @@ def test_parallel_mode_auto_isolates_via_worktrees_on_git_repo(tmp_path):
     # Regression guard: parallel_mode "auto" (the default) must use worktrees on
     # a git repo. This broke silently once parallel_mode gained a DEFAULT_CONFIG
     # entry and the old "was it explicitly set" membership check became useless.
-    from my_project_orchestrator.agent import ProjectOrchestrator
+    from misterdev.agent import ProjectOrchestrator
 
     (tmp_path / ".git").mkdir()
     orch = ProjectOrchestrator()
@@ -627,7 +627,7 @@ def test_parallel_mode_auto_isolates_via_worktrees_on_git_repo(tmp_path):
 
 
 def test_parallel_mode_shared_does_not_use_worktrees_on_git_repo(tmp_path):
-    from my_project_orchestrator.agent import ProjectOrchestrator
+    from misterdev.agent import ProjectOrchestrator
 
     (tmp_path / ".git").mkdir()
     orch = ProjectOrchestrator()

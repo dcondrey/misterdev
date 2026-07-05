@@ -10,9 +10,9 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from my_project_orchestrator.agent import ProjectOrchestrator
-from my_project_orchestrator.core.planning.assessment import ProjectAssessment
-from my_project_orchestrator.core.verification.claim_verifier import (
+from misterdev.agent import ProjectOrchestrator
+from misterdev.core.planning.assessment import ProjectAssessment
+from misterdev.core.verification.claim_verifier import (
     CONFIRMED,
     KEPT,
     REFUTED,
@@ -20,8 +20,8 @@ from my_project_orchestrator.core.verification.claim_verifier import (
     ClaimVerdict,
     verify_claims,
 )
-from my_project_orchestrator.core.modes import BuildMode
-from my_project_orchestrator.core.reporting.report import BuildReport
+from misterdev.core.modes import BuildMode
+from misterdev.core.reporting.report import BuildReport
 
 
 def _call_returning(mapping):
@@ -179,7 +179,7 @@ def test_pipeline_prunes_refuted_stub(monkeypatch):
         ]
 
     monkeypatch.setattr(
-        "my_project_orchestrator.core.verification.claim_verifier.verify_claims", fake_verify
+        "misterdev.core.verification.claim_verifier.verify_claims", fake_verify
     )
     project = _project({})
     # The gate only verifies claims whose file has readable source.
@@ -202,7 +202,7 @@ def test_pipeline_keeps_claim_with_no_readable_source(monkeypatch):
         raise AssertionError("verifier called on a claim with no source")
 
     monkeypatch.setattr(
-        "my_project_orchestrator.core.verification.claim_verifier.verify_claims", fake_verify
+        "misterdev.core.verification.claim_verifier.verify_claims", fake_verify
     )
     assessment = ProjectAssessment()
     assessment.features.stubs = ["does_not_exist.rs"]
@@ -223,7 +223,7 @@ def test_pipeline_duplicate_labels_drop_only_refuted(monkeypatch):
         ]
 
     monkeypatch.setattr(
-        "my_project_orchestrator.core.verification.claim_verifier.verify_claims", fake_verify
+        "misterdev.core.verification.claim_verifier.verify_claims", fake_verify
     )
     project = _project({})
     (project.path / "a.rs").write_text("//! intentional\nfn a() {}\n")
@@ -242,7 +242,7 @@ def test_pipeline_noop_when_disabled(monkeypatch):
         raise AssertionError("verifier ran while disabled")
 
     monkeypatch.setattr(
-        "my_project_orchestrator.core.verification.claim_verifier.verify_claims", boom
+        "misterdev.core.verification.claim_verifier.verify_claims", boom
     )
     assessment = ProjectAssessment()
     assessment.features.stubs = ["intentional.rs"]

@@ -1,17 +1,17 @@
 from datetime import datetime, timezone
 
-from my_project_orchestrator.core.reporting.report import BuildReport
-from my_project_orchestrator.core.planning.assessment import (
+from misterdev.core.reporting.report import BuildReport
+from misterdev.core.planning.assessment import (
     ProjectAssessment,
     HealthCheck,
     ProjectStructure,
     TechnicalDebt,
     RiskAssessment,
 )
-from my_project_orchestrator.core.models import Task
-from my_project_orchestrator.core.modes import BuildMode
-from my_project_orchestrator.core.context.scratchpad import Scratchpad
-from my_project_orchestrator.core.verification.validator import ValidationResult
+from misterdev.core.models import Task
+from misterdev.core.modes import BuildMode
+from misterdev.core.context.scratchpad import Scratchpad
+from misterdev.core.verification.validator import ValidationResult
 
 
 def _make_assessment(**overrides):
@@ -298,8 +298,8 @@ def test_report_to_dict_degraded_empty_by_default():
 
 
 def test_failure_reason_surfaces_logs_first_line():
-    from my_project_orchestrator.core.reporting.report import _failure_reason
-    from my_project_orchestrator.core.models import Task, ExecutionResult
+    from misterdev.core.reporting.report import _failure_reason
+    from misterdev.core.models import Task, ExecutionResult
 
     t = Task(id="T-1", description="x", project_ref="p", status="failed")
     t.execution_history.append(
@@ -314,8 +314,8 @@ def test_failure_reason_surfaces_logs_first_line():
 
 
 def test_failure_reason_escapes_pipes_and_falls_back():
-    from my_project_orchestrator.core.reporting.report import _failure_reason
-    from my_project_orchestrator.core.models import Task, ExecutionResult
+    from misterdev.core.reporting.report import _failure_reason
+    from misterdev.core.models import Task, ExecutionResult
 
     t = Task(id="T-2", description="x", project_ref="p", status="failed")
     assert _failure_reason(t) == "failed"  # no history -> status fallback
@@ -326,12 +326,12 @@ def test_failure_reason_escapes_pipes_and_falls_back():
 
 
 def test_failed_tasks_table_includes_reason(tmp_path):
-    from my_project_orchestrator.core.reporting.report import BuildReport
-    from my_project_orchestrator.core.models import Task, ExecutionResult
-    from my_project_orchestrator.core.planning.assessment import (
+    from misterdev.core.reporting.report import BuildReport
+    from misterdev.core.models import Task, ExecutionResult
+    from misterdev.core.planning.assessment import (
         ProjectAssessment, HealthCheck, ProjectStructure, TechnicalDebt, RiskAssessment,
     )
-    from my_project_orchestrator.core.modes import BuildMode
+    from misterdev.core.modes import BuildMode
     from datetime import datetime, timezone
 
     a = ProjectAssessment(

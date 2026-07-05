@@ -2,11 +2,11 @@
 category: feat
 complexity: medium
 context_files:
-- my_project_orchestrator/core/topography.py
+- misterdev/core/topography.py
 depends_on:
 - '010'
 files_to_modify:
-- my_project_orchestrator/core/contracts.py
+- misterdev/core/contracts.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Improve Rust contract extraction with tree-sitter instead of line parsing

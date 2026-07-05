@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.planning.sovereign import (
+from misterdev.core.planning.sovereign import (
     ABMCTSPlanner,
     EphemeralCodeManager,
     ProbeGenerator,

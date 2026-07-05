@@ -1,6 +1,6 @@
 import json
 
-from my_project_orchestrator.core.audit import AuditTrail
+from misterdev.core.audit import AuditTrail
 
 
 def _lines(path):

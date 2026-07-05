@@ -1,4 +1,4 @@
-from my_project_orchestrator.core.execution.error_classifier import (
+from misterdev.core.execution.error_classifier import (
     classify_error,
     classify_and_guide,
     format_classified_error,

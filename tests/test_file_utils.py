@@ -2,7 +2,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.utils.file_utils import atomic_write_json
+from misterdev.utils.file_utils import atomic_write_json
 
 
 def test_atomic_write_json_roundtrips_and_seeds_gitignore():

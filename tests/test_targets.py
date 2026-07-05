@@ -1,4 +1,4 @@
-from my_project_orchestrator.core.planning.targets import select_target, target_commands
+from misterdev.core.planning.targets import select_target, target_commands
 
 
 _TARGETS = [
@@ -82,7 +82,7 @@ def _mk(p):
 
 
 def test_discover_targets_finds_distinct_subprojects(tmp_path):
-    from my_project_orchestrator.core.planning.targets import discover_targets
+    from misterdev.core.planning.targets import discover_targets
 
     _mk(tmp_path / "rust" / "Cargo.toml")
     _mk(tmp_path / "rust" / "emathy-core" / "Cargo.toml")  # nested crate
@@ -93,7 +93,7 @@ def test_discover_targets_finds_distinct_subprojects(tmp_path):
 
 
 def test_discover_targets_single_project_returns_empty(tmp_path):
-    from my_project_orchestrator.core.planning.targets import discover_targets
+    from misterdev.core.planning.targets import discover_targets
 
     _mk(tmp_path / "pyproject.toml")
     _mk(tmp_path / "pkg" / "mod.py")
@@ -101,7 +101,7 @@ def test_discover_targets_single_project_returns_empty(tmp_path):
 
 
 def test_discover_targets_skips_vendor_dirs(tmp_path):
-    from my_project_orchestrator.core.planning.targets import discover_targets
+    from misterdev.core.planning.targets import discover_targets
 
     _mk(tmp_path / "app" / "package.json")
     _mk(tmp_path / "node_modules" / "dep" / "package.json")  # must be skipped

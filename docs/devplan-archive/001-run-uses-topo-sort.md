@@ -2,20 +2,20 @@
 category: feat
 complexity: large
 context_files:
-- my_project_orchestrator/core/decomposer.py
-- my_project_orchestrator/core/contracts.py
-- my_project_orchestrator/core/progress.py
-- my_project_orchestrator/core/change_tracker.py
-- my_project_orchestrator/core/scratchpad.py
+- misterdev/core/decomposer.py
+- misterdev/core/contracts.py
+- misterdev/core/progress.py
+- misterdev/core/change_tracker.py
+- misterdev/core/scratchpad.py
 depends_on: []
 files_to_modify:
-- my_project_orchestrator/agent.py
+- misterdev/agent.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Upgrade run_project to use topological sort, contracts, and progress tracking
 ---
 
-`run_project()` (line 62) is the main entry point for `project-orchestrator run`, but it's severely underpowered compared to `build()`. It runs tasks in file-system order without dependency resolution, contract injection, progress tracking, or scratchpad learning. This means devplan tasks with `depends_on` fields are ignored.
+`run_project()` (line 62) is the main entry point for `misterdev run`, but it's severely underpowered compared to `build()`. It runs tasks in file-system order without dependency resolution, contract injection, progress tracking, or scratchpad learning. This means devplan tasks with `depends_on` fields are ignored.
 
 Upgrade `run_project()` to:
 

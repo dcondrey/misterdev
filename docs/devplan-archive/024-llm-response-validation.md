@@ -3,8 +3,8 @@ category: feat
 complexity: medium
 depends_on: []
 files_to_modify:
-- my_project_orchestrator/task_executors/markdown_plan_executor.py
-- my_project_orchestrator/llm/responses.py
+- misterdev/task_executors/markdown_plan_executor.py
+- misterdev/llm/responses.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Add LLM response validation before applying edits

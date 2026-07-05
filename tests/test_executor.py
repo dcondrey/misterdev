@@ -3,7 +3,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from my_project_orchestrator.task_executors.markdown_plan_executor import (
+from misterdev.task_executors.markdown_plan_executor import (
     MarkdownPlanExecutor,
     _detect_language,
     _diagnose_tampering,
@@ -17,8 +17,8 @@ from my_project_orchestrator.task_executors.markdown_plan_executor import (
     _window_lines,
     _relevant_line_ranges,
 )
-from my_project_orchestrator.core.models import Task
-from my_project_orchestrator.core.context.scratchpad import Scratchpad
+from misterdev.core.models import Task
+from misterdev.core.context.scratchpad import Scratchpad
 
 
 def test_detect_language_rust():
@@ -178,7 +178,7 @@ class _FakeLLMClient:
         yield
 
     def generate(self, prompt, system_prompt=""):
-        from my_project_orchestrator.llm.client import LLMResponse
+        from misterdev.llm.client import LLMResponse
 
         return LLMResponse(content=self._response, finish_reason="stop")
 
@@ -411,7 +411,7 @@ def test_code_context_injects_file_outline():
     # The model editing a large file should receive a symbol outline (table of
     # contents) so it can navigate and anchor SEARCH blocks precisely.
     from types import SimpleNamespace
-    from my_project_orchestrator.core.context.topography import TopographyEngine
+    from misterdev.core.context.topography import TopographyEngine
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -474,7 +474,7 @@ def test_relevant_line_ranges_none_when_no_match():
 
 def test_render_large_file_windows_to_relevant_symbol():
     from types import SimpleNamespace
-    from my_project_orchestrator.core.context.topography import TopographyEngine
+    from misterdev.core.context.topography import TopographyEngine
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -505,7 +505,7 @@ def test_render_large_file_windows_to_relevant_symbol():
 
 def test_render_large_file_no_match_sends_full():
     from types import SimpleNamespace
-    from my_project_orchestrator.core.context.topography import TopographyEngine
+    from misterdev.core.context.topography import TopographyEngine
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -895,7 +895,7 @@ def test_judge_affordable_respects_budget_floor():
 # Golden suite: model-blind, immutable test protection
 # ---------------------------------------------------------------------------
 
-from my_project_orchestrator.task_executors.markdown_plan_executor import (  # noqa: E402
+from misterdev.task_executors.markdown_plan_executor import (  # noqa: E402
     _is_golden_path,
 )
 
@@ -953,7 +953,7 @@ def test_golden_context_file_concealed_from_prompt():
         captured = {}
 
         def _cap(prompt, system_prompt=""):
-            from my_project_orchestrator.llm.client import LLMResponse
+            from misterdev.llm.client import LLMResponse
 
             captured["text"] = (prompt or "") + (system_prompt or "")
             return LLMResponse(content="no code blocks here", finish_reason="stop")
@@ -983,7 +983,7 @@ class _ScriptedLLMClient:
         yield
 
     def generate(self, prompt, system_prompt=""):
-        from my_project_orchestrator.llm.client import LLMResponse
+        from misterdev.llm.client import LLMResponse
 
         self.calls += 1
         content, finish = self._script[min(self.calls - 1, len(self._script) - 1)]
@@ -1063,7 +1063,7 @@ def test_continuation_is_bounded_by_cap():
 
 
 def test_is_truncated_helper():
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         _is_truncated,
     )
 
@@ -1104,7 +1104,7 @@ class _CriticFakeLLMClient:
             self._active_model = None
 
     def generate(self, prompt, system_prompt=""):
-        from my_project_orchestrator.llm.client import LLMResponse
+        from misterdev.llm.client import LLMResponse
 
         return LLMResponse(content=self._edit_response, finish_reason="stop")
 

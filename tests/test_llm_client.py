@@ -4,7 +4,7 @@ import types
 
 import pytest
 
-from my_project_orchestrator.llm.client import (
+from misterdev.llm.client import (
     BaseLLMClient,
     FailoverLLMClient,
     LLMResponse,
@@ -733,8 +733,8 @@ def _fake_openai_capture(captured):
 
 
 def _build_openrouter(monkeypatch, captured, llm=None, catalog_models=None):
-    from my_project_orchestrator.core.economics.model_catalog import ModelCatalog
-    from my_project_orchestrator.llm.client import OpenRouterLLMClient
+    from misterdev.core.economics.model_catalog import ModelCatalog
+    from misterdev.llm.client import OpenRouterLLMClient
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     monkeypatch.setattr("openai.OpenAI", _fake_openai_capture(captured))
@@ -851,8 +851,8 @@ def _fake_openai_tool(captured, edits):
 
 
 def test_generate_edits_uses_tool_and_renders_fences(monkeypatch):
-    from my_project_orchestrator.core.economics.model_catalog import ModelCatalog
-    from my_project_orchestrator.llm.client import OpenRouterLLMClient
+    from misterdev.core.economics.model_catalog import ModelCatalog
+    from misterdev.llm.client import OpenRouterLLMClient
 
     captured = {}
     edits = [{"path": "src/a.py", "content": "x = 1"}]
@@ -876,8 +876,8 @@ def test_generate_edits_uses_tool_and_renders_fences(monkeypatch):
 
 
 def test_generate_edits_falls_back_when_tools_unsupported(monkeypatch):
-    from my_project_orchestrator.core.economics.model_catalog import ModelCatalog
-    from my_project_orchestrator.llm.client import OpenRouterLLMClient
+    from misterdev.core.economics.model_catalog import ModelCatalog
+    from misterdev.llm.client import OpenRouterLLMClient
 
     captured = {}
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
@@ -944,7 +944,7 @@ def test_no_reasoning_when_effort_unset(monkeypatch):
 
 
 def test_embedding_client_embeds_in_order_and_denies_training(monkeypatch):
-    from my_project_orchestrator.llm.client import OpenRouterEmbeddingClient
+    from misterdev.llm.client import OpenRouterEmbeddingClient
 
     captured = {}
 
@@ -976,7 +976,7 @@ def test_embedding_client_embeds_in_order_and_denies_training(monkeypatch):
 
 
 def test_edits_to_markdown_and_extraction():
-    from my_project_orchestrator.llm.client import _edits_to_markdown
+    from misterdev.llm.client import _edits_to_markdown
 
     md = _edits_to_markdown([{"path": "a.py", "content": "y = 2"}, {"bad": "x"}])
     assert "```text:a.py" in md and "y = 2" in md
@@ -1157,7 +1157,7 @@ def test_per_task_cost_cap_auto_is_budget_fraction():
 def test_free_model_fails_fast_single_attempt(monkeypatch):
     # A rate-limited free model must not burn 3 slow retries — it fails after one
     # shot so the routed-call fallback to the paid model kicks in quickly.
-    import my_project_orchestrator.llm.client as client_mod
+    import misterdev.llm.client as client_mod
 
     monkeypatch.setattr(client_mod.time, "sleep", lambda *_: None)
     err = LLMCallError("429 rate limit", retryable=True)
@@ -1169,7 +1169,7 @@ def test_free_model_fails_fast_single_attempt(monkeypatch):
 
 
 def test_paid_model_keeps_full_retries(monkeypatch):
-    import my_project_orchestrator.llm.client as client_mod
+    import misterdev.llm.client as client_mod
 
     monkeypatch.setattr(client_mod.time, "sleep", lambda *_: None)
     err = LLMCallError("429 rate limit", retryable=True)

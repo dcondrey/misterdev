@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-import my_project_orchestrator.core.integration.mcp as mcp_mod
-from my_project_orchestrator.core.integration.mcp import MCPManager, MCPTool
-from my_project_orchestrator.core.integration.mcp_gather import _parse_call, gather_context
+import misterdev.core.integration.mcp as mcp_mod
+from misterdev.core.integration.mcp import MCPManager, MCPTool
+from misterdev.core.integration.mcp_gather import _parse_call, gather_context
 
 # A minimal real MCP server: two tools, stdio transport, started as a subprocess
 # by the mcp SDK's stdio_client. Written to a temp file and run via the test
@@ -180,7 +180,7 @@ def test_describe_tools_lists_qualified_names_and_caps(monkeypatch):
 
 
 def _executor():
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 
@@ -231,14 +231,14 @@ def test_awareness_empty_when_no_tools_discovered():
 
 
 def test_project_mcp_none_without_config(tmp_path):
-    from my_project_orchestrator.core.execution.project import Project
+    from misterdev.core.execution.project import Project
 
     proj = Project(tmp_path, {"name": "p"})
     assert proj.mcp is None
 
 
 def test_project_mcp_built_from_config(tmp_path, server_path):
-    from my_project_orchestrator.core.execution.project import Project
+    from misterdev.core.execution.project import Project
 
     proj = Project(
         tmp_path, {"name": "p", "mcp": {"servers": [_stdio_server(server_path)]}}
@@ -444,7 +444,7 @@ class _GatherProject:
 
 
 def _gather_task():
-    from my_project_orchestrator.core.models import Task
+    from misterdev.core.models import Task
 
     return Task(id="t1", description="sum two numbers", project_ref="p")
 

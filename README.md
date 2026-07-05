@@ -180,11 +180,11 @@ tools:
 
 ### Run
 ```bash
-project-orchestrator scan ./projects                  # discover & register
-project-orchestrator build ./projects/my-app "add OAuth2 login"
-project-orchestrator build ./projects/my-app --dry-run "..."   # plan only
-project-orchestrator                                  # interactive planning
-project-orchestrator report ./projects/my-app         # cost + model + audit summary
+misterdev scan ./projects                  # discover & register
+misterdev build ./projects/my-app "add OAuth2 login"
+misterdev build ./projects/my-app --dry-run "..."   # plan only
+misterdev                                  # interactive planning
+misterdev report ./projects/my-app         # cost + model + audit summary
 ```
 
 `report` aggregates the project's `.orchestrator/` artifacts into one view: the

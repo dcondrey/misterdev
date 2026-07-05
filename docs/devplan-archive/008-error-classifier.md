@@ -3,7 +3,7 @@ category: feat
 complexity: small
 depends_on: []
 files_to_modify:
-- my_project_orchestrator/core/error_classifier.py
+- misterdev/core/error_classifier.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Improve error classifier to handle manifest and config errors

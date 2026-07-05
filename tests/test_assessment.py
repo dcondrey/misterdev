@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.planning.assessment import (
+from misterdev.core.planning.assessment import (
     HealthCheck,
     FeatureInfo,
     FeatureInventory,
@@ -11,11 +11,11 @@ from my_project_orchestrator.core.planning.assessment import (
     RiskAssessment,
     ProjectAssessment,
 )
-from my_project_orchestrator.core.models import Task, ExecutionResult
+from misterdev.core.models import Task, ExecutionResult
 import pytest
 from pydantic import ValidationError
 
-from my_project_orchestrator.analyzers.project_analyzer import (
+from misterdev.analyzers.project_analyzer import (
     _get_source_overview,
     _leading_doc,
     _merge_completeness,
@@ -228,7 +228,7 @@ def test_source_overview_empty_project():
 def test_source_overview_reuses_provided_outline(monkeypatch):
     # When the caller passes a pre-built outline (the TopographyEngine graph), the
     # overview must reuse it and NOT parse a second throwaway SymbolGraph.
-    import my_project_orchestrator.core.context.topography as topo
+    import misterdev.core.context.topography as topo
 
     def boom(*a, **k):
         raise AssertionError("SymbolGraph built despite a provided outline")

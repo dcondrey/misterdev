@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 
-from my_project_orchestrator.tools.command import CommandTool
+from misterdev.tools.command import CommandTool
 
 
 class FakeProject:

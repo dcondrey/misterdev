@@ -2,13 +2,13 @@
 category: fix
 complexity: medium
 context_files:
-- my_project_orchestrator/core/contracts.py
-- my_project_orchestrator/core/progress.py
+- misterdev/core/contracts.py
+- misterdev/core/progress.py
 depends_on:
 - '006'
 files_to_modify:
-- my_project_orchestrator/agent.py
-- my_project_orchestrator/core/scratchpad.py
+- misterdev/agent.py
+- misterdev/core/scratchpad.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Fix race conditions in parallel task execution

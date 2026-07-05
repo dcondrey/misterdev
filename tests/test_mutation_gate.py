@@ -1,6 +1,6 @@
 import time
 
-from my_project_orchestrator.core.verification.mutation_gate import (
+from misterdev.core.verification.mutation_gate import (
     GREEN,
     RED,
     SKIP,
@@ -171,8 +171,8 @@ def test_result_repr_and_flags():
 
 def _keeper(tmp_path, monkeypatch, *, enabled, status, score=0.5, reason=""):
     """Build a GateKeeper with the mutation runner monkeypatched."""
-    from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
-    import my_project_orchestrator.core.verification.mutation_gate as mut_mod
+    from misterdev.core.verification.gatekeeper import GateKeeper
+    import misterdev.core.verification.mutation_gate as mut_mod
 
     (tmp_path / "a.py").write_text("x = 1\n")
 

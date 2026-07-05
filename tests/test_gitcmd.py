@@ -2,7 +2,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.gitcmd import run_git
+from misterdev.core.gitcmd import run_git
 
 
 def _init_repo():

@@ -2,8 +2,8 @@ import tempfile
 import shlex
 from pathlib import Path
 
-from my_project_orchestrator.tools.git_tool import GitTool
-from my_project_orchestrator.tools.file_io import FileIOTool
+from misterdev.tools.git_tool import GitTool
+from misterdev.tools.file_io import FileIOTool
 
 
 def test_git_branch_escaping():
@@ -104,7 +104,7 @@ def test_file_io_delete_git_dir_blocked():
 def test_file_io_read_is_capped():
     # A model-requested read of an over-large in-project file is bounded (with a
     # truncation marker), not loaded whole into memory / the LLM context.
-    from my_project_orchestrator.utils import file_utils
+    from misterdev.utils import file_utils
 
     with tempfile.TemporaryDirectory() as td:
         big = Path(td) / "huge.txt"

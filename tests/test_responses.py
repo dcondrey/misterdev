@@ -1,6 +1,6 @@
 import pytest
 
-from my_project_orchestrator.llm.responses import (
+from misterdev.llm.responses import (
     EditConflictError,
     LLMResponseParser,
     SearchReplaceEdit,

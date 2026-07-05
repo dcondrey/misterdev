@@ -1,5 +1,5 @@
-from my_project_orchestrator.agent import ProjectOrchestrator
-from my_project_orchestrator.core.models import Task
+from misterdev.agent import ProjectOrchestrator
+from misterdev.core.models import Task
 
 
 class _FakeExec:
@@ -207,7 +207,7 @@ def test_validate_targets_flags_regression():
 
 def test_validate_targets_runs_web_gate_red_fails(monkeypatch):
     from pathlib import Path
-    import my_project_orchestrator.core.verification.web_verify as wv
+    import misterdev.core.verification.web_verify as wv
 
     class _Web:
         status, reason, evidence = "red", "submit button missing", None
@@ -238,7 +238,7 @@ def test_validate_targets_runs_web_gate_red_fails(monkeypatch):
 
 def test_validate_targets_web_gate_green_passes(monkeypatch):
     from pathlib import Path
-    import my_project_orchestrator.core.verification.web_verify as wv
+    import misterdev.core.verification.web_verify as wv
 
     class _Web:
         status, reason, evidence = "green", None, "shot.png"

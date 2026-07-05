@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from my_project_orchestrator.config import get_setting
-from my_project_orchestrator.core.economics.llm_cache import LLMCache
-from my_project_orchestrator.core.economics.model_ledger import ModelLedger
-from my_project_orchestrator.core.economics.model_selector import ModelSelector
-from my_project_orchestrator.task_executors.markdown_plan_executor import (
+from misterdev.config import get_setting
+from misterdev.core.economics.llm_cache import LLMCache
+from misterdev.core.economics.model_ledger import ModelLedger
+from misterdev.core.economics.model_selector import ModelSelector
+from misterdev.task_executors.markdown_plan_executor import (
     MarkdownPlanExecutor,
 )
 
@@ -30,7 +30,7 @@ class StubLLMClient:
         return self._cost.get(task_id, 0.0)
 
     def generate(self, prompt, system_prompt=""):
-        from my_project_orchestrator.llm.client import LLMResponse
+        from misterdev.llm.client import LLMResponse
 
         return LLMResponse(content=self.generate_code(prompt, system_prompt))
 
@@ -61,7 +61,7 @@ class RoutingStubClient:
             self.model = prev
 
     def generate(self, prompt, system_prompt=""):
-        from my_project_orchestrator.llm.client import LLMResponse
+        from misterdev.llm.client import LLMResponse
 
         return LLMResponse(content=self.generate_code(prompt, system_prompt))
 

@@ -1,8 +1,8 @@
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.config import ConfigManager
-from my_project_orchestrator.core.task import TaskManager
+from misterdev.config import ConfigManager
+from misterdev.core.task import TaskManager
 
 
 def _setup_project(td, task_files):

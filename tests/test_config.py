@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.config import ConfigManager, DEFAULT_CONFIG
+from misterdev.config import ConfigManager, DEFAULT_CONFIG
 
 
 def test_config_defaults_not_mutated():

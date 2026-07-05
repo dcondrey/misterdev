@@ -9,4 +9,4 @@ They are intentionally OUT of the active `devplan/` path: `run` reads
 mode re-derive from them) is exactly what caused the parallel-architecture
 self-build. Planning is now interactive and grounded in live project state:
 
-    project-orchestrator plan      # analyze -> recommend -> compose -> confirm
+    misterdev plan      # analyze -> recommend -> compose -> confirm

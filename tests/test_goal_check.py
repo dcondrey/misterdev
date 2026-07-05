@@ -1,7 +1,7 @@
 import time
 from contextlib import contextmanager
 
-from my_project_orchestrator.core.verification.goal_check import (
+from misterdev.core.verification.goal_check import (
     GAP,
     SATISFIED,
     SKIP,

@@ -3,8 +3,8 @@ category: fix
 complexity: small
 depends_on: []
 files_to_modify:
-- my_project_orchestrator/task_executors/markdown_plan_executor.py
-- my_project_orchestrator/tools/formatter.py
+- misterdev/task_executors/markdown_plan_executor.py
+- misterdev/tools/formatter.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Fix formatter to run once per task instead of once per file

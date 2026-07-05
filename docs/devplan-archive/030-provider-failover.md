@@ -3,8 +3,8 @@ category: feat
 complexity: medium
 depends_on: []
 files_to_modify:
-- my_project_orchestrator/llm/client.py
-- my_project_orchestrator/core/config.py
+- misterdev/llm/client.py
+- misterdev/core/config.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Add multi-provider LLM failover chain

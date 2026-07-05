@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 
-from my_project_orchestrator.core.verification.independent import (
+from misterdev.core.verification.independent import (
     generate_independent,
     build_independent_call,
 )

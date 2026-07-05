@@ -1,5 +1,5 @@
-from my_project_orchestrator.utils import process
-from my_project_orchestrator.utils.process import kill_process_group
+from misterdev.utils import process
+from misterdev.utils.process import kill_process_group
 
 
 class _FakeProc:

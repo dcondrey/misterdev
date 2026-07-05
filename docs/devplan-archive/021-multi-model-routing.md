@@ -2,12 +2,12 @@
 category: feat
 complexity: large
 context_files:
-- my_project_orchestrator/core/config.py
+- misterdev/core/config.py
 depends_on: []
 files_to_modify:
-- my_project_orchestrator/llm/client.py
-- my_project_orchestrator/core/sovereign.py
-- my_project_orchestrator/task_executors/markdown_plan_executor.py
+- misterdev/llm/client.py
+- misterdev/core/sovereign.py
+- misterdev/task_executors/markdown_plan_executor.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Add complexity-based model routing for cost optimization

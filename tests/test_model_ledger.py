@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from my_project_orchestrator.core.economics.model_ledger import ModelLedger, ModelStat
+from misterdev.core.economics.model_ledger import ModelLedger, ModelStat
 
 
 @pytest.fixture
@@ -157,7 +157,7 @@ def test_context_scoped_keys_are_distinct(ledger_path):
 
 
 def test_decay_factor_dead_band_and_half_life():
-    from my_project_orchestrator.core.economics.model_ledger import (
+    from misterdev.core.economics.model_ledger import (
         _decay_factor,
         _DEFAULT_HALF_LIFE_SECONDS,
     )
@@ -185,7 +185,7 @@ def test_within_build_records_are_not_decayed(ledger_path):
 
 
 def test_stale_outcomes_decay_on_new_record(ledger_path):
-    from my_project_orchestrator.core.economics.model_ledger import (
+    from misterdev.core.economics.model_ledger import (
         _DEFAULT_HALF_LIFE_SECONDS,
     )
 
@@ -205,7 +205,7 @@ def test_stale_outcomes_decay_on_new_record(ledger_path):
 
 
 def test_decay_preserves_success_rate(ledger_path):
-    from my_project_orchestrator.core.economics.model_ledger import (
+    from misterdev.core.economics.model_ledger import (
         _DEFAULT_HALF_LIFE_SECONDS,
     )
 

@@ -2,13 +2,13 @@ import json
 
 import pytest
 
-from my_project_orchestrator.core.audit import AuditTrail
-from my_project_orchestrator.core.execution.governance import (
+from misterdev.core.audit import AuditTrail
+from misterdev.core.execution.governance import (
     GovernancePolicy,
     is_risky,
     policy_from_config,
 )
-from my_project_orchestrator.core.verification.validator import _run_cmd
+from misterdev.core.verification.validator import _run_cmd
 
 
 # --- risk classification: SAFE cases (must NOT trip) ------------------------
@@ -27,7 +27,7 @@ SAFE_COMMANDS = [
     "npm ci",
     "npm install",
     "yarn install",
-    "ruff check my_project_orchestrator/ tests/",
+    "ruff check misterdev/ tests/",
     "ruff format .",
     "black --check .",
     "make",
@@ -291,7 +291,7 @@ def test_run_cmd_audit_failure_does_not_break_execution(tmp_path):
 
 
 def test_project_governance_policy_none_when_off(tmp_path, monkeypatch):
-    from my_project_orchestrator.core.execution import project as project_mod
+    from misterdev.core.execution import project as project_mod
 
     monkeypatch.setattr(project_mod.Project, "_init_llm_client", lambda self: None)
     project = project_mod.Project(tmp_path, {})
@@ -301,7 +301,7 @@ def test_project_governance_policy_none_when_off(tmp_path, monkeypatch):
 
 
 def test_project_governance_policy_built_when_on(tmp_path, monkeypatch):
-    from my_project_orchestrator.core.execution import project as project_mod
+    from misterdev.core.execution import project as project_mod
 
     monkeypatch.setattr(project_mod.Project, "_init_llm_client", lambda self: None)
     project = project_mod.Project(tmp_path, {"orchestrator": {"governance": True}})

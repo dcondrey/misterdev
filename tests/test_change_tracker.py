@@ -2,7 +2,7 @@ import tempfile
 import subprocess
 from pathlib import Path
 
-from my_project_orchestrator.core.context.change_tracker import ChangeTracker, TaskChange
+from misterdev.core.context.change_tracker import ChangeTracker, TaskChange
 
 
 def _init_git_repo(path: Path):

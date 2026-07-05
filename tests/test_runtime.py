@@ -3,7 +3,7 @@ import signal
 import sys
 import time
 
-from my_project_orchestrator.core.execution.runtime import (
+from misterdev.core.execution.runtime import (
     GREEN,
     RED,
     SKIP,
@@ -150,7 +150,7 @@ def test_hanging_launch_inner_deadline_fires_and_kills_process(tmp_path):
 def test_outer_join_skips_when_worker_wedged(monkeypatch, tmp_path):
     # Force the inner work to outlast the outer join to prove the daemon-thread
     # abandonment path returns SKIP without blocking.
-    import my_project_orchestrator.core.execution.runtime as runtime
+    import misterdev.core.execution.runtime as runtime
 
     def _wedge(*a, **k):
         time.sleep(30)
@@ -167,7 +167,7 @@ def test_outer_join_skips_when_worker_wedged(monkeypatch, tmp_path):
 
 
 def test_launch_failure_is_skip_not_crash(monkeypatch, tmp_path):
-    import my_project_orchestrator.core.execution.runtime as runtime
+    import misterdev.core.execution.runtime as runtime
 
     def _boom(*a, **k):
         raise OSError("cannot spawn")
@@ -188,7 +188,7 @@ def test_smoke_result_repr_and_flags():
 
 
 def test_gatekeeper_skips_smoke_when_off(tmp_path):
-    from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
+    from misterdev.core.verification.gatekeeper import GateKeeper
 
     (tmp_path / "a.py").write_text("x = 1\n")
     # runtime_smoke off -> gate not run even with a (would-fail) spec present.
@@ -202,7 +202,7 @@ def test_gatekeeper_skips_smoke_when_off(tmp_path):
 
 
 def test_gatekeeper_red_smoke_blocks_build(tmp_path):
-    from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
+    from misterdev.core.verification.gatekeeper import GateKeeper
 
     (tmp_path / "a.py").write_text("x = 1\n")
     keeper = GateKeeper(
@@ -222,7 +222,7 @@ def test_gatekeeper_red_smoke_blocks_build(tmp_path):
 
 
 def test_gatekeeper_green_smoke_passes(tmp_path):
-    from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
+    from misterdev.core.verification.gatekeeper import GateKeeper
 
     (tmp_path / "a.py").write_text("x = 1\n")
     keeper = GateKeeper(

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from my_project_orchestrator.core.verification.gatekeeper import (
+from misterdev.core.verification.gatekeeper import (
     GateKeeper,
     BANNED_MARKERS,
     SECRET_PATTERNS,
@@ -204,7 +204,7 @@ def test_secrets_scan_unquoted_heuristic_not_applied_to_source():
 
 
 def test_read_capped_bounds_read_and_handles_missing():
-    from my_project_orchestrator.core.verification.gatekeeper.helpers import (
+    from misterdev.core.verification.gatekeeper.helpers import (
         _read_capped,
     )
 
@@ -438,7 +438,7 @@ def test_golden_failure_blocks_even_when_visible_tests_pass():
 def test_gatekeeper_honors_configured_timeouts(monkeypatch):
     # The gate runs on every wave/iteration; its build/test timeouts must come
     # from config so a slow compiler isn't falsely failed.
-    import my_project_orchestrator.core.verification.gatekeeper as gk
+    import misterdev.core.verification.gatekeeper as gk
 
     calls = {}
 
@@ -463,7 +463,7 @@ def test_gatekeeper_honors_configured_timeouts(monkeypatch):
 
 
 def test_gatekeeper_explicit_lint_timeout(monkeypatch):
-    import my_project_orchestrator.core.verification.gatekeeper as gk
+    import misterdev.core.verification.gatekeeper as gk
 
     calls = {}
 
@@ -585,8 +585,8 @@ def test_diff_hygiene_clean_outside_git():
 def test_vision_gate_reuses_web_evidence_screenshot(monkeypatch):
     # When both gates are on and vision has no explicit capture, it must receive
     # the web gate's freshly captured screenshot path automatically.
-    import my_project_orchestrator.core.verification.web_verify as webmod
-    import my_project_orchestrator.core.verification.vision_verify as vismod
+    import misterdev.core.verification.web_verify as webmod
+    import misterdev.core.verification.vision_verify as vismod
 
     monkeypatch.setattr(
         webmod,
@@ -618,8 +618,8 @@ def test_vision_gate_reuses_web_evidence_screenshot(monkeypatch):
 
 
 def test_vision_explicit_capture_not_overridden_by_web(monkeypatch):
-    import my_project_orchestrator.core.verification.web_verify as webmod
-    import my_project_orchestrator.core.verification.vision_verify as vismod
+    import misterdev.core.verification.web_verify as webmod
+    import misterdev.core.verification.vision_verify as vismod
 
     monkeypatch.setattr(
         webmod,
@@ -648,7 +648,7 @@ def test_vision_explicit_capture_not_overridden_by_web(monkeypatch):
 
 
 def test_lsp_gate_blocks_on_errors(monkeypatch):
-    import my_project_orchestrator.core.context.lsp as lspmod
+    import misterdev.core.context.lsp as lspmod
 
     monkeypatch.setattr(
         lspmod, "find_source_files", lambda root, lang, cap=40: ["a.py"]
@@ -667,7 +667,7 @@ def test_lsp_gate_blocks_on_errors(monkeypatch):
 
 
 def test_lsp_gate_skips_when_no_diagnostics(monkeypatch):
-    import my_project_orchestrator.core.context.lsp as lspmod
+    import misterdev.core.context.lsp as lspmod
 
     monkeypatch.setattr(
         lspmod, "find_source_files", lambda root, lang, cap=40: ["a.py"]

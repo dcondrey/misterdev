@@ -1,17 +1,17 @@
 import types
 from datetime import datetime, timezone
 
-from my_project_orchestrator.agent import ProjectOrchestrator
-from my_project_orchestrator.core.reporting.report import BuildReport
-from my_project_orchestrator.core.planning.assessment import (
+from misterdev.agent import ProjectOrchestrator
+from misterdev.core.reporting.report import BuildReport
+from misterdev.core.planning.assessment import (
     ProjectAssessment,
     HealthCheck,
     ProjectStructure,
     TechnicalDebt,
     RiskAssessment,
 )
-from my_project_orchestrator.core.modes import BuildMode
-from my_project_orchestrator.llm.client import BudgetExceededError
+from misterdev.core.modes import BuildMode
+from misterdev.llm.client import BudgetExceededError
 
 
 def _assessment():

@@ -4,14 +4,14 @@ complexity: medium
 depends_on:
 - '001'
 files_to_modify:
-- my_project_orchestrator/core/progress.py
-- my_project_orchestrator/agent.py
+- misterdev/core/progress.py
+- misterdev/agent.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Add content-hash-based incremental task execution
 ---
 
-Currently, re-running `project-orchestrator run` skips completed tasks (via `ProgressTracker`), but if a task's devplan file or target files change, it still shows as "completed" and is skipped. There's no way to detect that a task needs re-execution.
+Currently, re-running `misterdev run` skips completed tasks (via `ProgressTracker`), but if a task's devplan file or target files change, it still shows as "completed" and is skipped. There's no way to detect that a task needs re-execution.
 
 Add content-hash-based change detection:
 

@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.context.contracts import (
+from misterdev.core.context.contracts import (
     ContractRegistry,
     _extract_public_symbols,
     _extract_rust_symbols,

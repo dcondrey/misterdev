@@ -3,8 +3,8 @@ category: feat
 complexity: small
 depends_on: []
 files_to_modify:
-- my_project_orchestrator/core/report.py
-- my_project_orchestrator/agent.py
+- misterdev/core/report.py
+- misterdev/agent.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Persist build reports to disk with run history
@@ -52,7 +52,7 @@ Build reports are generated but only printed to stdout/returned as a string. The
 
 4. In `agent.py` `run_project()`, create a lightweight report and save it after all tasks complete.
 
-5. Add a CLI command `project-orchestrator history .` that lists past reports:
+5. Add a CLI command `misterdev history .` that lists past reports:
    ```
    2026-06-19 17:15 | SMART  | 28/30 done, 2 failed | $8.42 | report_20260619_171500.md
    2026-06-19 19:30 | RUN    | 20/20 done, 0 failed | $3.10 | report_20260619_193000.md

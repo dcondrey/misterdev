@@ -3,9 +3,9 @@ category: feat
 complexity: medium
 depends_on: []
 files_to_modify:
-- my_project_orchestrator/llm/client.py
-- my_project_orchestrator/core/report.py
-- my_project_orchestrator/agent.py
+- misterdev/llm/client.py
+- misterdev/core/report.py
+- misterdev/agent.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Add per-task LLM cost tracking and budget enforcement

@@ -3,9 +3,9 @@ category: feat
 complexity: medium
 depends_on: []
 files_to_modify:
-- my_project_orchestrator/agent.py
-- my_project_orchestrator/core/context_budget.py
-- my_project_orchestrator/core/config.py
+- misterdev/agent.py
+- misterdev/core/context_budget.py
+- misterdev/core/config.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Make hardcoded operational limits configurable via project.yaml

@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.context.topography import (
+from misterdev.core.context.topography import (
     SymbolNode,
     SymbolGraph,
     TopographyEngine,
@@ -365,7 +365,7 @@ def test_topography_max_symbols_cap():
 def test_golden_excluded_from_symbol_graph():
     import tempfile
     from pathlib import Path
-    from my_project_orchestrator.core.context.topography import SymbolGraph
+    from misterdev.core.context.topography import SymbolGraph
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -484,7 +484,7 @@ def test_resolve_references_recomputed_each_build():
 def test_symbol_graph_skips_hidden_and_vendor_dirs(tmp_path):
     # A large hidden dir (.claude) or vendor dir must not crowd real source out
     # of the symbol graph / outline.
-    from my_project_orchestrator.core.context.topography import SymbolGraph
+    from misterdev.core.context.topography import SymbolGraph
 
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "real.py").write_text("def hello():\n    return 1\n")

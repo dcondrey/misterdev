@@ -5,7 +5,7 @@ depends_on: []
 files_to_create:
 - tests/test_command_tool.py
 files_to_modify:
-- my_project_orchestrator/tools/command.py
+- misterdev/tools/command.py
 status: completed
 test_command: uv run pytest tests/test_command_tool.py -v
 title: Add timeout and subprocess hardening to CommandTool
@@ -13,7 +13,7 @@ title: Add timeout and subprocess hardening to CommandTool
 
 `CommandTool.execute()` has no timeout, allowing hanging commands to block the entire orchestrator. Every other subprocess call in the codebase has a timeout. Also, it doesn't handle `FileNotFoundError` when the command binary doesn't exist.
 
-Fix `my_project_orchestrator/tools/command.py`:
+Fix `misterdev/tools/command.py`:
 
 1. Add `timeout: int = 120` parameter to `execute()`
 2. Pass `timeout=timeout` to `subprocess.run()`

@@ -1,4 +1,4 @@
-from my_project_orchestrator.core.context.scratchpad import Scratchpad
+from misterdev.core.context.scratchpad import Scratchpad
 
 
 def test_record_and_query():

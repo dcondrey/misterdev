@@ -3,8 +3,8 @@ category: fix
 complexity: small
 depends_on: []
 files_to_modify:
-- my_project_orchestrator/core/contracts.py
-- my_project_orchestrator/core/progress.py
+- misterdev/core/contracts.py
+- misterdev/core/progress.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Make file writes atomic in contracts and progress tracking

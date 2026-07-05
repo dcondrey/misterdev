@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 
-import my_project_orchestrator.core.execution.container as container
-from my_project_orchestrator.core.execution.container import (
+import misterdev.core.execution.container as container
+from misterdev.core.execution.container import (
     ContainerEngine,
     detect_engine,
     image_for_language,
 )
-from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
-from my_project_orchestrator.core.verification.validator import _run_cmd
-from my_project_orchestrator.environments.container_env import (
+from misterdev.core.verification.gatekeeper import GateKeeper
+from misterdev.core.verification.validator import _run_cmd
+from misterdev.environments.container_env import (
     ContainerEnvironmentManager,
 )
 
@@ -169,7 +169,7 @@ def test_cap_drop_string_is_coerced_to_list(monkeypatch):
 
 def test_env_manager_passes_hardening_to_engine(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "my_project_orchestrator.environments.container_env.detect_engine",
+        "misterdev.environments.container_env.detect_engine",
         lambda preferred=None: "docker",
     )
     mgr = ContainerEnvironmentManager(
@@ -185,7 +185,7 @@ def test_env_manager_passes_hardening_to_engine(tmp_path, monkeypatch):
 
 def test_env_manager_passes_resource_limits_to_engine(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "my_project_orchestrator.environments.container_env.detect_engine",
+        "misterdev.environments.container_env.detect_engine",
         lambda preferred=None: "docker",
     )
     mgr = ContainerEnvironmentManager(
@@ -202,7 +202,7 @@ def test_env_manager_passes_resource_limits_to_engine(tmp_path, monkeypatch):
 
 def test_env_manager_passes_network_to_engine(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "my_project_orchestrator.environments.container_env.detect_engine",
+        "misterdev.environments.container_env.detect_engine",
         lambda preferred=None: "docker",
     )
     mgr = ContainerEnvironmentManager(
@@ -213,10 +213,10 @@ def test_env_manager_passes_network_to_engine(tmp_path, monkeypatch):
 
 
 def test_project_wires_governance_network(tmp_path, monkeypatch):
-    from my_project_orchestrator.core.execution import project as project_mod
+    from misterdev.core.execution import project as project_mod
 
     monkeypatch.setattr(
-        "my_project_orchestrator.environments.container_env.detect_engine",
+        "misterdev.environments.container_env.detect_engine",
         lambda preferred=None: "docker",
     )
     monkeypatch.setattr(project_mod.Project, "_init_llm_client", lambda self: None)
@@ -311,7 +311,7 @@ def test_gatekeeper_routes_gates_through_container(tmp_path):
 
 
 def test_gatekeeper_falls_back_local_when_engine_unavailable(tmp_path, monkeypatch):
-    import my_project_orchestrator.core.verification.gatekeeper as gk
+    import misterdev.core.verification.gatekeeper as gk
 
     local_calls = []
 
@@ -357,7 +357,7 @@ def test_gatekeeper_identical_result_local_vs_container(tmp_path):
 
 def test_env_manager_setup_unavailable_returns_false(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "my_project_orchestrator.environments.container_env.detect_engine",
+        "misterdev.environments.container_env.detect_engine",
         lambda preferred=None: None,
     )
     mgr = ContainerEnvironmentManager({"type": "docker"}, tmp_path, language="python")
@@ -368,7 +368,7 @@ def test_env_manager_setup_unavailable_returns_false(tmp_path, monkeypatch):
 
 def test_env_manager_setup_available_builds_engine(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "my_project_orchestrator.environments.container_env.detect_engine",
+        "misterdev.environments.container_env.detect_engine",
         lambda preferred=None: "podman",
     )
     mgr = ContainerEnvironmentManager(
@@ -382,7 +382,7 @@ def test_env_manager_setup_available_builds_engine(tmp_path, monkeypatch):
 
 def test_env_manager_auto_image_from_language(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "my_project_orchestrator.environments.container_env.detect_engine",
+        "misterdev.environments.container_env.detect_engine",
         lambda preferred=None: "docker",
     )
     mgr = ContainerEnvironmentManager({"type": "docker"}, tmp_path, language="rust")

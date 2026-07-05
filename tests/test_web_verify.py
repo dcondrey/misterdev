@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-import my_project_orchestrator.core.verification.web_verify as web_verify
-from my_project_orchestrator.core.verification.web_verify import (
+import misterdev.core.verification.web_verify as web_verify
+from misterdev.core.verification.web_verify import (
     GREEN,
     RED,
     SKIP,
@@ -398,7 +398,7 @@ def test_browser_error_is_skip_not_crash(monkeypatch, tmp_path):
 
 
 def test_gatekeeper_skips_web_when_off(tmp_path):
-    from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
+    from misterdev.core.verification.gatekeeper import GateKeeper
 
     (tmp_path / "a.py").write_text("x = 1\n")
     # web_verify off -> gate not run even with a (would-fail) spec present.
@@ -412,7 +412,7 @@ def test_gatekeeper_skips_web_when_off(tmp_path):
 
 
 def test_gatekeeper_red_web_blocks_build(monkeypatch, tmp_path):
-    from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
+    from misterdev.core.verification.gatekeeper import GateKeeper
 
     (tmp_path / "a.py").write_text("x = 1\n")
     page = _FakePage(selectors=())
@@ -435,7 +435,7 @@ def test_gatekeeper_red_web_blocks_build(monkeypatch, tmp_path):
 
 
 def test_gatekeeper_green_web_passes(monkeypatch, tmp_path):
-    from my_project_orchestrator.core.verification.gatekeeper import GateKeeper
+    from misterdev.core.verification.gatekeeper import GateKeeper
 
     (tmp_path / "a.py").write_text("x = 1\n")
     page = _FakePage(html="<html><body><h1>Up</h1></body></html>", selectors=("h1",))

@@ -10,12 +10,12 @@ SKIP/error never touches the report or fails the build.
 from datetime import datetime, timezone
 from pathlib import Path
 
-from my_project_orchestrator.agent import ProjectOrchestrator
-from my_project_orchestrator.core.planning.assessment import ProjectAssessment
-from my_project_orchestrator.core.modes import BuildMode
-from my_project_orchestrator.core.models import Task
-from my_project_orchestrator.core.reporting.report import BuildReport
-from my_project_orchestrator.core.verification.validator import ValidationResult
+from misterdev.agent import ProjectOrchestrator
+from misterdev.core.planning.assessment import ProjectAssessment
+from misterdev.core.modes import BuildMode
+from misterdev.core.models import Task
+from misterdev.core.reporting.report import BuildReport
+from misterdev.core.verification.validator import ValidationResult
 
 
 class _FakeClient:
@@ -144,7 +144,7 @@ def test_phase4_flags_default_off_leave_loop_unchanged():
     # The Phase-4 oracle flags are all off in the schema defaults, so a default
     # build neither runs the goal check nor enables the mutation gate — the
     # existing loop's behavior is unchanged.
-    from my_project_orchestrator.config import DEFAULT_CONFIG, get_setting
+    from misterdev.config import DEFAULT_CONFIG, get_setting
 
     orch = DEFAULT_CONFIG["orchestrator"]
     assert orch["goal_check"] is False
@@ -158,7 +158,7 @@ def test_phase4_flags_default_off_leave_loop_unchanged():
 def test_goal_check_guard_skips_invocation_when_off(tmp_path, monkeypatch):
     # When goal_check is off, _run_pipeline must not call _run_goal_check. Guard
     # it by failing the test if the method is invoked under a flags-off config.
-    import my_project_orchestrator.agent as agent_mod
+    import misterdev.agent as agent_mod
 
     called = {"n": 0}
 

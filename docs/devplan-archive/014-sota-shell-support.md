@@ -3,7 +3,7 @@ category: fix
 complexity: small
 depends_on: []
 files_to_modify:
-- my_project_orchestrator/core/sota_validator.py
+- misterdev/core/sota_validator.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Add shell script support to SOTA validator

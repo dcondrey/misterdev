@@ -1,11 +1,11 @@
-from my_project_orchestrator.core.models import Task
-from my_project_orchestrator.core.planning.decomposer import (
+from misterdev.core.models import Task
+from misterdev.core.planning.decomposer import (
     topological_sort,
     _add_implicit_dependencies,
     _parse_tasks,
     format_plan,
 )
-from my_project_orchestrator.core.modes import BuildMode
+from misterdev.core.modes import BuildMode
 
 
 def _task(id, deps=None, category="feature", files_create=None, files_modify=None):
@@ -91,8 +91,8 @@ def test_format_plan():
 def test_ground_task_paths_reclassifies_existing_to_modify():
     import tempfile
     from pathlib import Path
-    from my_project_orchestrator.core.planning.decomposer import _ground_task_paths
-    from my_project_orchestrator.core.models import Task
+    from misterdev.core.planning.decomposer import _ground_task_paths
+    from misterdev.core.models import Task
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -117,8 +117,8 @@ def test_ground_task_paths_reclassifies_existing_to_modify():
 
 def test_decompose_spec_honors_max_tasks_cap():
     import json
-    from my_project_orchestrator.core.planning.decomposer import decompose_spec
-    from my_project_orchestrator.core.planning.assessment import ProjectAssessment
+    from misterdev.core.planning.decomposer import decompose_spec
+    from misterdev.core.planning.assessment import ProjectAssessment
 
     class _FakeClient:
         def generate_code(self, prompt, system_prompt=""):
@@ -136,8 +136,8 @@ def test_decompose_spec_honors_max_tasks_cap():
 def test_decompose_includes_file_map_and_grounding_rule():
     # Regression for the "created a new duplicate file" failure: the decomposer
     # must be shown the real file map and told to use real paths.
-    from my_project_orchestrator.core.planning.decomposer import decompose_spec
-    from my_project_orchestrator.core.planning.assessment import (
+    from misterdev.core.planning.decomposer import decompose_spec
+    from misterdev.core.planning.assessment import (
         ProjectAssessment,
         HealthCheck,
         ProjectStructure,
@@ -172,8 +172,8 @@ def test_decompose_includes_file_map_and_grounding_rule():
 
 
 def test_decompose_without_file_map_uses_fallback_text():
-    from my_project_orchestrator.core.planning.decomposer import decompose_spec
-    from my_project_orchestrator.core.planning.assessment import (
+    from misterdev.core.planning.decomposer import decompose_spec
+    from misterdev.core.planning.assessment import (
         ProjectAssessment,
         HealthCheck,
         ProjectStructure,
@@ -199,7 +199,7 @@ def test_decompose_without_file_map_uses_fallback_text():
 
 
 def test_targets_prompt_helper():
-    from my_project_orchestrator.core.planning.decomposer import _targets_prompt
+    from misterdev.core.planning.decomposer import _targets_prompt
     section, rule = _targets_prompt(None)
     assert section == "" and rule == ""
     section, rule = _targets_prompt(
@@ -214,8 +214,8 @@ def test_targets_prompt_helper():
 
 
 def test_decompose_includes_targets_when_present():
-    from my_project_orchestrator.core.planning.decomposer import decompose_spec
-    from my_project_orchestrator.core.planning.assessment import (
+    from misterdev.core.planning.decomposer import decompose_spec
+    from misterdev.core.planning.assessment import (
         ProjectAssessment,
         HealthCheck,
         ProjectStructure,

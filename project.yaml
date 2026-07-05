@@ -43,7 +43,7 @@ build:
   lint_timeout: 60
   parallel_analysis: true
 
-build_command: "uv run python -c 'import my_project_orchestrator'"
+build_command: "uv run python -c 'import misterdev'"
 test_command: "uv run pytest tests/ -x -q"
 lint_command: "uv run ruff check ."
 

@@ -1,5 +1,5 @@
 import pytest
-from my_project_orchestrator.llm.prompt_manager import PromptManager, _safe_format
+from misterdev.llm.prompt_manager import PromptManager, _safe_format
 
 
 def _pm(templates):

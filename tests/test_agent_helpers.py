@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from my_project_orchestrator.agent_helpers import (
+from misterdev.agent_helpers import (
     _apply_budget_ceiling,
     _budget_exhausted,
     _check_golden_config,

@@ -1,8 +1,8 @@
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.verification.preflight import PreflightValidator, PreflightIssue
-from my_project_orchestrator.core.models import Task
+from misterdev.core.verification.preflight import PreflightValidator, PreflightIssue
+from misterdev.core.models import Task
 
 
 def _task(tid, **kw):

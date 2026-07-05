@@ -1,7 +1,7 @@
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.execution.progress import ProgressTracker
+from misterdev.core.execution.progress import ProgressTracker
 
 
 def test_mark_and_check():

@@ -3,10 +3,10 @@ category: feat
 complexity: medium
 depends_on: []
 files_to_create:
-- my_project_orchestrator/core/preflight.py
+- misterdev/core/preflight.py
 files_to_modify:
-- my_project_orchestrator/core/task.py
-- my_project_orchestrator/agent.py
+- misterdev/core/task.py
+- misterdev/agent.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Add pre-flight devplan validation before LLM execution
@@ -14,7 +14,7 @@ title: Add pre-flight devplan validation before LLM execution
 
 Before spending money on LLM calls, validate that the devplan is well-formed and executable. Currently, errors like missing files, broken dependencies, or invalid test commands are only discovered during execution.
 
-Create `my_project_orchestrator/core/preflight.py`:
+Create `misterdev/core/preflight.py`:
 
 ```python
 class PreflightValidator:

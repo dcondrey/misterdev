@@ -1,5 +1,5 @@
-from my_project_orchestrator.core.planning.advisor import recommend_work, _names
-from my_project_orchestrator.core.planning.assessment import ProjectAssessment
+from misterdev.core.planning.advisor import recommend_work, _names
+from misterdev.core.planning.assessment import ProjectAssessment
 
 
 class _FakeLLM:

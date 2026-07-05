@@ -2,12 +2,12 @@
 category: feat
 complexity: large
 context_files:
-- my_project_orchestrator/tools/git_tool.py
+- misterdev/tools/git_tool.py
 depends_on:
 - '001'
 files_to_modify:
-- my_project_orchestrator/agent.py
-- my_project_orchestrator/task_executors/markdown_plan_executor.py
+- misterdev/agent.py
+- misterdev/task_executors/markdown_plan_executor.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Add automatic regression detection and per-task rollback

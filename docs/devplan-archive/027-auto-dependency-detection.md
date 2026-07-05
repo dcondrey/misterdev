@@ -2,11 +2,11 @@
 category: feat
 complexity: small
 context_files:
-- my_project_orchestrator/core/decomposer.py
+- misterdev/core/decomposer.py
 depends_on:
 - '001'
 files_to_modify:
-- my_project_orchestrator/core/task.py
+- misterdev/core/task.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Auto-detect implicit dependencies from file overlap between tasks

@@ -1,6 +1,6 @@
 import time
 
-from my_project_orchestrator.core.execution.bounded import run_bounded
+from misterdev.core.execution.bounded import run_bounded
 
 
 def test_returns_work_result_when_fast():

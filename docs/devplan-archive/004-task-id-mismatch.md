@@ -2,12 +2,12 @@
 category: fix
 complexity: medium
 context_files:
-- my_project_orchestrator/core/decomposer.py
-- my_project_orchestrator/task_executors/markdown_plan_executor.py
+- misterdev/core/decomposer.py
+- misterdev/task_executors/markdown_plan_executor.py
 depends_on: []
 files_to_modify:
-- my_project_orchestrator/agent.py
-- my_project_orchestrator/core/task.py
+- misterdev/agent.py
+- misterdev/core/task.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Fix task ID mismatch between build() decomposed tasks and TaskManager

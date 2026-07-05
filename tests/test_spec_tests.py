@@ -9,8 +9,8 @@ after a task's gates pass — and that the off path leaves the loop unchanged.
 
 from pathlib import Path
 
-from my_project_orchestrator.core.models import Task
-from my_project_orchestrator.core.verification.spec_tests import (
+from misterdev.core.models import Task
+from misterdev.core.verification.spec_tests import (
     extract_code,
     generate_spec_test,
     spec_test_path,
@@ -144,7 +144,7 @@ def test_write_spec_test_creates_dir_and_file(tmp_path):
 
 
 def test_spec_as_tests_flags_readable_and_off_by_default():
-    from my_project_orchestrator.config import get_setting, DEFAULT_CONFIG
+    from misterdev.config import get_setting, DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG["orchestrator"]["spec_as_tests"] is False
     assert DEFAULT_CONFIG["orchestrator"]["spec_as_tests_block"] is False
@@ -158,7 +158,7 @@ def test_spec_as_tests_flags_readable_and_off_by_default():
 
 def test_pipeline_no_longer_carries_deferral_notice():
     import inspect
-    from my_project_orchestrator.agent import ProjectOrchestrator
+    from misterdev.agent import ProjectOrchestrator
 
     src = inspect.getsource(ProjectOrchestrator._run_pipeline)
     assert "DEFERRED" not in src
@@ -166,7 +166,7 @@ def test_pipeline_no_longer_carries_deferral_notice():
 
 def test_generator_is_wired_into_the_executor():
     import inspect
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 
@@ -180,7 +180,7 @@ class _SpecClient:
 
 
 def test_maybe_generate_writes_outside_project_suite(tmp_path):
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 
@@ -199,7 +199,7 @@ def test_maybe_generate_writes_outside_project_suite(tmp_path):
 
 
 def test_maybe_generate_off_by_default(tmp_path):
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 
@@ -215,7 +215,7 @@ def test_maybe_generate_off_by_default(tmp_path):
 
 
 def test_run_spec_test_skip_without_path(tmp_path):
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 
@@ -230,7 +230,7 @@ def test_run_spec_test_skip_without_path(tmp_path):
 def test_run_spec_test_red_then_green(tmp_path):
     # End-to-end: a failing spec file -> red, a passing one -> green, via real
     # scoped pytest. Proves the red->green TDD signal actually works.
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 
@@ -252,7 +252,7 @@ def test_run_spec_test_red_then_green(tmp_path):
 
 
 def test_run_spec_test_skip_for_non_python_suite(tmp_path):
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 
@@ -272,7 +272,7 @@ def test_run_spec_test_node_test_red_then_green(tmp_path):
     # Node's built-in runner (TS stripped) gives the red->green TDD signal for a
     # typecheck-only frontend target — previously skipped (pytest/jest only).
     import shutil
-    from my_project_orchestrator.task_executors.markdown_plan_executor import (
+    from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
 

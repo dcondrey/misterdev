@@ -3,8 +3,8 @@ category: fix
 complexity: small
 depends_on: []
 files_to_modify:
-- my_project_orchestrator/agent.py
-- my_project_orchestrator/core/change_tracker.py
+- misterdev/agent.py
+- misterdev/core/change_tracker.py
 status: completed
 test_command: uv run pytest tests/ -x -q
 title: Fix all silent exception swallowing across the codebase

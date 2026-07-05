@@ -2,7 +2,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from my_project_orchestrator.core.planning.metacognition import (
+from misterdev.core.planning.metacognition import (
     _extract_json_array,
     SessionAuditor,
 )
