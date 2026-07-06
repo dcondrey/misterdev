@@ -13,6 +13,7 @@
   <a href="https://pypi.org/project/misterdev/"><img src="https://img.shields.io/pypi/pyversions/misterdev" alt="Python versions"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
   <a href="https://github.com/dcondrey/misterdev/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/dcondrey/misterdev/ci.yml?branch=main" alt="CI"></a>
+  <a href="https://glama.ai/mcp/servers/dcondrey/misterdev"><img src="https://glama.ai/mcp/servers/dcondrey/misterdev/badges/score.svg" alt="misterdev MCP server"></a>
 </p>
 
 <p align="center">
