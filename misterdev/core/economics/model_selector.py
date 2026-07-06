@@ -95,6 +95,11 @@ class ModelSelector:
             and s.first_try_rate >= self.first_try_floor
         )
 
+    # Free (`:free`) endpoints are reserved for the easiest tasks: they are slow
+    # (2.5-5 min/call observed) and unreliable, so on anything heavier than a
+    # small task they cost more wall-clock and failed attempts than they save.
+    _FREE_OK_COMPLEXITY = ("trivial", "small")
+
     def _pick(
         self, models: List[str], category: str, complexity: str, explore: bool
     ) -> Optional[str]:
@@ -102,8 +107,12 @@ class ModelSelector:
 
         explore=True uses the optimistic UCB score (unseen models score +inf, so
         they get tried); explore=False uses the conservative Wilson lower bound
-        (unseen models score 0, so only proven models win).
+        (unseen models score 0, so only proven models win). Free endpoints are
+        dropped for non-easy tasks (see ``_FREE_OK_COMPLEXITY``); if that empties
+        the tier, returns None so the caller climbs to the next (paid) rung.
         """
+        if complexity not in self._FREE_OK_COMPLEXITY:
+            models = [m for m in models if ":free" not in m]
         if not models:
             return None
         total = self.ledger.total_observations(category, complexity)

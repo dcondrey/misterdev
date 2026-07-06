@@ -70,8 +70,12 @@ class LLMSettings:
     # reasoning budget. Default leverages reasoning where it pays off (hard
     # tasks) without adding token cost to easy ones; a complexity absent from
     # the map gets no reasoning. Effort values: minimal|low|medium|high|xhigh.
+    # medium uses "low" (not "medium"): high reasoning was the dominant per-task
+    # latency term (~2m47s of a 4.5m task on a medium reasoning call), and medium
+    # tasks rarely need deep reasoning — "low" keeps a single attempt inside the
+    # 5-minute cache window while preserving reasoning for genuinely large tasks.
     reasoning_effort: Dict[str, str] = field(
-        default_factory=lambda: {"large": "high", "medium": "medium"}
+        default_factory=lambda: {"large": "high", "medium": "low"}
     )
     # Harvest OpenRouter's rotating free models into the cheapest tier. On by
     # default for out-of-box cost savings; the quality floor (gates) plus the

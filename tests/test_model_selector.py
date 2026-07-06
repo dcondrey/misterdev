@@ -113,6 +113,21 @@ def test_auto_warmup_explores_easy_tasks(ledger):
     assert sel.select("feature", "small", 0, 3) == "free/x"
 
 
+def test_free_endpoints_reserved_for_easy_tasks(ledger):
+    # `:free` models are slow/unreliable, so they're used only on trivial/small.
+    cfg = _config(
+        models={"cheap": "x/model:free", "strong": "anthropic/big"},
+        selection_posture="aggressive",
+    )
+    sel = ModelSelector(cfg, ledger)
+    # small: the free endpoint is explored.
+    assert sel.select("feature", "small", 0, 3) == "x/model:free"
+    # medium: the free endpoint is skipped (never selected).
+    assert sel.select("feature", "medium", 0, 3) != "x/model:free"
+    # final attempt on medium climbs to the paid model, never free.
+    assert sel.select("feature", "medium", 2, 3) == "anthropic/big"
+
+
 def test_auto_does_not_explore_unproven_on_medium(ledger):
     # Auto mode must NOT gamble a first attempt on an unproven cheap model for a
     # medium task: on a large repo those returned no usable edits. It goes strong.
