@@ -130,6 +130,32 @@ class ContextMixin:
                 )
         return context
 
+    def _fully_shown_target_files(
+        self, project: Project, target_files: List[str]
+    ) -> set:
+        """Target files small enough to be sent verbatim IN FULL by code_context.
+
+        These (existing files at or under the large-file threshold) have their
+        complete text in code_context, so topo can drop their own symbols to
+        avoid duplicating the same code across two sections. A large (windowed)
+        file is NOT included: its out-of-window symbols are still useful in topo.
+        """
+        threshold = (
+            get_setting(project.config, "orchestrator", "large_file_line_threshold")
+            or 800
+        )
+        shown = set()
+        for file_path in target_files:
+            full = project.path / file_path
+            try:
+                if full.exists() and full.stat().st_size:
+                    line_count = full.read_text(encoding="utf-8").count("\n") + 1
+                    if line_count <= threshold:
+                        shown.add(file_path)
+            except (UnicodeDecodeError, OSError):
+                continue
+        return shown
+
     def _read_file_for_context(
         self, full_path: Path, rel_path: str, max_lines: Optional[int]
     ) -> str:

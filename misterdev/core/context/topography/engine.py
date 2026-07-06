@@ -1,7 +1,7 @@
 """The Topography Engine: a lazy-loaded facade over the symbol graph."""
 
 from pathlib import Path
-from typing import Dict, List, Set, Any
+from typing import Dict, List, Optional, Set, Any
 
 from ._log import logger
 from .nodes import SymbolNode
@@ -39,23 +39,45 @@ class TopographyEngine:
         return self.graph.project_outline()
 
     def get_context_for_task(
-        self, query: str, related_files: List[str], max_symbols: int = 30, ranker=None
+        self,
+        query: str,
+        related_files: List[str],
+        max_symbols: int = 30,
+        ranker=None,
+        exclude_files: Optional[Set[str]] = None,
     ) -> str:
         """Retrieves functional neighborhood and semantic context. Triggers lazy init.
 
         When more candidate symbols are found than fit (``max_symbols``) and a
         semantic ``ranker`` is supplied, the kept symbols are the ones most
         relevant to ``query`` rather than an arbitrary slice.
+
+        ``exclude_files`` names files already sent verbatim IN FULL by another
+        context section (small target files in code_context). Their own symbols
+        are dropped here so the same code isn't duplicated across two sections;
+        their cross-file call-neighbors are still surfaced. Files shown only as a
+        windowed excerpt must NOT be excluded — their out-of-window symbols are
+        complementary, not duplicate.
         """
         self.initialize()
+        excluded = exclude_files or set()
 
         context_symbols: Set[str] = set()
         for file in related_files:
             for key, sym in self.graph.symbols.items():
                 if sym.file_path == file:
-                    context_symbols.add(key)
+                    if file not in excluded:
+                        context_symbols.add(key)
                     context_symbols.update(sym.outgoing_calls)
                     context_symbols.update(sym.incoming_calls)
+
+        if excluded:
+            context_symbols = {
+                key
+                for key in context_symbols
+                if key not in self.graph.symbols
+                or self.graph.symbols[key].file_path not in excluded
+            }
 
         if not context_symbols:
             return ""

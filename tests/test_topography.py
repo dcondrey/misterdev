@@ -349,6 +349,28 @@ def test_topography_get_context_with_symbols():
         assert "Topological Context" in ctx
 
 
+def test_exclude_files_drops_own_symbols_keeps_neighbors():
+    with tempfile.TemporaryDirectory() as td:
+        engine = TopographyEngine(Path(td), None)
+        engine._initialized = True
+        target = SymbolNode(
+            "validate", "src/lib.py", "function", 1, 10, "def validate(): helper()"
+        )
+        target.outgoing_calls = {"src/util.py:helper"}
+        neighbor = SymbolNode(
+            "helper", "src/util.py", "function", 1, 4, "def helper(): pass"
+        )
+        engine.graph.symbols["src/lib.py:validate"] = target
+        engine.graph.symbols["src/util.py:helper"] = neighbor
+
+        # lib.py sent in full elsewhere -> its own symbol dropped, neighbor kept.
+        ctx = engine.get_context_for_task(
+            "check", ["src/lib.py"], exclude_files={"src/lib.py"}
+        )
+        assert "helper" in ctx  # cross-file neighbor still surfaced
+        assert "def validate" not in ctx  # own symbol not duplicated
+
+
 def test_topography_max_symbols_cap():
     with tempfile.TemporaryDirectory() as td:
         engine = TopographyEngine(Path(td), None)

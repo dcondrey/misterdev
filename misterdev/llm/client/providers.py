@@ -29,6 +29,13 @@ CACHE_BREAKPOINT = "\x00\x00MISTERDEV_CACHE_BREAKPOINT\x00\x00"
 # Anthropic prices a cache read at ~10% of the base input token rate.
 _CACHE_READ_PRICE_FRACTION = 0.1
 
+# The default 5-minute ephemeral cache — proven and universally supported. It
+# covers the high-value case: a task's retries are seconds apart, so attempt 2/3
+# re-read the stable prefix from cache. (Extended 1h TTL would also cover the
+# cross-task gap, but it needs the extended-cache beta and can 400 where
+# unsupported, so it is not enabled by default.)
+_CACHE_CONTROL = {"type": "ephemeral"}
+
 
 def _supports_prompt_cache(model: str) -> bool:
     """True for models with Anthropic-style ``cache_control`` breakpoints.
@@ -52,13 +59,7 @@ def _cache_user_content(prompt: str, model: str):
         return prefix + suffix
     parts = []
     if prefix:
-        parts.append(
-            {
-                "type": "text",
-                "text": prefix,
-                "cache_control": {"type": "ephemeral"},
-            }
-        )
+        parts.append({"type": "text", "text": prefix, "cache_control": _CACHE_CONTROL})
     if suffix:
         parts.append({"type": "text", "text": suffix})
     return parts
@@ -68,9 +69,7 @@ def _cache_system_content(system_prompt: str, model: str):
     """System content marked cacheable (Claude only), else the plain string."""
     if not _supports_prompt_cache(model):
         return system_prompt
-    return [
-        {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
-    ]
+    return [{"type": "text", "text": system_prompt, "cache_control": _CACHE_CONTROL}]
 
 
 def _close_stream(stream) -> None:
@@ -465,13 +464,7 @@ class AnthropicLLMClient(BaseLLMClient):
             if system_prompt:
                 # Mark the system prompt cacheable: tasks in a wave share it,
                 # so subsequent calls read it from cache at ~10% of input cost.
-                kwargs["system"] = [
-                    {
-                        "type": "text",
-                        "text": system_prompt,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ]
+                kwargs["system"] = _cache_system_content(system_prompt, self.model)
 
             response = self.client.messages.create(**kwargs)
 

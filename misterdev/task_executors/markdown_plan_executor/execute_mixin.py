@@ -246,6 +246,7 @@ class ExecuteMixin:
                 task.description,
                 target_files,
                 ranker=getattr(project, "semantic_ranker", None),
+                exclude_files=self._fully_shown_target_files(project, target_files),
             )
             scratchpad_context = self.scratchpad.format_context(
                 files=target_files + context_files,

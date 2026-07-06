@@ -208,7 +208,7 @@ class _FakeTopography:
         pass
 
     def get_context_for_task(
-        self, description, target_files, max_symbols=30, ranker=None
+        self, description, target_files, max_symbols=30, ranker=None, exclude_files=None
     ):
         return ""
 
