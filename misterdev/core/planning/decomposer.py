@@ -84,6 +84,11 @@ session (1-20 files) and have a concrete "done" condition.
   THAT path in files_to_modify. Use files_to_create only for a file that is
   genuinely absent from the map.
 {targets_rule}{existing_guidance}- Max {max_tasks} tasks. Prioritize: must-fix > must-complete > should-add.
+- Use the FEWEST tasks that cover the work. Each task should be a coherent unit
+  of change, not a fragment. Do NOT split one small file into several tasks: if
+  the whole goal is implementing or fixing a single file, that is ONE task. Only
+  create multiple tasks when they touch different files or genuinely depend on
+  each other in sequence.
 - Order: infrastructure > core types > core logic > features > integration > tests > fixes > cleanup.
 - Each task's files_to_modify must not overlap with another task's files_to_create unless a dependency is declared.
 - For DEBUG mode: order by build-blocking > test-blocking > runtime errors > warnings.
