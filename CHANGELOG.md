@@ -9,6 +9,15 @@ type.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-06
+
+### Changed
+
+- Enriched the MCP tool definitions for tool-definition quality: every parameter
+  now carries a concrete example and constraints, each tool documents when to
+  use it (and when not, and related tools), and titles describe the action with
+  an explicit side-effects note.
+
 ## [0.2.1] - 2026-07-06
 
 ### Fixed
