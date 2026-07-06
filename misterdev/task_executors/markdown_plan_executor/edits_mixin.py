@@ -134,9 +134,50 @@ class EditsMixin:
         return resolved, None
 
     def _apply_edits(self, project: Project, edits: Dict[str, str]):
-        for file_path, content in edits.items():
+        """Apply a batch of full-file edits atomically.
+
+        Writes are all-or-nothing: the pre-edit content of every file is
+        snapshotted first, and if any write raises, the already-written files
+        are rolled back to their snapshot (and newly-created files removed)
+        before the error propagates. Without this, a failure on file N left
+        files 1..N-1 written — a partial, inconsistent tree that only a
+        ``BudgetExceededError`` revert would clean up. Reuses ``write_file`` for
+        the writes rather than introducing a second write path.
+        """
+        snapshots: Dict[Path, Optional[str]] = {}
+        for file_path in edits:
             full_path = project.path / file_path
-            write_file(full_path, content)
+            try:
+                snapshots[full_path] = (
+                    full_path.read_text(encoding="utf-8")
+                    if full_path.exists()
+                    else None
+                )
+            except (UnicodeDecodeError, OSError):
+                # Unreadable pre-image (binary/permission): treat as "cannot
+                # safely roll back", so leave it out of the snapshot and let a
+                # failed write on it surface as-is.
+                snapshots[full_path] = None
+        written: list[Path] = []
+        try:
+            for file_path, content in edits.items():
+                full_path = project.path / file_path
+                write_file(full_path, content)
+                written.append(full_path)
+        except Exception:
+            for full_path in written:
+                original = snapshots.get(full_path)
+                try:
+                    if original is None:
+                        full_path.unlink(missing_ok=True)
+                    else:
+                        write_file(full_path, original)
+                except OSError as restore_err:
+                    logger.error(
+                        f"Failed to roll back {full_path} after a partial edit: "
+                        f"{restore_err}"
+                    )
+            raise
 
     def _run_formatters(self, project: Project, files):
         # Per-file formatters substitute {path}; project-wide formatters run

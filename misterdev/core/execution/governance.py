@@ -111,6 +111,10 @@ _COMPILED_RULES: Tuple[Tuple[re.Pattern, str], ...] = tuple(
     (re.compile(pat, re.IGNORECASE), reason) for pat, reason in _RISK_RULES
 )
 
+# Longest command slice matched against user-supplied approval_required patterns;
+# bounds worst-case regex backtracking (see is_risky).
+_MAX_PATTERN_INPUT = 4096
+
 
 def is_risky(
     command: str, extra_patterns: Optional[List[str]] = None
@@ -127,9 +131,15 @@ def is_risky(
     for rule, reason in _COMPILED_RULES:
         if rule.search(command):
             return True, reason
+    # Bound the input a user-supplied pattern matches against: an adversarial
+    # (or accidentally pathological) approval_required regex can backtrack
+    # catastrophically, and its cost grows with input length. Real commands are
+    # short, so capping the matched slice removes the ReDoS blowup without
+    # affecting classification of legitimate commands.
+    probe = command[:_MAX_PATTERN_INPUT]
     for raw in extra_patterns or []:
         try:
-            if re.search(raw, command, re.IGNORECASE):
+            if re.search(raw, probe, re.IGNORECASE):
                 return True, f"matches policy pattern: {raw}"
         except re.error as e:
             logger.warning(f"Ignoring invalid governance pattern {raw!r}: {e}")

@@ -140,6 +140,20 @@ def test_empty_or_nonstring_command_is_safe():
     assert is_risky(None) == (False, "")
 
 
+def test_extra_pattern_input_is_length_bounded():
+    # User-supplied patterns match only a bounded prefix of the command, so an
+    # adversarial regex cannot backtrack over an unbounded input. A marker past
+    # the cap is therefore not matched.
+    from misterdev.core.execution.governance import _MAX_PATTERN_INPUT
+
+    command = "a" * (_MAX_PATTERN_INPUT + 100) + "danger"
+    risky, _ = is_risky(command, extra_patterns=["danger"])
+    assert not risky
+    # Within the cap it still matches.
+    risky2, _ = is_risky("danger here", extra_patterns=["danger"])
+    assert risky2
+
+
 # --- approval gate ----------------------------------------------------------
 
 

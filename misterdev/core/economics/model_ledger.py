@@ -165,12 +165,22 @@ class ModelLedger:
                     continue
 
     def save(self) -> None:
-        """Persist stats atomically (write-temp-then-rename)."""
+        """Persist stats atomically (write-temp-then-rename).
+
+        Best-effort: the ledger is telemetry that steers model selection, not
+        build state, so a write failure (full/read-only disk, missing artifact
+        dir) is logged and swallowed rather than allowed to crash an otherwise
+        healthy build. The in-memory stats stay authoritative for the rest of
+        the run; only cross-run persistence is lost.
+        """
         with self._lock:
             snapshot = {k: asdict(v) for k, v in self._stats.items()}
         from misterdev.utils.file_utils import atomic_write_json
 
-        atomic_write_json(self.path, snapshot, indent=2, sort_keys=True)
+        try:
+            atomic_write_json(self.path, snapshot, indent=2, sort_keys=True)
+        except OSError as e:
+            logger.warning(f"Model ledger at {self.path} could not be saved: {e}")
 
     def stat(self, model: str, category: str = "", complexity: str = "") -> ModelStat:
         """Return a snapshot of the stat cell for a key (empty if absent).

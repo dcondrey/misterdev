@@ -35,6 +35,20 @@ def test_record_creates_and_persists(ledger_path):
     assert s.last_seen == 100.0
 
 
+def test_record_survives_save_failure(ledger_path, monkeypatch):
+    # A ledger write failure (full/read-only disk) is telemetry, not build state:
+    # record() must keep the in-memory stat and not crash the build.
+    ledger = ModelLedger(ledger_path)
+
+    def boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("misterdev.utils.file_utils.atomic_write_json", boom)
+    stat = ledger.record("cheap/model", "feature", "medium", success=True)
+    assert stat.attempts == 1
+    assert ledger.stat("cheap/model", "feature", "medium").successes == 1
+
+
 def test_cost_only_accrues_on_success(ledger_path):
     ledger = ModelLedger(ledger_path)
     ledger.record("m", "c", "x", success=False, cost=0.05)

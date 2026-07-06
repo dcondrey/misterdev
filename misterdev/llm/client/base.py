@@ -210,10 +210,14 @@ class BaseLLMClient(ABC):
         Shared by generate() and generate_stream() so both paths honor the
         same budget gates before issuing a call.
         """
-        if self.cumulative_usage.estimated_cost >= self._budget:
+        # Read the cumulative cost under the same lock that _track_usage writes
+        # it, so a parallel worker mid-update can't be observed as a torn/stale
+        # value that lets a call slip past the ceiling.
+        with self._usage_lock:
+            spent = self.cumulative_usage.estimated_cost
+        if spent >= self._budget:
             raise BudgetExceededError(
-                f"Budget of ${self._budget:.2f} exceeded "
-                f"(spent ${self.cumulative_usage.estimated_cost:.2f})"
+                f"Budget of ${self._budget:.2f} exceeded (spent ${spent:.2f})"
             )
         if self.task_cost_exceeded(getattr(self, "_current_task", None)):
             task_id = getattr(self, "_current_task", None)
@@ -347,6 +351,16 @@ class BaseLLMClient(ABC):
             self.cost_by_task[bucket] = (
                 self.cost_by_task.get(bucket, 0.0) + usage.estimated_cost
             )
+            running = self.cumulative_usage.estimated_cost
+        logger.debug(
+            "llm call model=%s bucket=%s tokens=%d/%d cost=$%.4f cumulative=$%.4f",
+            getattr(self, "model", ""),
+            bucket,
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.estimated_cost,
+            running,
+        )
 
     @property
     def budget_remaining(self) -> float:
