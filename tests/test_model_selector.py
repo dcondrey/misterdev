@@ -113,6 +113,27 @@ def test_auto_warmup_explores_easy_tasks(ledger):
     assert sel.select("feature", "small", 0, 3) == "free/x"
 
 
+def test_auto_does_not_explore_unproven_on_medium(ledger):
+    # Auto mode must NOT gamble a first attempt on an unproven cheap model for a
+    # medium task: on a large repo those returned no usable edits. It goes strong.
+    sel = ModelSelector(
+        _config(dynamic_selection="auto", maturity_threshold=10), ledger
+    )
+    assert sel.select("feature", "medium", 0, 3) == "anthropic/big"
+
+
+def test_auto_still_uses_proven_cheap_on_medium(ledger):
+    # A cheap model that has EARNED trust is still used first on medium.
+    for _ in range(3):
+        ledger.record(
+            "free/x", "feature", "medium", success=True, first_try=True, cost=0.001
+        )
+    sel = ModelSelector(
+        _config(dynamic_selection="auto", maturity_threshold=10), ledger
+    )
+    assert sel.select("feature", "medium", 0, 3) == "free/x"
+
+
 def test_auto_warmup_keeps_hard_tasks_on_strong(ledger):
     sel = ModelSelector(
         _config(dynamic_selection="auto", maturity_threshold=10), ledger

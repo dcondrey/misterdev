@@ -722,6 +722,40 @@ def test_acceptance_command_passes_completes():
         assert result.status == "completed"
 
 
+def test_acceptance_manifest_error_passes_through(monkeypatch):
+    # A manifest error from the acceptance command means the command is
+    # malformed (build/test already passed, so the manifest exists) — it must
+    # NOT fail the task. This is the emathy `--manifest-path`-dropped bug.
+    with tempfile.TemporaryDirectory() as td:
+        proj = _FakeProject(Path(td), _edit_response("m.py", "x=1\n"))
+        task = _make_task()
+        task.acceptance_criteria = "cargo test -p emathy-core --lib"
+        e = MarkdownPlanExecutor()
+        monkeypatch.setattr(
+            e,
+            "_run_command",
+            lambda *a, **k: (False, "error: could not find `Cargo.toml`"),
+        )
+        passed, _ = e._verify_acceptance(proj, task, True, False, 10)
+        assert passed is True
+
+
+def test_acceptance_real_test_failure_still_fails(monkeypatch):
+    # A genuine (non-structural) command failure must still fail acceptance.
+    with tempfile.TemporaryDirectory() as td:
+        proj = _FakeProject(Path(td), _edit_response("m.py", "x=1\n"))
+        task = _make_task()
+        task.acceptance_criteria = "cargo test -p emathy-core --lib"
+        e = MarkdownPlanExecutor()
+        monkeypatch.setattr(
+            e,
+            "_run_command",
+            lambda *a, **k: (False, "test result: FAILED. 1 passed; 2 failed"),
+        )
+        passed, _ = e._verify_acceptance(proj, task, True, False, 10)
+        assert passed is False
+
+
 def test_acceptance_command_fails_does_not_complete():
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)

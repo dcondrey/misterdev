@@ -134,6 +134,12 @@ class ExecuteMixin:
                 )
                 branch_name = None
 
+        # Untracked files present BEFORE the task, so revert can clean only the
+        # orphans this task creates without touching pre-existing untracked work.
+        untracked_before = (
+            self._untracked_files(project) if self._is_git_repo(project) else set()
+        )
+
         # Fallback: file snapshots if git branching isn't available
         snapshot = None
         if not branch_name:
@@ -253,7 +259,13 @@ class ExecuteMixin:
             # Budget-aware context allocation using configured token limit
             budget = ContextBudget(max_tokens=context_budget_tokens)
             budget.set("code_context", code_context, priority=1)
-            budget.set("topo_context", topo_context, priority=3)
+            # topo_context is the task-ranked (relevant-first) symbol-graph map
+            # that cross-file tasks (delete-all-refs, wire call-sites) need. At
+            # priority=3/min_lines=10 it collapsed to ~10 lines on a large repo
+            # (the emathy run: "kept 11/9094"), editing blind. Keep it above the
+            # truncate-first tier with a real floor so the top-ranked symbols
+            # survive; truncation still trims the long tail under pressure.
+            budget.set("topo_context", topo_context, priority=2, min_lines=40)
             budget.set("error_logs", error_logs or "", priority=1, min_lines=20)
             budget.set("scratchpad", scratchpad_context, priority=3)
             budget.set("interface_contracts", interface_contracts, priority=2)
@@ -349,7 +361,9 @@ class ExecuteMixin:
                     },
                     success=False,
                 )
-                self._abort_task(project, branch_name, base_branch, snapshot)
+                self._abort_task(
+                    project, branch_name, base_branch, snapshot, untracked_before
+                )
                 return self._fail_task(project, task, msg)
 
             if aborted:
@@ -640,7 +654,9 @@ class ExecuteMixin:
             logger.info(
                 f"Escalating strategy from {current_strategy} to surgical for final attempt"
             )
-            self._abort_task(project, branch_name, base_branch, snapshot)
+            self._abort_task(
+                project, branch_name, base_branch, snapshot, untracked_before
+            )
 
             task.processor_data["strategy"] = "surgical"
             task.processor_data["invariants"] = (
@@ -660,7 +676,7 @@ class ExecuteMixin:
         logger.warning(
             f"Task {task.id} failed after all attempts including escalation. Reverting."
         )
-        self._abort_task(project, branch_name, base_branch, snapshot)
+        self._abort_task(project, branch_name, base_branch, snapshot, untracked_before)
         self.scratchpad.record(
             category="pitfall",
             discovery=(

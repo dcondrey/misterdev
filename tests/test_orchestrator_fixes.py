@@ -66,6 +66,37 @@ def test_detect_language_falls_back_to_text():
 # --- LLM edit path validation -----------------------------------------------
 
 
+def test_apply_edits_is_atomic_restores_on_partial_failure():
+    # A write that fails mid-batch must leave NO partial changes: pre-existing
+    # files are restored to their prior content and newly-created files removed.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "existing.py").write_text("original\n")
+        # "blocker" is a FILE, so writing to "blocker/x.py" fails when write_file
+        # tries to mkdir the parent — a real mid-batch write failure.
+        (root / "blocker").write_text("i am a file\n")
+        proj = _FakeProject(td)
+        ex = MarkdownPlanExecutor()
+        edits = {
+            "existing.py": "clobbered\n",  # written first, must be rolled back
+            "new.py": "created\n",  # written second, must be removed
+            "blocker/x.py": "boom\n",  # third write raises
+        }
+        with pytest.raises(OSError):
+            ex._apply_edits(proj, edits)
+        assert (root / "existing.py").read_text() == "original\n"
+        assert not (root / "new.py").exists()
+
+
+def test_apply_edits_writes_all_on_success():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        proj = _FakeProject(td)
+        MarkdownPlanExecutor()._apply_edits(proj, {"a.py": "aa\n", "sub/b.py": "bb\n"})
+        assert (root / "a.py").read_text() == "aa\n"
+        assert (root / "sub" / "b.py").read_text() == "bb\n"
+
+
 def test_validate_edit_paths_rejects_escape_and_empty():
     with tempfile.TemporaryDirectory() as td:
         proj = _FakeProject(td)
@@ -879,9 +910,7 @@ def _patched_run(tmp, tasks, dry_run=False):
         patch.object(
             agent_mod.ProjectOrchestrator, "_get_or_register", return_value=project
         ),
-        patch(
-            "misterdev.agent.topological_sort", side_effect=lambda x: x
-        ),
+        patch("misterdev.agent.topological_sort", side_effect=lambda x: x),
         patch("misterdev.agent.Scratchpad"),
         patch("misterdev.agent.ContractRegistry"),
         patch("misterdev.agent.ChangeTracker"),
@@ -1456,9 +1485,7 @@ def test_choose_goal_number_text_and_quit():
         goal, mode = orch._choose_goal(recs)
     assert goal == "Fix imports" and mode == BuildMode.DEBUG
 
-    with patch(
-        "misterdev.agent.Prompt.ask", return_value="make it faster"
-    ):
+    with patch("misterdev.agent.Prompt.ask", return_value="make it faster"):
         goal, mode = orch._choose_goal(recs)
     assert goal == "make it faster"
 
@@ -1657,7 +1684,7 @@ def test_decompose_sanitizes_task_ids_and_deps():
 
 
 # --- offline executor end-to-end (first real coverage of execute()) ----------
-def _fake_project(repo: Path, monkeypatch, edit_response: str):
+def _fake_project(repo: Path, monkeypatch, edit_response: str, build_command="true"):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     from misterdev.config import DEFAULT_CONFIG
     from misterdev.core.execution.project import Project
@@ -1666,7 +1693,7 @@ def _fake_project(repo: Path, monkeypatch, edit_response: str):
 
     cfg = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy
     cfg["name"] = "fixture"
-    cfg["build_command"] = "true"  # always-passing per-task build check
+    cfg["build_command"] = build_command  # per-task build check
     cfg.pop("test_command", None)
     project = Project(repo, cfg)
     fake = FakeLLMClient(
@@ -1674,6 +1701,104 @@ def _fake_project(repo: Path, monkeypatch, edit_response: str):
     )
     project.llm_client = fake
     return project
+
+
+def test_executor_rejects_task_when_build_gate_stays_red(monkeypatch):
+    """End-to-end against a real repo with a REAL failing build gate: an edit
+    that never satisfies the build command must NOT be reported completed, and
+    the base branch must be left clean (no bad code committed)."""
+    from types import SimpleNamespace
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "t@t.t")
+        _git(repo, "config", "user.name", "t")
+        (repo / "seed.py").write_text("X = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "init")
+        head_before = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True
+        ).stdout.strip()
+
+        # The edit is syntactically valid (passes the pre-apply syntax gate) but
+        # wrong: the build command asserts answer()==42, and this returns 0, so
+        # the build gate is RED on every attempt.
+        edit = "```python:feature.py\ndef answer():\n    return 0\n```\n"
+        build_cmd = (
+            'python -c "import feature, sys; '
+            'sys.exit(0 if feature.answer() == 42 else 1)"'
+        )
+        project = _fake_project(repo, monkeypatch, edit, build_command=build_cmd)
+        task = SimpleNamespace(
+            id="T-red",
+            title="implement answer",
+            description="implement answer",
+            acceptance_criteria="",
+            files_to_modify=[],
+            files_to_create=["feature.py"],
+            context_files=[],
+            dependencies=[],
+            complexity="small",
+            category="feature",
+            processor_data={"strategy": "surgical"},
+            execution_history=[],
+        )
+
+        result = MarkdownPlanExecutor().execute(task, project)
+
+        assert result.status != "completed"
+        # No bad code committed: HEAD is unchanged and feature.py is untracked.
+        tracked = subprocess.run(
+            ["git", "ls-files"], cwd=repo, capture_output=True, text=True
+        ).stdout
+        assert "feature.py" not in tracked
+        head_after = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True
+        ).stdout.strip()
+        assert head_after == head_before
+        # Revert cleans the orphan file the failed task created (not left behind).
+        assert not (repo / "feature.py").exists()
+
+
+def test_abort_preserves_preexisting_untracked_files(monkeypatch):
+    """Revert cleanup removes only orphans the task created, never a user's
+    pre-existing untracked work."""
+    from types import SimpleNamespace
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "t@t.t")
+        _git(repo, "config", "user.name", "t")
+        (repo / "seed.py").write_text("X = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "init")
+        # Pre-existing untracked user work — must survive a task revert.
+        (repo / "user_notes.txt").write_text("keep me\n")
+
+        edit = "```python:feature.py\ndef answer():\n    return 0\n```\n"
+        build_cmd = 'python -c "import feature, sys; sys.exit(1)"'
+        project = _fake_project(repo, monkeypatch, edit, build_command=build_cmd)
+        task = SimpleNamespace(
+            id="T-orphan",
+            title="x",
+            description="x",
+            acceptance_criteria="",
+            files_to_modify=[],
+            files_to_create=["feature.py"],
+            context_files=[],
+            dependencies=[],
+            complexity="small",
+            category="feature",
+            processor_data={"strategy": "surgical"},
+            execution_history=[],
+        )
+        MarkdownPlanExecutor().execute(task, project)
+        assert not (repo / "feature.py").exists()  # orphan cleaned
+        assert (repo / "user_notes.txt").read_text() == "keep me\n"  # preserved
 
 
 def test_executor_execute_commits_real_and_out_of_scope_files(monkeypatch):
@@ -2488,7 +2613,9 @@ def test_warn_if_no_test_gate_silent_for_multi_target():
         # No top-level test command, but a target declares one -> no warning.
         proj = types.SimpleNamespace(
             path=root,
-            config={"targets": [{"name": "web", "path": "web", "build_command": "tsc"}]},
+            config={
+                "targets": [{"name": "web", "path": "web", "build_command": "tsc"}]
+            },
         )
         rep = BuildReport(
             BuildMode.SMART, "x", _assess(), datetime(2026, 1, 1, tzinfo=timezone.utc)

@@ -128,9 +128,14 @@ class ModelSelector:
         if self.auto:
             # Self-regulating: explore cheap/free models on easy tasks while the
             # cell is immature, then settle into conservative cheap-first.
+            # Only trivial/small tasks are explored on the FIRST attempt: on a
+            # large repo, unproven free models returned no usable edits on medium
+            # refactor tasks (the emathy run burned first attempts on null
+            # responses). A cheap model can still earn medium first-attempt use
+            # once PROVEN (the conservative branch picks a proven cheap model).
             if self._mature(category, complexity):
                 return False
-            return complexity in ("trivial", "small", "medium")
+            return complexity in ("trivial", "small")
         if self.posture == "aggressive":
             return True
         if self.posture == "balanced":

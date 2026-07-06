@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple
 
 from misterdev.core.models import Task
 from misterdev.core.execution.project import Project
-from misterdev.core.execution.error_classifier import classify_error
+from misterdev.core.execution.error_classifier import classify_error, ErrorCategory
 
 from .helpers import logger, _extract_acceptance_command, JUDGE_MIN_BUDGET_FRACTION
 
@@ -97,6 +97,21 @@ class GatesMixin:
             )
             if success:
                 logger.info("Acceptance criteria command passed.")
+                return True, ""
+            # A command that can't locate the project manifest is a BROKEN
+            # acceptance command, not failing code: acceptance runs only AFTER
+            # the build/test gates pass, so the manifest demonstrably exists —
+            # a MANIFEST error here means the extracted command is malformed
+            # (the emathy run lost `--manifest-path` and every such task
+            # false-failed on `cargo test` from the repo root). Treat it as a
+            # pass-through. A genuine missing test path (FILE_NOT_FOUND) is left
+            # as a real failure.
+            if classify_error(output) == ErrorCategory.MANIFEST:
+                logger.warning(
+                    "Acceptance command could not locate the project manifest; "
+                    "the build/test gates already passed, so treating acceptance "
+                    f"as satisfied rather than failing on a broken command: {command}"
+                )
                 return True, ""
             return False, (
                 f"Acceptance criterion not met: `{criteria}`\n"

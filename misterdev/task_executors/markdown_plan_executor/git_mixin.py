@@ -131,21 +131,61 @@ class GitMixin:
             else:
                 logger.error(f"Merge failed for {branch_name}: {output}")
 
+    def _untracked_files(self, project: Project) -> set:
+        """Set of untracked (non-ignored) paths in the working tree.
+
+        Used to bound revert cleanup: only files that became untracked DURING a
+        task are removed, so a user's pre-existing untracked work is never
+        touched.
+        """
+        ok, out = self._git(project, "git status --porcelain --untracked-files=all")
+        if not ok:
+            return set()
+        paths = set()
+        for line in out.splitlines():
+            if line.startswith("?? "):
+                paths.add(line[3:].strip().strip('"'))
+        return paths
+
     def _abort_task(
         self,
         project: Project,
         branch_name: Optional[str],
         base_branch: Optional[str],
         snapshot: Optional[Dict],
+        untracked_before: Optional[set] = None,
     ):
-        """Revert a failed task: delete branch or restore file snapshots."""
+        """Revert a failed task: delete branch or restore file snapshots.
+
+        Also removes files the task left UNTRACKED (new files it wrote, whether
+        or not committed on the branch) — ``git reset --hard`` reverts tracked
+        changes but leaves those orphans behind, which otherwise accumulate in
+        the tree (the emathy run left signing.rs/crdt.rs/out/ this way). Only the
+        delta against ``untracked_before`` is cleaned, so pre-existing untracked
+        files are preserved.
+        """
         if branch_name and base_branch:
             self._git(project, "git reset --hard")
             self._git(project, f"git checkout {shlex.quote(base_branch)}")
             self._git(project, f"git branch -D {shlex.quote(branch_name)}")
             logger.info(f"Aborted and deleted branch: {branch_name}")
+            self._clean_task_orphans(project, untracked_before)
         elif snapshot is not None:
             self._revert_files(project, snapshot)
+            self._clean_task_orphans(project, untracked_before)
+
+    def _clean_task_orphans(
+        self, project: Project, untracked_before: Optional[set]
+    ) -> None:
+        """Remove only files that became untracked during the aborted task."""
+        if untracked_before is None:
+            return
+        new_orphans = self._untracked_files(project) - untracked_before
+        if not new_orphans:
+            return
+        paths = " ".join(shlex.quote(p) for p in sorted(new_orphans))
+        self._git(project, f"git clean -fd -- {paths}")
+        logger.info(f"Cleaned {len(new_orphans)} orphan file(s) from reverted task.")
 
     def _git(self, project: Project, command: str) -> tuple:
         ok, output = _run_cmd(command, project.path, None, timeout=30)
