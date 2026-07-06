@@ -277,3 +277,13 @@ def test_panel_member_error_is_abstention_not_failure():
 
     res = run_edit_critic("t", "c", {"a.py": "x"}, critic_call=call, panel=3)
     assert res.status == REJECTED
+
+
+def test_critic_checks_root_cause_and_dry():
+    # The critic is the structural home for symptom-vs-root-cause and DRY: both
+    # must be present in the prompt and the panel lenses.
+    from misterdev.core.verification.critic import _PROMPT, _LENSES
+
+    assert "ROOT CAUSE" in _PROMPT and "DRY" in _PROMPT
+    lenses = " ".join(_LENSES)
+    assert "ROOT CAUSE" in lenses and "DUPLICATION" in lenses

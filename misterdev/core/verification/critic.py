@@ -44,6 +44,10 @@ _LENSES = (
     "Focus above all on EDGE CASES: empty/null/zero/maximum inputs and concurrency.",
     "Focus above all on SAFETY: resource leaks, swallowed errors, and security holes.",
     "Focus above all on REQUIREMENTS: is any acceptance criterion unmet or misread?",
+    "Focus above all on ROOT CAUSE: does this fix the underlying defect, or only "
+    "patch a symptom (a localized workaround that leaves the real cause in place)?",
+    "Focus above all on DUPLICATION (DRY): does this re-implement logic that already "
+    "exists instead of reusing an existing function/type/module?",
 )
 
 # Outcome constants. SKIP means "no opinion" (no client/edit, an unparseable
@@ -62,7 +66,10 @@ _PROMPT = (
     "## Candidate Change\n{candidate}\n\n"
     "Look specifically for: misread or unmet requirements, logic errors, "
     "unhandled edge cases (empty/null/zero/max, concurrency), resource leaks, "
-    "swallowed errors, and security holes. Ignore pure style.\n\n"
+    "swallowed errors, and security holes. Also reject if the change fixes a "
+    "SYMPTOM rather than the ROOT CAUSE (a localized patch that leaves the "
+    "underlying defect in place), or if it DUPLICATES logic that already exists "
+    "instead of reusing it (violates DRY). Ignore pure style.\n\n"
     "Reply with a single JSON object on the first line and nothing else:\n"
     '{{"approved": true|false, "objections": ["one concrete, actionable problem '
     'per item"]}}\n'
