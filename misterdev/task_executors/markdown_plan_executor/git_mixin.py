@@ -1,6 +1,7 @@
 """Git branch-per-task operations and regression bisection."""
 
 import shlex
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from misterdev.core.models import Task
@@ -109,8 +110,16 @@ class GitMixin:
         task is later reverted. With no files, commit empty rather than sweep.
         """
         msg = f"task({task.id}): {task.title or task.description[:50]}"
-        if files:
-            quoted = " ".join(shlex.quote(f) for f in files)
+        stage = list(files or [])
+        # Also commit the task's own source markdown so a status:completed write
+        # rides into the merge. Without this the status write is left uncommitted
+        # and the NEXT task's `git checkout -- .` (below) wipes it, so a finished
+        # devplan showed every task still "pending" (only the last survived).
+        source_rel = self._repo_relative(project, getattr(task, "source_ref", None))
+        if source_rel:
+            stage.append(source_rel)
+        if stage:
+            quoted = " ".join(shlex.quote(f) for f in stage)
             self._git(project, f"git add -- {quoted}")
         self._git(project, f"git commit -m {shlex.quote(msg)} --allow-empty")
 
@@ -130,6 +139,19 @@ class GitMixin:
                 logger.info(f"Merged and cleaned up branch: {branch_name}")
             else:
                 logger.error(f"Merge failed for {branch_name}: {output}")
+
+    def _repo_relative(self, project: Project, path: Optional[str]) -> Optional[str]:
+        """Repo-relative form of a path inside the project, else None.
+
+        Returns None for an empty path or one outside the repo (e.g. a
+        decomposed build() task with no backing file), so those are never staged.
+        """
+        if not path:
+            return None
+        try:
+            return str(Path(path).resolve().relative_to(project.path.resolve()))
+        except ValueError:
+            return None
 
     def _untracked_files(self, project: Project) -> set:
         """Set of untracked (non-ignored) paths in the working tree.

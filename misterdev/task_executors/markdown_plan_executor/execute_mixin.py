@@ -566,6 +566,10 @@ class ExecuteMixin:
                     )
                     pending_attempt = None
                     self._record_success(task, target_files)
+                    # Persist status BEFORE committing so the source markdown's
+                    # status:completed is part of the task commit and survives the
+                    # merge; otherwise the next task's checkout discards it.
+                    project.task_manager.update_task_status(task.id, "completed")
                     self._commit_task(
                         project,
                         branch_name,
@@ -629,6 +633,10 @@ class ExecuteMixin:
                 )
                 pending_attempt = None
                 self._record_success(task, target_files)
+                # Persist status BEFORE committing so status:completed rides into
+                # the task commit and survives the merge (see the tests-passed
+                # path above).
+                project.task_manager.update_task_status(task.id, "completed")
                 self._commit_task(
                     project,
                     branch_name,

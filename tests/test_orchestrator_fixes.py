@@ -1762,6 +1762,58 @@ def test_executor_rejects_task_when_build_gate_stays_red(monkeypatch):
         assert not (repo / "feature.py").exists()
 
 
+def test_completed_status_persists_to_committed_markdown(monkeypatch):
+    """A completed task's status:completed is committed into its source .md and
+    survives the merge — otherwise a finished devplan still reads 'pending' and a
+    rerun redoes done work."""
+    from misterdev.core.models import Task
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "t@t.t")
+        _git(repo, "config", "user.name", "t")
+        (repo / "devplan").mkdir()
+        md = repo / "devplan" / "010-x.md"
+        md.write_text("---\nstatus: pending\n---\ndo the thing\n")
+        (repo / "seed.py").write_text("X = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "init")
+
+        edit = "```python:feature.py\nY = 2\n```\n"
+        project = _fake_project(repo, monkeypatch, edit)  # build_command "true"
+        task = Task(
+            id="010-x",
+            description="do the thing",
+            project_ref=str(repo),
+            source_ref=str(md),
+            files_to_create=["feature.py"],
+            processor_data={"strategy": "surgical"},
+        )
+        project.task_manager.tasks[task.id] = task
+
+        result = MarkdownPlanExecutor().execute(task, project)
+        assert result.status == "completed"
+        committed = subprocess.run(
+            ["git", "show", "HEAD:devplan/010-x.md"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert "status: completed" in committed
+        # No stray uncommitted status write left in the tree.
+        assert (
+            "devplan/010-x.md"
+            not in subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+            ).stdout
+        )
+
+
 def test_abort_preserves_preexisting_untracked_files(monkeypatch):
     """Revert cleanup removes only orphans the task created, never a user's
     pre-existing untracked work."""
