@@ -351,6 +351,17 @@ _ACCEPTANCE_TAIL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Prose CLAUSE that an LLM often appends to a command mid-sentence (no period),
+# e.g. "pytest -q' exits with code 0 and all tests pass". These connective words
+# do not appear in a real test command, so cutting at the first one recovers just
+# the command — and if that over-trims, the real build/test gate is still the
+# ground truth (acceptance runs only after it already passed).
+_ACCEPTANCE_CLAUSE_RE = re.compile(
+    r"\s+(?:exits?|returns?|and\s|with\s|so\s|that\s|which\s|when\s|to\s+ensure|"
+    r"in\s+order|should\s|must\s|all\s+\d)\b.*$",
+    re.IGNORECASE,
+)
+
 
 def _extract_acceptance_command(criteria: str) -> Optional[str]:
     """Extract a single runnable command from an acceptance-criteria string.
@@ -376,6 +387,13 @@ def _extract_acceptance_command(criteria: str) -> Optional[str]:
     # same line doesn't get fed to the shell.
     cmd = re.split(r"(?<=\S)[.;]\s+[A-Z]", cmd, maxsplit=1)[0].strip()
     cmd = _ACCEPTANCE_TAIL_RE.sub("", cmd).strip()
+    # Cut a mid-sentence prose clause the model appended without a period, then
+    # drop a stray unbalanced trailing quote left by the cut (e.g. "-q'").
+    cmd = _ACCEPTANCE_CLAUSE_RE.sub("", cmd).strip()
+    if cmd.count("'") % 2 == 1:
+        cmd = cmd.rsplit("'", 1)[0].strip()
+    if cmd.count('"') % 2 == 1:
+        cmd = cmd.rsplit('"', 1)[0].strip()
     return cmd or None
 
 

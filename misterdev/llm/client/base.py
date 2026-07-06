@@ -12,6 +12,39 @@ from .response import LLMResponse, LLMUsage
 
 logger = setup_logger(__name__)
 
+# Hard ceiling on the characters sent in a single prompt, a last-resort guard so
+# no caller can ever request a prompt larger than any model's context window and
+# hard-fail the whole task (a context-assembly bug once produced a ~37MB / 9M-token
+# prompt). ~2.8M chars ≈ ~800k tokens, under a 1M-token window with headroom.
+# Generous on purpose: normal prompts are budgeted far below this, so it only ever
+# fires on a pathological blowup. When it fires, the MIDDLE is elided (the head
+# carries instructions, the tail carries the actual ask), which degrades far more
+# gracefully than a 400.
+_MAX_PROMPT_CHARS = 2_800_000
+
+
+def _bound_prompt(prompt: str) -> str:
+    """Middle-truncate a prompt that exceeds the hard char ceiling.
+
+    Keeps the head and tail (instructions + the ask) and elides the middle with a
+    marker. A no-op for every normal prompt; only a runaway context-assembly bug
+    can trip it, and truncating beats a context-length API error that fails the
+    task outright.
+    """
+    if len(prompt) <= _MAX_PROMPT_CHARS:
+        return prompt
+    keep = _MAX_PROMPT_CHARS // 2
+    omitted = len(prompt) - 2 * keep
+    logger.warning(
+        f"Prompt of {len(prompt)} chars exceeds the {_MAX_PROMPT_CHARS} ceiling; "
+        f"eliding {omitted} chars from the middle (context-assembly overflow)."
+    )
+    return (
+        prompt[:keep]
+        + f"\n\n... [{omitted} characters elided to fit the model context] ...\n\n"
+        + prompt[-keep:]
+    )
+
 
 class BaseLLMClient(ABC):
     """Abstract LLM client with token tracking and budget enforcement."""
@@ -94,6 +127,7 @@ class BaseLLMClient(ABC):
         This is the primary public interface. Subclasses implement _call().
         """
         self._enforce_budget()
+        prompt = _bound_prompt(prompt)
 
         # Free models (`:free`) are frequently rate-limited upstream and slow to
         # even return the 429. Since routed calls fall back to the reliable paid
@@ -244,6 +278,7 @@ class BaseLLMClient(ABC):
         accounting as generate().
         """
         self._enforce_budget()
+        prompt = _bound_prompt(prompt)
 
         chunks: list[str] = []
         usage: Optional[LLMUsage] = None

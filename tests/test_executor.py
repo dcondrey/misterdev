@@ -702,6 +702,23 @@ def test_extract_acceptance_command_free_text_none():
     assert _extract_acceptance_command("users can reset their password") is None
 
 
+def test_extract_acceptance_command_strips_trailing_prose_clause():
+    # A command with an appended English clause (no period) reduces to the clean
+    # command instead of a mangled shell string that fails good code.
+    assert (
+        _extract_acceptance_command(
+            "python -m pytest -q' exits with code 0 and all 16 tests pass"
+        )
+        == "python -m pytest -q"
+    )
+    assert _extract_acceptance_command("run pytest and check the output") == "pytest"
+
+
+def test_extract_acceptance_command_keeps_balanced_quoted_args():
+    # A legitimate command with balanced quotes is NOT over-trimmed.
+    assert _extract_acceptance_command('pytest -k "test_foo"') == 'pytest -k "test_foo"'
+
+
 def _run_acceptance_task(
     td, file_path, content, test_command, acceptance_criteria, config_extra=None
 ):

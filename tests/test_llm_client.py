@@ -1281,3 +1281,16 @@ def test_cache_read_tokens_priced_at_discount():
     assert discounted.cache_read_tokens == 900
     assert discounted.estimated_cost == expected
     assert discounted.estimated_cost < full
+
+
+def test_bound_prompt_guards_context_blowup():
+    from misterdev.llm.client.base import _bound_prompt, _MAX_PROMPT_CHARS
+
+    # Normal prompts pass through untouched.
+    assert _bound_prompt("hello") == "hello"
+    assert _bound_prompt("x" * 5000) == "x" * 5000
+    # A pathological prompt is middle-elided, keeping head + tail (the ask).
+    big = "HEAD" + "m" * (_MAX_PROMPT_CHARS * 3) + "TAIL"
+    out = _bound_prompt(big)
+    assert len(out) <= _MAX_PROMPT_CHARS + 200
+    assert out.startswith("HEAD") and out.endswith("TAIL") and "elided" in out
