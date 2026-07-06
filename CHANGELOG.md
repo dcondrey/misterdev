@@ -9,6 +9,28 @@ type.
 
 ## [Unreleased]
 
+### Added
+
+- **Self-reflection on failure (Reflexion loop)** — a failed gate now triggers a
+  short root-cause reflection, accumulated across attempts and fed into the next
+  one, so a retry debugs the underlying problem instead of re-patching the
+  symptom. On by default (`orchestrator.reflection`); independent and
+  timeout-bounded, SKIP-on-error so it only ever adds guidance.
+- **Reproduction-first repair** — when `spec_as_tests` is on, the generated
+  failing test's source is injected into the edit context as the concrete target
+  ("make this pass"), so each attempt aims at an executable objective and
+  converges via real feedback rather than the model's self-report.
+
+### Fixed
+
+- Acceptance-command extraction no longer runs a mangled command built from an
+  LLM's trailing prose clause (which rejected correct code); it cuts at the first
+  prose connective and strips a stray quote, keeping balanced quoted args.
+- A context-assembly overflow can no longer hard-fail a task: `generate()` now
+  middle-elides any prompt over a generous character ceiling for every caller.
+- The decomposer right-sizes work — fewest tasks that cover it, never splitting
+  one small file across several tasks.
+
 ## [0.2.2] - 2026-07-06
 
 ### Changed
