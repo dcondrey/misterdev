@@ -4,6 +4,12 @@
 # provider key your project.yaml names) at runtime to actually build.
 FROM python:3.12-slim
 
+# Links the published ghcr.io package back to this repo (inherits its README and
+# visibility on the Packages page).
+LABEL org.opencontainers.image.source="https://github.com/dcondrey/misterdev"
+LABEL org.opencontainers.image.description="misterdev MCP server — autonomous LLM build orchestrator over stdio MCP."
+LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
+
 WORKDIR /app
 COPY . /app
 
