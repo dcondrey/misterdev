@@ -17,7 +17,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, fields, replace
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from misterdev.logging_setup import setup_logger
 
@@ -291,6 +291,23 @@ class ModelLedger:
                 if (not category or s.category == category)
                 and (not complexity or s.complexity == complexity)
             )
+
+    def global_first_try(self, model: str) -> Tuple[float, float]:
+        """A model's first-try (attempts, success_rate) aggregated across ALL its
+        (category, complexity) cells.
+
+        Used as an empirical-Bayes prior to warm-start a cell the model has little
+        data on: performance elsewhere is evidence — imperfect, since competence
+        varies by task kind, so callers blend it with a small weight that cell
+        data quickly overrides. Returns (0.0, 0.0) for an unseen model.
+        """
+        att = succ = 0.0
+        with self._lock:
+            for s in self._stats.values():
+                if s.model == model:
+                    att += s.first_try_attempts
+                    succ += s.first_try_successes
+        return att, (succ / att if att > 0 else 0.0)
 
     def known_models(self) -> List[str]:
         with self._lock:

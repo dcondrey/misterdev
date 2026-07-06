@@ -113,6 +113,44 @@ def test_auto_warmup_explores_easy_tasks(ledger):
     assert sel.select("feature", "small", 0, 3) == "free/x"
 
 
+def test_warm_start_borrows_proven_performance_from_other_cells(ledger):
+    # A model proven on (feature, small) is trusted on a COLD (feature, medium)
+    # cell before it has local data there — shrinkage toward its global rate.
+    cfg = _config()
+    for _ in range(4):
+        ledger.record(
+            "free/x", "feature", "small", success=True, first_try=True, cost=0.001
+        )
+    sel = ModelSelector(cfg, ledger)
+    assert sel._proven("free/x", "feature", "medium") is True
+    assert sel.select("feature", "medium", 0, 3) == "free/x"
+
+
+def test_warm_start_does_not_trust_a_globally_weak_model(ledger):
+    # A model that fails everywhere is NOT warm-started into a new cell.
+    cfg = _config()
+    for _ in range(4):
+        ledger.record("free/x", "feature", "small", success=False, first_try=True)
+    sel = ModelSelector(cfg, ledger)
+    assert sel._proven("free/x", "feature", "medium") is False
+    assert sel.select("feature", "medium", 0, 3) == "anthropic/big"
+
+
+def test_warm_start_prior_yields_to_local_evidence(ledger):
+    # The prior is small: a few real failures on the cell override a strong global
+    # rate, so a model that can't do THIS cell stops being trusted here.
+    cfg = _config()
+    for _ in range(6):
+        ledger.record(
+            "free/x", "feature", "small", success=True, first_try=True, cost=0.001
+        )
+    for _ in range(5):
+        ledger.record("free/x", "feature", "medium", success=False, first_try=True)
+    sel = ModelSelector(cfg, ledger)
+    # global is strong but local (medium) evidence of failure dominates.
+    assert sel._proven("free/x", "feature", "medium") is False
+
+
 def test_incompetent_model_is_avoided(ledger):
     # A model with enough attempts and a success rate below the floor is proven
     # unable to do this kind of task and must not be selected for it.

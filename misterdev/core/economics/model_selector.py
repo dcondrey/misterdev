@@ -89,13 +89,28 @@ class ModelSelector:
         avg = self.ledger.stat(model, category, complexity).avg_cost
         return avg if avg > 0 else 1.0
 
+    # Empirical-Bayes prior weight: how many pseudo-observations of the model's
+    # GLOBAL first-try rate to fold into a cold cell. Small, so cell-specific data
+    # overrides it within a few real attempts — the prior only warm-starts.
+    _PRIOR_WEIGHT = 3.0
+
     def _proven(self, model: str, category: str, complexity: str) -> bool:
-        """True when a model has earned trust for a first attempt."""
+        """True when a model has earned trust for a first attempt on this cell.
+
+        A cold cell borrows strength from the model's GLOBAL first-try rate
+        (shrinkage): a model reliable everywhere else clears the floor here with
+        fewer local observations, while a globally-weak model does not. As the
+        cell accumulates real attempts, the blended rate converges to the cell's
+        own — the prior fades. A model with no history anywhere stays unproven.
+        """
         s = self.ledger.stat(model, category, complexity)
-        return (
-            s.first_try_attempts >= self.min_obs
-            and s.first_try_rate >= self.first_try_floor
-        )
+        g_att, g_rate = self.ledger.global_first_try(model)
+        prior = self._PRIOR_WEIGHT if g_att >= self.min_obs else 0.0
+        effective_obs = s.first_try_attempts + prior
+        if effective_obs < self.min_obs:
+            return False
+        blended = (s.first_try_successes + prior * g_rate) / effective_obs
+        return blended >= self.first_try_floor
 
     def _incompetent(self, model: str, category: str, complexity: str) -> bool:
         """Proven UNABLE to do this kind of task: enough attempts to judge and a
