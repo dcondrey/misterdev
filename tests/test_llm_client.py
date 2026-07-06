@@ -550,6 +550,20 @@ def test_embedding_backend_routing():
     assert create_embedding_client({"llm": {"embedding_backend": "none"}}) is None
 
 
+def test_auto_openrouter_prefers_local_when_fastembed_present(monkeypatch):
+    import misterdev.llm.client.embeddings as emb
+
+    cfg = {"llm": {"provider": "openrouter", "embedding_backend": "auto"}}
+    # fastembed present -> local (avoids the data-policy-blocked API embedder).
+    monkeypatch.setattr(emb.importlib.util, "find_spec", lambda name: object())
+    assert isinstance(create_embedding_client(cfg), LocalEmbeddingClient)
+    # fastembed absent -> falls back to the OpenRouter API embedder (no regression).
+    monkeypatch.setattr(emb.importlib.util, "find_spec", lambda name: None)
+    sentinel = object()
+    monkeypatch.setattr(emb, "_create_openrouter_embedding_client", lambda c: sentinel)
+    assert create_embedding_client(cfg) is sentinel
+
+
 def test_local_embedding_client_default_model_and_lazy():
     c = LocalEmbeddingClient({"llm": {}})
     assert c.model == "BAAI/bge-small-en-v1.5"
@@ -1178,3 +1192,79 @@ def test_paid_model_keeps_full_retries(monkeypatch):
     with pytest.raises(LLMCallError):
         c.generate("p")
     assert c._call_count == 3
+
+
+# --- prompt caching ---------------------------------------------------------
+
+
+def test_cache_split_marks_prefix_cacheable_for_claude():
+    from misterdev.llm.client.providers import (
+        CACHE_BREAKPOINT,
+        _cache_user_content,
+    )
+
+    prompt = f"STABLE CONTEXT{CACHE_BREAKPOINT}VOLATILE TAIL"
+    parts = _cache_user_content(prompt, "anthropic/claude-sonnet-4-6")
+    assert isinstance(parts, list) and len(parts) == 2
+    assert parts[0]["text"] == "STABLE CONTEXT"
+    assert parts[0]["cache_control"] == {"type": "ephemeral"}
+    assert parts[1]["text"] == "VOLATILE TAIL"
+    assert "cache_control" not in parts[1]
+
+
+def test_cache_split_strips_breakpoint_for_non_claude():
+    from misterdev.llm.client.providers import (
+        CACHE_BREAKPOINT,
+        _cache_user_content,
+    )
+
+    prompt = f"A{CACHE_BREAKPOINT}B"
+    # Non-Anthropic model: no cache_control, breakpoint removed, content intact.
+    assert _cache_user_content(prompt, "openai/gpt-4o") == "AB"
+
+
+def test_cache_split_noop_without_breakpoint():
+    from misterdev.llm.client.providers import _cache_user_content
+
+    assert _cache_user_content("plain prompt", "claude") == "plain prompt"
+
+
+def test_openrouter_build_messages_emits_cache_control():
+    from misterdev.llm.client.providers import CACHE_BREAKPOINT, OpenRouterLLMClient
+
+    c = OpenRouterLLMClient.__new__(OpenRouterLLMClient)
+    c.model = "anthropic/claude-sonnet-4-6"
+    msgs = c._build_messages(f"CTX{CACHE_BREAKPOINT}ASK", "sys")
+    system, user = msgs[0], msgs[1]
+    assert system["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert user["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert user["content"][0]["text"] == "CTX"
+
+
+def test_openrouter_build_messages_plain_for_non_claude():
+    from misterdev.llm.client.providers import CACHE_BREAKPOINT, OpenRouterLLMClient
+
+    c = OpenRouterLLMClient.__new__(OpenRouterLLMClient)
+    c.model = "meta-llama/llama-3-70b"
+    msgs = c._build_messages(f"CTX{CACHE_BREAKPOINT}ASK", "sys")
+    # Plain strings, breakpoint stripped — byte-identical shape to before caching.
+    assert msgs[0]["content"] == "sys"
+    assert msgs[1]["content"] == "CTXASK"
+
+
+def test_cache_read_tokens_priced_at_discount():
+    from misterdev.llm.client.providers import OpenRouterLLMClient
+
+    c = OpenRouterLLMClient.__new__(OpenRouterLLMClient)
+    c.model = "anthropic/claude-sonnet-4-6"
+    details = types.SimpleNamespace(cached_tokens=900)
+    usage_data = types.SimpleNamespace(
+        prompt_tokens=1000, completion_tokens=0, prompt_tokens_details=details
+    )
+    discounted = c._usage_from(usage_data)
+    # 100 fresh + 900 cached@10% == priced like 190 input tokens, not 1000.
+    full = c._estimate_cost(1000, 0)
+    expected = c._estimate_cost(100, 0) + c._estimate_cost(900, 0) * 0.1
+    assert discounted.cache_read_tokens == 900
+    assert discounted.estimated_cost == expected
+    assert discounted.estimated_cost < full

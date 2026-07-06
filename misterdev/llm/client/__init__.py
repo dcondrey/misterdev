@@ -24,6 +24,7 @@ from .errors import (
     _is_retryable_error,
 )
 from .providers import (
+    CACHE_BREAKPOINT,
     AnthropicLLMClient,
     OpenRouterLLMClient,
     _deny_unless_training_allowed,
@@ -122,6 +123,7 @@ def create_llm_client(config: dict) -> BaseLLMClient:
 
 __all__ = [
     "APPLY_EDITS_TOOL",
+    "CACHE_BREAKPOINT",
     "AnthropicLLMClient",
     "BaseLLMClient",
     "BudgetExceededError",

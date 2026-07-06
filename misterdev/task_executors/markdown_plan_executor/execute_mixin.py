@@ -13,6 +13,7 @@ from misterdev.core.execution.error_resolver import ErrorResolver
 from misterdev.core.execution.error_classifier import (
     format_classified_error,
 )
+from misterdev.llm.client import CACHE_BREAKPOINT
 from misterdev.llm.prompt_manager import PromptManager
 from misterdev.config import get_setting
 
@@ -306,6 +307,10 @@ class ExecuteMixin:
                     f"Strategy: {strategy.upper()}. Output MUST be syntactically valid. "
                     "Provide certainty indicators."
                 ),
+                # Marks the boundary between the cacheable stable context above
+                # and the volatile tail below (see PROMPT_TEMPLATES); the client
+                # caches everything before it.
+                "cache_breakpoint": CACHE_BREAKPOINT,
             }
 
             system_prompt = prompt_manager.format_prompt("system", context_dict)

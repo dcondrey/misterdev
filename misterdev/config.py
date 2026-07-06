@@ -298,6 +298,10 @@ PROMPT_TEMPLATES = {
         "and ensure your output is syntactically valid.\n"
         "{invariants}\n{consensus_context}"
     ),
+    # Stable context (task, contracts, code) comes first and ends with
+    # {cache_breakpoint}; the volatile tail follows. The client caches everything
+    # before the breakpoint, so retries re-read it at ~10% input price. Reordering
+    # keeps the cached prefix identical across attempts.
     "task_completion_instruction": (
         "## Task\n{task.description}\n\n"
         "## Acceptance Criteria\n{acceptance_criteria}\n\n"
@@ -305,17 +309,22 @@ PROMPT_TEMPLATES = {
         "## Interface Contracts (MUST honor exact signatures)\n{interface_contracts}\n\n"
         "## Recent Changes to Related Files\n{recent_changes}\n\n"
         "## Scratchpad (learnings from previous tasks)\n{scratchpad}\n\n"
-        "## Code Context\n{code_context}\n\n"
+        "## Code Context\n{code_context}\n"
+        "{cache_breakpoint}\n"
         "Modify the EXISTING files in scope. Do NOT create a new file that "
         "re-implements functionality that already exists in the Code Context — "
         "locate and edit the real file instead. Output your changes as markdown "
         "code blocks with file paths."
     ),
+    # error_logs is LAST (after the breakpoint) so the cached prefix — task,
+    # contracts, code — stays identical across attempts and only the changing
+    # error text is re-sent uncached.
     "error_correction_instruction": (
-        "## Previous Attempt Failed\n{error_logs}\n\n"
         "## Task\n{task.description}\n\n"
         "## Interface Contracts\n{interface_contracts}\n\n"
-        "## Code Context\n{code_context}\n\n"
+        "## Code Context\n{code_context}\n"
+        "{cache_breakpoint}\n"
+        "## Previous Attempt Failed\n{error_logs}\n\n"
         "Fix the error. Output corrected code as markdown code blocks with file paths."
     ),
 }

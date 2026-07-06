@@ -18,6 +18,60 @@ logger = setup_logger(__name__)
 # to finish.
 _REQUEST_TIMEOUT_SECONDS = 300.0
 
+# Marker the executor inserts between the stable, reusable context (project
+# structure, symbol graph, target-file code) and the volatile per-attempt tail
+# (the specific ask, error logs). The client splits the prompt here and marks
+# everything before it cacheable, so retries and same-wave tasks re-read that
+# prefix at ~10% of input price instead of paying full price every call. Input
+# is ~83% of a run's tokens, so this is the largest single cost lever.
+CACHE_BREAKPOINT = "\x00\x00MISTERDEV_CACHE_BREAKPOINT\x00\x00"
+
+# Anthropic prices a cache read at ~10% of the base input token rate.
+_CACHE_READ_PRICE_FRACTION = 0.1
+
+
+def _supports_prompt_cache(model: str) -> bool:
+    """True for models with Anthropic-style ``cache_control`` breakpoints.
+
+    Gated to Claude so caching never reshapes requests for other providers
+    (where a content-parts array or an unknown field could 400).
+    """
+    m = (model or "").lower()
+    return "claude" in m or "anthropic" in m
+
+
+def _cache_user_content(prompt: str, model: str):
+    """User-message content, split at CACHE_BREAKPOINT into a cached prefix and a
+    fresh suffix. Returns the plain string (byte-identical to before) when the
+    model can't cache or no breakpoint is present, so the uncached path is
+    unchanged. A stray breakpoint is always stripped."""
+    if not prompt or CACHE_BREAKPOINT not in prompt:
+        return prompt
+    prefix, suffix = prompt.split(CACHE_BREAKPOINT, 1)
+    if not _supports_prompt_cache(model):
+        return prefix + suffix
+    parts = []
+    if prefix:
+        parts.append(
+            {
+                "type": "text",
+                "text": prefix,
+                "cache_control": {"type": "ephemeral"},
+            }
+        )
+    if suffix:
+        parts.append({"type": "text", "text": suffix})
+    return parts
+
+
+def _cache_system_content(system_prompt: str, model: str):
+    """System content marked cacheable (Claude only), else the plain string."""
+    if not _supports_prompt_cache(model):
+        return system_prompt
+    return [
+        {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}
+    ]
+
 
 def _close_stream(stream) -> None:
     """Close an SDK stream's underlying HTTP connection (best effort), so an
@@ -209,24 +263,40 @@ class OpenRouterLLMClient(BaseLLMClient):
             body["reasoning"] = {"effort": effort}
         return body
 
-    @staticmethod
-    def _build_messages(prompt: str, system_prompt: str) -> list:
+    def _build_messages(self, prompt: str, system_prompt: str) -> list:
         messages = []
         if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+            messages.append(
+                {
+                    "role": "system",
+                    "content": _cache_system_content(system_prompt, self.model),
+                }
+            )
+        messages.append(
+            {"role": "user", "content": _cache_user_content(prompt, self.model)}
+        )
         return messages
 
     def _usage_from(self, usage_data) -> LLMUsage:
         """Build an LLMUsage from an OpenAI-compatible usage object (empty when
-        the provider omitted usage)."""
+        the provider omitted usage).
+
+        When the provider reports cached prompt tokens (prompt caching hit),
+        price them at 10% of the input rate so the budget/ledger reflect the real
+        discount instead of charging cache reads at full price.
+        """
         usage = LLMUsage()
         if usage_data:
             usage.prompt_tokens = usage_data.prompt_tokens or 0
             usage.completion_tokens = usage_data.completion_tokens or 0
             usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
-            usage.estimated_cost = self._estimate_cost(
-                usage.prompt_tokens, usage.completion_tokens
+            details = getattr(usage_data, "prompt_tokens_details", None)
+            cached = getattr(details, "cached_tokens", 0) or 0 if details else 0
+            usage.cache_read_tokens = cached
+            fresh_input = max(0, usage.prompt_tokens - cached)
+            usage.estimated_cost = (
+                self._estimate_cost(fresh_input, usage.completion_tokens)
+                + self._estimate_cost(cached, 0) * _CACHE_READ_PRICE_FRACTION
             )
         return usage
 
@@ -387,7 +457,9 @@ class AnthropicLLMClient(BaseLLMClient):
             kwargs = {
                 "model": self.model,
                 "max_tokens": self.max_tokens,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [
+                    {"role": "user", "content": _cache_user_content(prompt, self.model)}
+                ],
                 "temperature": self.temperature,
             }
             if system_prompt:
@@ -424,11 +496,13 @@ class AnthropicLLMClient(BaseLLMClient):
         kwargs = {
             "model": self.model,
             "max_tokens": self.max_tokens,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "user", "content": _cache_user_content(prompt, self.model)}
+            ],
             "temperature": self.temperature,
         }
         if system_prompt:
-            kwargs["system"] = system_prompt
+            kwargs["system"] = _cache_system_content(system_prompt, self.model)
         try:
             stream_cm = self.client.messages.stream(**kwargs)
         except Exception as e:

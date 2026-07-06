@@ -1,3 +1,4 @@
+import importlib.util
 from typing import List
 
 from misterdev.config import get_section_setting, get_setting
@@ -92,10 +93,11 @@ def create_embedding_client(config: dict):
     """Build an embedding client, or None when embeddings are unavailable.
 
     Backend (llm.embedding_backend): "local" forces fastembed; "openrouter"
-    forces the API; "none" disables dense ranking; "auto" uses OpenRouter for an
-    OpenRouter provider and otherwise falls back to a local fastembed model so
-    semantic retrieval works offline without an API key. Any setup failure
-    returns None, so retrieval degrades to lexical-only rather than breaking.
+    forces the API; "none" disables dense ranking; "auto" prefers a local
+    fastembed model when the extra is installed (free, offline, never blocked by
+    a provider data policy) and falls back to the OpenRouter API embedder only
+    when local isn't available. Any setup failure returns None, so retrieval
+    degrades to lexical-only rather than breaking.
     """
     backend = get_setting(config, "llm", "embedding_backend")
     if backend == "none":
@@ -106,5 +108,14 @@ def create_embedding_client(config: dict):
         return _create_openrouter_embedding_client(config)
     # auto
     if get_setting(config, "llm", "provider") == "openrouter":
+        # Prefer a LOCAL fastembed model when the extra is installed: it is free,
+        # offline, and — unlike an OpenRouter embedding model under
+        # data_collection=deny — never blocked by a provider data policy (that
+        # block silently dropped both emathy runs to lexical-only ranking). When
+        # fastembed isn't installed, keep the API embedder (no regression).
+        if importlib.util.find_spec("fastembed") is not None:
+            local = _create_local_embedding_client(config)
+            if local is not None:
+                return local
         return _create_openrouter_embedding_client(config)
     return _create_local_embedding_client(config)
