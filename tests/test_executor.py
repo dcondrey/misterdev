@@ -1276,6 +1276,7 @@ def test_critic_reject_then_defers_to_gates_after_bound():
                 "max_task_attempts": 3,
                 "adversarial_critic": True,
                 "critic_max_rejections": 1,
+                "reflection": False,
             },
         )
         assert result.status == "completed"
@@ -1672,7 +1673,7 @@ def test_full_file_fallback_after_repeated_apply_failures():
         task.files_to_modify = ["a.ts"]
         proj = _FakeProject(td, bad)
         proj.llm_client = _Capturing(bad)
-        proj.config["orchestrator"] = {"max_task_attempts": 3}
+        proj.config["orchestrator"] = {"max_task_attempts": 3, "reflection": False}
         proj.config["llm"] = {"use_tools": False}  # text SEARCH/REPLACE path
         MarkdownPlanExecutor().execute(task, proj, use_git_branch=False)
         ps = proj.llm_client.prompts

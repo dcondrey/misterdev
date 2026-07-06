@@ -301,6 +301,15 @@ class OrchestratorSettings:
     critic_auto_categories: List[str] = field(
         default_factory=lambda: ["refactor", "fix", "integration"]
     )
+    # Self-reflection on a failed attempt (the Reflexion pattern). When on, a
+    # failed gate triggers a short model reflection on the ROOT CAUSE and what to
+    # do differently, accumulated across attempts and fed into the next one — so a
+    # retry debugs the underlying problem instead of re-patching the symptom. On
+    # by default: it only ADDS guidance on a failure (never on a first attempt or
+    # a success), is timeout-bounded, and SKIPs cleanly with no client. Costs one
+    # extra short call per failed attempt; set false to disable entirely.
+    reflection: bool = True
+    reflection_timeout: int = 45
     # Independent completeness-claim verifier. Before a build composes its spec
     # and tasks, each feature the analyzer flagged "incomplete" and each "stub"
     # file is rechecked against the REAL file + tests by a second component

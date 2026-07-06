@@ -5,6 +5,7 @@ from typing import List, Optional, Tuple
 from misterdev.core.models import Task
 from misterdev.core.execution.project import Project
 from misterdev.core.execution.error_classifier import classify_error, ErrorCategory
+from misterdev.config import get_setting
 
 from .helpers import logger, _extract_acceptance_command, JUDGE_MIN_BUDGET_FRACTION
 
@@ -21,6 +22,40 @@ class GatesMixin:
             "### Previous Attempt Failures (a different approach is required)\n"
             f"{past}\n\n"
         )
+
+    def _apply_reflection(
+        self, project: Project, task: Task, error_logs: str, reflections: List[str]
+    ) -> str:
+        """Reflect on the previous failure and prepend the running reflections.
+
+        Generates one short root-cause reflection from ``error_logs`` (the
+        Reflexion pattern), appends it to the accumulated ``reflections``, and
+        returns ``error_logs`` with a REFLECTION header prepended so the next
+        attempt debugs the underlying cause. Best-effort and off when
+        ``orchestrator.reflection`` is false; a skip/error leaves ``error_logs``
+        unchanged, so the retry path is never blocked or worsened.
+        """
+        if not get_setting(project.config, "orchestrator", "reflection"):
+            return error_logs
+        from misterdev.core.verification.reflection import reflect_on_failure
+
+        reflect_model = (project.config.get("critic") or {}).get("model")
+        new_reflection = reflect_on_failure(
+            task.description,
+            error_logs,
+            prior_reflections=reflections,
+            llm_client=project.llm_client,
+            reflect_model=reflect_model,
+            timeout=get_setting(project.config, "orchestrator", "reflection_timeout"),
+        )
+        if new_reflection:
+            reflections.append(new_reflection)
+        if not reflections:
+            return error_logs
+        header = "### Reflection on why previous attempts failed\n" + "\n\n".join(
+            reflections
+        )
+        return f"{header}\n\n{error_logs}"
 
     def _build_error_context(
         self,

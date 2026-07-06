@@ -158,6 +158,10 @@ class ExecuteMixin:
             else None
         )
         prior_errors: List[str] = []
+        # Accumulated failure reflections (Reflexion): each failed attempt adds a
+        # short root-cause reflection that the NEXT attempt sees, so a retry fixes
+        # the underlying problem rather than re-patching the symptom.
+        reflections: List[str] = []
         # Count anchored-edit application failures so we can fall back to a
         # full-file rewrite when SEARCH/REPLACE keeps not matching (a stall that
         # otherwise makes no progress across attempts).
@@ -236,6 +240,15 @@ class ExecuteMixin:
             if pending_attempt is not None:
                 self._ledger_record(project, task, pending_attempt, success=False)
                 pending_attempt = None
+
+            # Reflexion: a prior attempt failed (error_logs set). Before retrying,
+            # reflect on the ROOT CAUSE and fold the running reflections into the
+            # error context, so this attempt fixes the underlying problem rather
+            # than re-patching the symptom. One central seam covers every gate.
+            if attempt > 0 and error_logs:
+                error_logs = self._apply_reflection(
+                    project, task, error_logs, reflections
+                )
 
             code_context = self._get_code_context(
                 project, target_files, context_files, task=task
