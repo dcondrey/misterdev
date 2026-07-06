@@ -214,13 +214,19 @@ class ProjectOrchestrator:
             wave += 1
             reporter.start_wave(wave, [t.id for t in ready])
             for task in ready:
-                self._inject_task_context(
-                    task, contracts, changes, strategy_optimizer, project
-                )
                 reporter.start_task(task.id, task.title or task.description[:50])
                 try:
+                    self._inject_task_context(
+                        task, contracts, changes, strategy_optimizer, project
+                    )
                     result = executor.execute(task, project)
                     task.execution_history.append(result)
+                except BudgetExceededError as e:
+                    # Terminal (budget spent or account out of credits): stop the
+                    # whole run cleanly rather than crash or churn the next tasks.
+                    logger.warning(f"Halting run: {e}")
+                    aborted = True
+                    break
                 except Exception as e:
                     logger.error(f"Task {task.id} raised: {e}")
                     result = None

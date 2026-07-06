@@ -100,8 +100,35 @@ def _is_retryable_error(error: Exception) -> bool:
     return any(marker in text for marker in RETRYABLE_ERROR_MARKERS)
 
 
-def _api_error(provider: str, error: Exception) -> "LLMCallError":
-    """Wrap a provider exception as an LLMCallError with retryability classified."""
+def _is_out_of_credits(error: Exception) -> bool:
+    """True when a provider rejects the call for lack of funds (HTTP 402).
+
+    This is terminal and account-wide — retrying or failing over to another
+    model cannot fix it — so it is surfaced as budget exhaustion, not a generic
+    call error. Detected by the 402 status code, with a message fallback for
+    providers that only carry it in the text.
+    """
+    if _error_status_code(error) == 402:
+        return True
+    text = str(error).lower()
+    return "insufficient credit" in text or (
+        "402" in text and ("credit" in text or "payment" in text)
+    )
+
+
+def _api_error(provider: str, error: Exception) -> Exception:
+    """Wrap a provider exception for the caller to raise.
+
+    An out-of-credits (402) response becomes a ``BudgetExceededError`` so the
+    run halts gracefully through the existing budget-halt path with an
+    actionable message, instead of crashing with a stack trace. Everything else
+    is an ``LLMCallError`` with retryability classified.
+    """
+    if _is_out_of_credits(error):
+        return BudgetExceededError(
+            f"{provider} out of credits (HTTP 402): add credits to continue "
+            "(https://openrouter.ai/settings/credits)"
+        )
     return LLMCallError(
         f"{provider} API error: {error}", retryable=_is_retryable_error(error)
     )

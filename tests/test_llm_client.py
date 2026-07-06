@@ -85,6 +85,19 @@ def test_bool_attribute_not_read_as_status_code():
     assert _error_status_code(err) is None
 
 
+def test_out_of_credits_402_becomes_budget_exceeded():
+    from misterdev.llm.client.errors import _api_error, BudgetExceededError
+
+    by_code = Exception("Insufficient credits")
+    by_code.status_code = 402
+    # 402 (by status or by message) is terminal budget exhaustion, not a call error.
+    assert isinstance(_api_error("OpenRouter", by_code), BudgetExceededError)
+    by_text = RuntimeError("Error code: 402 - Insufficient credits")
+    assert isinstance(_api_error("OpenRouter", by_text), BudgetExceededError)
+    # An ordinary failure is still an LLMCallError.
+    assert isinstance(_api_error("OpenRouter", RuntimeError("500 boom")), LLMCallError)
+
+
 def _make_anthropic(monkeypatch, model="claude-sonnet-4-6"):
     # Inject a fake `anthropic` module so the client constructs without the real
     # SDK installed; the network client is replaced per-test.
