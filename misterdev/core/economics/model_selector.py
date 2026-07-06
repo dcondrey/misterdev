@@ -104,7 +104,7 @@ class ModelSelector:
         own — the prior fades. A model with no history anywhere stays unproven.
         """
         s = self.ledger.stat(model, category, complexity)
-        g_att, g_rate = self.ledger.global_first_try(model)
+        g_att, g_rate = self.ledger.global_first_try(model, category, complexity)
         prior = self._PRIOR_WEIGHT if g_att >= self.min_obs else 0.0
         effective_obs = s.first_try_attempts + prior
         if effective_obs < self.min_obs:
@@ -240,8 +240,23 @@ class ModelSelector:
             )
 
         # Climbing path: one rung up per attempt, capped at the strongest tier.
+        # If the target rung is emptied by the free/incompetence/latency filters,
+        # climb to the next (stronger) rung rather than fall back to the client
+        # default — a filtered tier should escalate, not disable selection.
         target = min(attempt, last)
-        return self._pick(self._tier_models(rungs[target]), category, complexity, True)
+        return self._pick_climbing(rungs, target, category, complexity)
+
+    def _pick_climbing(
+        self, rungs: List[str], start: int, category: str, complexity: str
+    ) -> Optional[str]:
+        """Pick from rung ``start``, climbing to each stronger rung in turn until
+        one yields a model the filters didn't drop; None only when every rung
+        from ``start`` up is empty."""
+        for i in range(start, len(rungs)):
+            chosen = self._pick(self._tier_models(rungs[i]), category, complexity, True)
+            if chosen:
+                return chosen
+        return None
 
     def _announce_graduation(self, category: str, complexity: str, model: str) -> None:
         """Log the first time a cell settles on a proven cheap model (auto)."""

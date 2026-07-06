@@ -292,21 +292,33 @@ class ModelLedger:
                 and (not complexity or s.complexity == complexity)
             )
 
-    def global_first_try(self, model: str) -> Tuple[float, float]:
-        """A model's first-try (attempts, success_rate) aggregated across ALL its
-        (category, complexity) cells.
+    def global_first_try(
+        self,
+        model: str,
+        exclude_category: str = "",
+        exclude_complexity: str = "",
+    ) -> Tuple[float, float]:
+        """A model's first-try (attempts, success_rate) aggregated across its
+        (category, complexity) cells, optionally EXCLUDING one cell.
 
         Used as an empirical-Bayes prior to warm-start a cell the model has little
         data on: performance elsewhere is evidence — imperfect, since competence
         varies by task kind, so callers blend it with a small weight that cell
-        data quickly overrides. Returns (0.0, 0.0) for an unseen model.
+        data quickly overrides. The target cell is excluded so its own data isn't
+        double-counted into its prior. Returns (0.0, 0.0) for an unseen model.
         """
         att = succ = 0.0
         with self._lock:
             for s in self._stats.values():
-                if s.model == model:
-                    att += s.first_try_attempts
-                    succ += s.first_try_successes
+                if s.model != model:
+                    continue
+                if (
+                    s.category == exclude_category
+                    and s.complexity == exclude_complexity
+                ):
+                    continue
+                att += s.first_try_attempts
+                succ += s.first_try_successes
         return att, (succ / att if att > 0 else 0.0)
 
     def known_models(self) -> List[str]:

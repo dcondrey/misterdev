@@ -113,6 +113,16 @@ def test_auto_warmup_explores_easy_tasks(ledger):
     assert sel.select("feature", "small", 0, 3) == "free/x"
 
 
+def test_filtered_tier_climbs_to_next_rung(ledger):
+    # When the cheap tier is emptied by a filter (here: proven incompetent), the
+    # selector climbs to the stronger tier rather than returning None (default).
+    cfg = _config(selection_posture="aggressive")
+    for _ in range(4):
+        ledger.record("free/x", "feature", "medium", success=False)
+    sel = ModelSelector(cfg, ledger)
+    assert sel.select("feature", "medium", 0, 3) == "anthropic/big"
+
+
 def test_warm_start_borrows_proven_performance_from_other_cells(ledger):
     # A model proven on (feature, small) is trusted on a COLD (feature, medium)
     # cell before it has local data there — shrinkage toward its global rate.
