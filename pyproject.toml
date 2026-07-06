@@ -106,6 +106,10 @@ Changelog = "https://github.com/dcondrey/misterdev/blob/main/CHANGELOG.md"
 dev = [
     "pytest>=9.1.0",
     "coverage>=7.0",
+    # ruff is the lint gate CI runs (`uv run ruff check .`); it must be in the
+    # synced dev environment or CI fails to spawn it (a local global install
+    # masked this).
+    "ruff>=0.10",
     # MCP SDK in the dev group so the suite exercises the REAL substrate path
     # (an in-process stdio MCP server, fully offline) rather than skipping it.
     "mcp>=1.0.0",

@@ -9,6 +9,41 @@ type.
 
 ## [Unreleased]
 
+### Added
+
+- **SWE-bench evaluation harness** (`evaluation/swebench/`) — run misterdev on
+  real GitHub-issue tasks and grade the patch against the task's own hidden
+  tests. Includes a Docker runner that executes the build/test gates inside each
+  instance's official image, so a task runs in its exact environment.
+- **Complete reference sites** — every external call site of a symbol being
+  edited is surfaced up front, so a delete/rename/refactor updates them all in
+  one attempt instead of chasing missed callers one build-error at a time.
+- **Dangling-reference gate** — a deterministic pre-build check that rejects an
+  edit which removes or renames a symbol while leaving references to it.
+- **Prompt caching** — the stable context prefix is marked cacheable (Claude),
+  so a task's retries re-read it at a fraction of the input cost; cache reads are
+  priced accordingly in the budget and ledger.
+- **Smarter model ledger** — hard-avoids models proven incompetent on a task
+  cell, skips models proven too slow, warm-starts a cold cell from a model's
+  global record (empirical-Bayes shrinkage), and reserves free models for the
+  easiest tasks.
+- **Adversarial critic** now also checks for symptom-vs-root-cause fixes and
+  code duplication (DRY), and auto-enables for refactor/fix/integration tasks.
+
+### Fixed
+
+- The symbol graph now refreshes after each task instead of going stale for the
+  rest of the run.
+- A completed task's `status: completed` is committed into its source markdown,
+  so a finished devplan is no longer re-run.
+- An acceptance-command manifest error no longer false-fails a task whose real
+  gates already passed.
+- A reverted task's untracked orphan files are cleaned up (bounded to files the
+  task created).
+- Multi-file edits apply atomically, rolling back on a mid-batch write failure.
+- An out-of-credits (HTTP 402) response halts the run gracefully instead of
+  crashing with a stack trace.
+
 ## [0.1.0] - 2026-07-05
 
 First public release.
