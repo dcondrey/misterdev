@@ -725,6 +725,43 @@ def test_acceptance_command_passes_completes():
         assert result.status == "completed"
 
 
+def test_detect_dangling_references_flags_missed_caller():
+    from types import SimpleNamespace
+    from misterdev.core.context.topography.nodes import SymbolNode
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "insights.rs").write_text("fn analyze() { trope(); }\n")
+        trope = SymbolNode("trope", "trope.rs", "function", 1, 3, "fn trope() {}")
+        trope.incoming_calls = {"insights.rs:analyze"}
+        analyze = SymbolNode("analyze", "insights.rs", "function", 1, 1, "")
+        graph = SimpleNamespace(
+            symbols={"trope.rs:trope": trope, "insights.rs:analyze": analyze}
+        )
+        project = SimpleNamespace(path=root, topography=SimpleNamespace(graph=graph))
+        ex = MarkdownPlanExecutor()
+
+        # Edit removes `trope` but leaves the caller in insights.rs untouched.
+        flagged = ex._detect_dangling_references(project, {"trope.rs": "// removed\n"})
+        assert flagged and "insights.rs:1" in flagged and "trope" in flagged
+
+        # Edit that also updates the caller -> complete, nothing dangling.
+        assert (
+            ex._detect_dangling_references(
+                project,
+                {"trope.rs": "// removed\n", "insights.rs": "fn analyze() {}\n"},
+            )
+            is None
+        )
+
+        # Substring-only match (`tropes`) must NOT be flagged (word-boundary).
+        (root / "insights.rs").write_text("fn analyze() { count_tropes(); }\n")
+        assert (
+            ex._detect_dangling_references(project, {"trope.rs": "// removed\n"})
+            is None
+        )
+
+
 def test_acceptance_manifest_error_passes_through(monkeypatch):
     # A manifest error from the acceptance command means the command is
     # malformed (build/test already passed, so the manifest exists) — it must

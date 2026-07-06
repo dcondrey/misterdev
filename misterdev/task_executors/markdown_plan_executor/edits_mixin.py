@@ -1,5 +1,6 @@
 """Edit path validation, test-tamper detection, and edit application."""
 
+import re
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -97,6 +98,57 @@ class EditsMixin:
             if reason:
                 reasons.append(f"{file_path} ({reason})")
         return "; ".join(reasons) if reasons else None
+
+    def _detect_dangling_references(
+        self, project: Project, edits: Dict[str, str]
+    ) -> Optional[str]:
+        """Reject an edit that removes/renames a symbol but leaves its callers.
+
+        The whack-a-mole failure: an edit deletes or renames a symbol yet leaves
+        references in files it didn't touch, so the build fails one missed site
+        at a time until attempts run out. This catches it deterministically
+        BEFORE a build cycle: for every graph symbol defined in an edited file
+        whose name no longer appears in that file's new content (removed or
+        renamed), flag any caller — in a file NOT part of this edit — that still
+        references the old name on disk. Returns a description of the dangling
+        sites, or None when the change is complete. Graph-driven, so a coincidental
+        name match without a real reference edge is never flagged.
+        """
+        topo = getattr(project, "topography", None)
+        graph = getattr(topo, "graph", None)
+        symbols = getattr(graph, "symbols", None)
+        if not symbols:
+            return None
+        edited = set(edits.keys())
+        file_cache: Dict[str, str] = {}
+        dangling: list[str] = []
+        for sym in symbols.values():
+            if sym.file_path not in edited or not sym.incoming_calls:
+                continue
+            word = re.compile(rf"\b{re.escape(sym.name)}\b")
+            if word.search(edits.get(sym.file_path, "")):
+                continue  # symbol still defined in the edited file -> not removed
+            for caller_key in sym.incoming_calls:
+                caller = symbols.get(caller_key)
+                if caller is None or caller.file_path in edited:
+                    continue  # caller lives in a file this edit already changes
+                content = file_cache.get(caller.file_path)
+                if content is None:
+                    try:
+                        content = (project.path / caller.file_path).read_text(
+                            encoding="utf-8"
+                        )
+                    except (OSError, UnicodeDecodeError):
+                        content = ""
+                    file_cache[caller.file_path] = content
+                if word.search(content):
+                    dangling.append(
+                        f"`{sym.name}` still referenced in "
+                        f"{caller.file_path}:{caller.start_line}"
+                    )
+        if dangling:
+            return "; ".join(sorted(set(dangling))[:40])
+        return None
 
     def _resolve_edits(
         self, project: Project, llm_response: str

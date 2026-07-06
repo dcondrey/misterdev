@@ -449,6 +449,17 @@ class ExecuteMixin:
                     )
                     continue
 
+                dangling = self._detect_dangling_references(project, edits)
+                if dangling:
+                    logger.warning(f"Incomplete refactor — dangling refs: {dangling}")
+                    error_logs = (
+                        "ERROR: this edit removed or renamed a symbol but left "
+                        "references to it in files you did not change. Update EVERY "
+                        "one of these call sites in this attempt (do not fix them "
+                        f"one at a time): {dangling}"
+                    )
+                    continue
+
                 # Independent adversarial critique BEFORE applying. A rejection
                 # feeds concrete objections back as the next attempt's context
                 # (regenerate), bounded by critic_max_rejections so an
