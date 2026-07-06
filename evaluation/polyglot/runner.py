@@ -68,17 +68,30 @@ def prepare_from_source(source_dir: str) -> Callable[[PolyglotInstance, Path], P
     return _prepare
 
 
-def _write_project_yaml(repo: Path, instance: PolyglotInstance) -> None:
+def _write_project_yaml(
+    repo: Path, instance: PolyglotInstance, model: Optional[str] = None
+) -> None:
     """Write a project.yaml so misterdev's test gate runs the exercise's tests.
 
     ``allow_test_edits`` stays off (the default), so misterdev's test-tamper gate
     protects the graded test file — the model must fix the solution, not the test.
+    When ``model`` is given it pins that single model with failover and dynamic
+    selection off, so a free-model run cannot escalate to a paid model — a real
+    ~$0 benchmark run.
     """
     cfg = (
         f'name: "{instance.name}"\n'
         f'language: "{instance.language}"\n'
         f'test_command: "{instance.test_command}"\n'
     )
+    if model:
+        cfg += (
+            "llm:\n"
+            f'  model: "{model}"\n'
+            '  provider: "openrouter"\n'
+            "  failover: []\n"
+            "  dynamic_selection: false\n"
+        )
     (repo / "project.yaml").write_text(cfg, encoding="utf-8")
 
 
@@ -91,6 +104,7 @@ def run_instance(
     prepare_repo: PrepareRepo,
     *,
     orchestrator=None,
+    model: Optional[str] = None,
     build_args: str = "--budget 2 --allow-dirty --no-suggest",
     env_activate: Optional[str] = None,
     grade_timeout: int = 600,
@@ -106,7 +120,7 @@ def run_instance(
     repo = Path(workdir) / f"{instance.language}-{instance.name}"
     try:
         prepare_repo(instance, repo)
-        _write_project_yaml(repo, instance)
+        _write_project_yaml(repo, instance, model=model)
         _git(repo, "init -q")
         _git(repo, "add -A")
         _git(repo, 'commit -q -m "polyglot base" --allow-empty')
