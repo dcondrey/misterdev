@@ -42,6 +42,8 @@ class ModelSelector:
         self.models = dict(get_setting(config, "llm", "models") or {})
         self.min_obs = get_setting(config, "llm", "min_observations")
         self.first_try_floor = get_setting(config, "llm", "first_try_floor")
+        self.incompetence_floor = get_setting(config, "llm", "incompetence_floor")
+        self.max_latency = get_setting(config, "llm", "max_attempt_latency_seconds")
         self.posture = get_setting(config, "llm", "selection_posture")
         self.maturity_threshold = get_setting(config, "llm", "maturity_threshold")
         # Cells already announced as graduated to cheap-first (one log per cell).
@@ -95,24 +97,53 @@ class ModelSelector:
             and s.first_try_rate >= self.first_try_floor
         )
 
+    def _incompetent(self, model: str, category: str, complexity: str) -> bool:
+        """Proven UNABLE to do this kind of task: enough attempts to judge and a
+        success rate below the floor. Distinct from unproven (too few attempts).
+        Trying such a model only burns a failed attempt and forces escalation."""
+        if not self.incompetence_floor:
+            return False
+        s = self.ledger.stat(model, category, complexity)
+        return s.attempts >= self.min_obs and s.success_rate < self.incompetence_floor
+
+    def _too_slow(self, model: str, category: str, complexity: str) -> bool:
+        """Proven too slow for the per-task wall-clock budget (ledger avg latency
+        above the configured ceiling). Unseen models (avg 0) are never flagged."""
+        if not self.max_latency:
+            return False
+        return (
+            self.ledger.stat(model, category, complexity).avg_latency > self.max_latency
+        )
+
     # Free (`:free`) endpoints are reserved for the easiest tasks: they are slow
     # (2.5-5 min/call observed) and unreliable, so on anything heavier than a
     # small task they cost more wall-clock and failed attempts than they save.
     _FREE_OK_COMPLEXITY = ("trivial", "small")
 
     def _pick(
-        self, models: List[str], category: str, complexity: str, explore: bool
+        self,
+        models: List[str],
+        category: str,
+        complexity: str,
+        explore: bool,
+        final: bool = False,
     ) -> Optional[str]:
         """Best model by quality-per-dollar.
 
         explore=True uses the optimistic UCB score (unseen models score +inf, so
         they get tried); explore=False uses the conservative Wilson lower bound
         (unseen models score 0, so only proven models win). Free endpoints are
-        dropped for non-easy tasks (see ``_FREE_OK_COMPLEXITY``); if that empties
-        the tier, returns None so the caller climbs to the next (paid) rung.
+        dropped for non-easy tasks (see ``_FREE_OK_COMPLEXITY``), and models the
+        ledger has proven incompetent (or, on non-final attempts, too slow) are
+        dropped; if that empties the tier, returns None so the caller climbs to
+        the next (paid) rung. Incompetence still filters on the final attempt — a
+        model that cannot do the task is never the right last resort.
         """
         if complexity not in self._FREE_OK_COMPLEXITY:
             models = [m for m in models if ":free" not in m]
+        models = [m for m in models if not self._incompetent(m, category, complexity)]
+        if not final:
+            models = [m for m in models if not self._too_slow(m, category, complexity)]
         if not models:
             return None
         total = self.ledger.total_observations(category, complexity)
@@ -168,9 +199,11 @@ class ModelSelector:
 
         # The final attempt always uses the strongest tier: the quality floor's
         # safety net, so every prior attempt can afford to try something cheaper.
+        # final=True lifts the latency guard here (a slow-but-capable last resort
+        # beats giving up), but incompetent models are still excluded.
         if attempt >= max_attempts - 1:
             return self._pick(
-                self._tier_models(rungs[last]), category, complexity, True
+                self._tier_models(rungs[last]), category, complexity, True, final=True
             )
 
         if attempt == 0 and not self._explore_on_first(category, complexity):

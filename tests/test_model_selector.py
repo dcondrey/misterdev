@@ -113,6 +113,35 @@ def test_auto_warmup_explores_easy_tasks(ledger):
     assert sel.select("feature", "small", 0, 3) == "free/x"
 
 
+def test_incompetent_model_is_avoided(ledger):
+    # A model with enough attempts and a success rate below the floor is proven
+    # unable to do this kind of task and must not be selected for it.
+    cfg = _config(selection_posture="aggressive")
+    for _ in range(4):
+        ledger.record("free/x", "feature", "small", success=False)
+    sel = ModelSelector(cfg, ledger)
+    assert sel._incompetent("free/x", "feature", "small") is True
+    # aggressive would normally explore the cheap model first; the guard excludes it.
+    assert sel.select("feature", "small", 0, 3) != "free/x"
+    # the strongest tier is still reachable on the final attempt.
+    assert sel.select("feature", "small", 2, 3) == "anthropic/big"
+
+
+def test_slow_model_excluded_on_nonfinal_attempts(ledger):
+    # A model proven too slow for the wall-clock budget is skipped on non-final
+    # attempts; the final attempt lifts the latency guard (capable last resort).
+    cfg = _config(selection_posture="aggressive", max_attempt_latency_seconds=100)
+    for _ in range(3):
+        ledger.record(
+            "free/x", "feature", "small", success=True, first_try=True, latency=300.0
+        )
+    sel = ModelSelector(cfg, ledger)
+    assert sel._too_slow("free/x", "feature", "small") is True
+    assert sel.select("feature", "small", 0, 3) != "free/x"  # non-final: skipped
+    # final attempt uses the strongest tier regardless.
+    assert sel.select("feature", "small", 2, 3) == "anthropic/big"
+
+
 def test_free_endpoints_reserved_for_easy_tasks(ledger):
     # `:free` models are slow/unreliable, so they're used only on trivial/small.
     cfg = _config(

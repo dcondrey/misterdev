@@ -57,6 +57,18 @@ class LLMSettings:
     # at or above first_try_floor.
     min_observations: int = 5
     first_try_floor: float = 0.5
+    # Hard-avoid a model on a (category, complexity) cell once the ledger has
+    # enough attempts to judge it (>= min_observations) AND its success rate on
+    # that cell is below this floor: it is proven unable to do this kind of task,
+    # so trying it only burns a failed attempt and forces escalation. Distinct
+    # from "unproven" (too few attempts to know). 0 disables the guard.
+    incompetence_floor: float = 0.2
+    # Skip a model on a NON-final attempt when its ledger avg latency exceeds this
+    # many seconds — it is proven too slow to fit the per-task wall-clock budget
+    # (e.g. the 5-minute cache window). Only bites once a model has recorded slow
+    # calls; unseen models are unaffected. 0 disables the guard (default off,
+    # since a sensible ceiling is project/hardware specific).
+    max_attempt_latency_seconds: float = 0.0
     # "auto" mode treats a (category, complexity) cell as matured once it has at
     # least this many recorded attempts, after which it stops exploring and
     # behaves conservatively.
