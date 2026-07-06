@@ -108,3 +108,24 @@ def test_as_list_accepts_json_string_and_list():
     assert _as_list('["a::b", "c::d"]') == ["a::b", "c::d"]
     assert _as_list(["x"]) == ["x"]
     assert _as_list(None) == []
+
+
+def test_docker_runner_image_and_project_yaml(tmp_path):
+    from evaluation.swebench.docker_runner import (
+        instance_image,
+        write_container_project_yaml,
+    )
+
+    inst = SWEBenchInstance(
+        instance_id="astropy__astropy-12907",
+        repo="astropy/astropy",
+        base_commit="abc",
+        problem_statement="x",
+    )
+    assert instance_image(inst) == "sweb.eval.x86_64.astropy__astropy-12907:latest"
+    write_container_project_yaml(tmp_path, inst)
+    y = (tmp_path / "project.yaml").read_text()
+    # Routes gates through the instance image, mounted where its install resolves.
+    assert "type: docker" in y
+    assert "sweb.eval.x86_64.astropy__astropy-12907:latest" in y
+    assert "/testbed" in y
