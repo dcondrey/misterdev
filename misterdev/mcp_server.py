@@ -30,7 +30,7 @@ mcp = FastMCP("misterdev")
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="List registered projects",
+        title="List every project in the registry",
         readOnlyHint=True,
         idempotentHint=True,
         openWorldHint=False,
@@ -39,17 +39,24 @@ mcp = FastMCP("misterdev")
 def list_projects() -> Dict[str, Any]:
     """List every project misterdev currently knows about.
 
-    Use this first to see what is registered before calling ``status`` or
-    ``build`` on a specific one. Read-only — nothing is changed.
+    Use when: you need to discover which projects are registered before calling
+    ``status``, ``build``, or ``run`` on a specific one. Do NOT use when: the
+    project isn't registered yet — call ``scan`` first to register it. Related:
+    ``scan`` (register projects), ``status`` (inspect one project). Takes no
+    parameters.
 
-    Returns a mapping of project id to its registered path and name.
+    Side effects: none — read-only, calls no LLM, and returns the same result on
+    repeated calls (idempotent).
+
+    Returns a mapping of project id to an object with its registered ``path`` and
+    ``name``; an empty mapping when nothing is registered.
     """
     return ProjectOrchestrator().list_projects()
 
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Project status",
+        title="Show a project's tasks and their state",
         readOnlyHint=True,
         idempotentHint=True,
         openWorldHint=False,
@@ -59,24 +66,34 @@ def status(
     path: Annotated[
         str,
         Field(
-            description="Path to the project (its directory, containing project.yaml)."
+            description=(
+                "Absolute path to a registered project's directory (the one "
+                "containing its project.yaml). Must be a directory that has been "
+                "registered via ``scan``. Example: '/Users/me/code/my-api'."
+            ),
+            examples=["/Users/me/code/my-api", "/workspace/repos/service"],
+            min_length=1,
         ),
     ],
 ) -> Dict[str, Any]:
     """Show a project's tasks and their current state.
 
-    Use to inspect what work exists and how far it has progressed, e.g. before
-    deciding whether to ``run`` pending tasks or ``build`` something new.
-    Read-only — it does not run anything.
+    Use when: you want to inspect what work exists and how far it has progressed,
+    e.g. before deciding whether to ``run`` pending tasks or ``build`` new work.
+    Do NOT use when: the project isn't registered — call ``scan`` first, or
+    ``list_projects`` to find the right path. Related: ``list_projects``,
+    ``run``, ``build``.
 
-    Returns the project's tasks with their statuses.
+    Side effects: none — read-only, calls no LLM, idempotent.
+
+    Returns the project's tasks, each with its id, title, and status.
     """
     return ProjectOrchestrator().get_project_status(path)
 
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Scan for projects",
+        title="Scan a directory and register the projects found",
         readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=True,
@@ -86,16 +103,31 @@ def status(
 def scan(
     directory: Annotated[
         str,
-        Field(description="Directory to search recursively for projects to register."),
+        Field(
+            description=(
+                "Absolute path to an existing, readable directory to search "
+                "recursively for misterdev projects (directories containing a "
+                "project.yaml). Must be a directory, not a file. "
+                "Example: '/Users/me/code'."
+            ),
+            examples=["/Users/me/code", "/workspace/repos"],
+            min_length=1,
+        ),
     ],
 ) -> str:
-    """Discover misterdev projects under a directory and register them.
+    """Discover misterdev projects under a directory and add them to the registry.
 
-    Use once to make projects known to misterdev before inspecting or building
-    them. It writes to the project registry but does not touch project code, and
-    re-scanning the same directory is idempotent.
+    Use when: you have projects on disk that misterdev does not know about yet,
+    before calling ``status``, ``build``, or ``run`` on them. Do NOT use when:
+    the projects are already registered (call ``list_projects`` to check) — a
+    re-scan is harmless but redundant. Related: ``list_projects`` (see what is
+    registered), ``status`` (inspect a registered project).
 
-    Returns a short confirmation string.
+    Side effects: writes only to misterdev's project registry — it never reads,
+    edits, or executes any project code, and re-scanning the same directory is
+    idempotent (no duplicates).
+
+    Returns a short confirmation string naming the directory scanned.
     """
     ProjectOrchestrator().scan_directory(directory)
     return f"Scanned and registered projects under: {directory}"
@@ -112,46 +144,87 @@ def scan(
 )
 def build(
     path: Annotated[
-        str, Field(description="Path to the project to build (its directory).")
+        str,
+        Field(
+            description=(
+                "Absolute path to the project directory to build (containing "
+                "project.yaml). Its git working tree must be clean. "
+                "Example: '/Users/me/code/my-api'."
+            ),
+            examples=["/Users/me/code/my-api"],
+            min_length=1,
+        ),
     ],
     goal: Annotated[
         str,
         Field(
-            description="Plain-English goal, or a mode word: 'debug', 'complete', or 'review'."
+            description=(
+                "Plain-English description of what to build, or a mode word: "
+                "'debug' (fix what's broken), 'complete' (finish unfinished work), "
+                "or 'review'. Example: 'add rate limiting to the public API'."
+            ),
+            examples=["add rate limiting to the public API", "debug", "complete"],
+            min_length=1,
         ),
     ],
     budget: Annotated[
         float,
-        Field(description="Maximum dollars to spend on this run.", gt=0),
+        Field(
+            description=(
+                "Maximum US dollars to spend on this run. Must be > 0; the run "
+                "halts when reached. Example: 5.0."
+            ),
+            examples=[5.0, 25.0],
+            gt=0,
+        ),
     ] = _DEFAULT_MCP_BUDGET,
     dry_run: Annotated[
         bool,
-        Field(description="Plan and preview tasks without editing any code."),
+        Field(
+            description=(
+                "When true, plan and preview the tasks without editing any code "
+                "or spending beyond planning. Example: true."
+            ),
+            examples=[False, True],
+        ),
     ] = False,
     parallel: Annotated[
         bool,
         Field(
-            description="Run independent tasks concurrently in isolated git worktrees."
+            description=(
+                "When true, run independent tasks concurrently in isolated git "
+                "worktrees. Example: false."
+            ),
+            examples=[False, True],
         ),
     ] = False,
     max_tasks: Annotated[
         Optional[int],
-        Field(description="Cap how many tasks are planned/executed (bounds cost)."),
+        Field(
+            description=(
+                "Cap how many tasks are planned/executed (bounds cost and scope). "
+                "Must be >= 1; omit for no cap. Example: 5."
+            ),
+            examples=[5, 10],
+            ge=1,
+        ),
     ] = None,
 ) -> str:
     """Autonomously plan AND execute a goal in a project, from scratch.
 
-    This is the main tool. Unlike ``run`` (which executes an existing plan),
-    ``build`` analyzes the project, decomposes ``goal`` into tasks, edits the
-    code, and verifies each change through build/test/lint/typecheck gates,
-    reverting anything that regresses.
+    Use when: you have a goal but no existing task plan — ``build`` analyzes the
+    project, decomposes ``goal`` into tasks, edits the code, and verifies each
+    change through build/test/lint/typecheck gates, reverting anything that
+    regresses. Do NOT use when: a task plan already exists and you just want to
+    execute it (use ``run``), or the working tree is dirty (commit/stash first).
+    Related: ``run`` (execute an existing plan), ``status`` (inspect tasks).
 
-    DESTRUCTIVE: it edits files and makes git commits. It refuses to run on a
-    dirty working tree (commit or stash first). Use ``dry_run=True`` to preview
-    the plan without changing anything. ``budget`` caps spend; ``max_tasks``
-    caps scope. It calls an external LLM provider (open-world).
+    DESTRUCTIVE side effects: edits files and makes git commits, and calls an
+    external LLM provider (open-world, non-idempotent). It refuses to run on a
+    dirty working tree. ``dry_run=True`` previews without changing anything;
+    ``budget`` caps spend; ``max_tasks`` caps scope.
 
-    Returns a compact report: what was done, gate results, and cost.
+    Returns a compact text report: what was done, per-gate results, and cost.
     """
     orch = ProjectOrchestrator()
     parts = [goal, "--budget", str(budget)]
@@ -176,23 +249,51 @@ def build(
     )
 )
 def run(
-    path: Annotated[str, Field(description="Path to the project.")],
+    path: Annotated[
+        str,
+        Field(
+            description=(
+                "Absolute path to a registered project's directory that already "
+                "has planned tasks (a devplan). Example: '/Users/me/code/my-api'."
+            ),
+            examples=["/Users/me/code/my-api"],
+            min_length=1,
+        ),
+    ],
     task_id: Annotated[
         Optional[str],
-        Field(description="Run only this task id; omit to run all pending tasks."),
+        Field(
+            description=(
+                "Run only this single task id (as shown by ``status``); omit to "
+                "run all pending tasks in dependency order. Example: '010-add-auth'."
+            ),
+            examples=["010-add-auth", "T-003"],
+        ),
     ] = None,
     dry_run: Annotated[
-        bool, Field(description="Preview the tasks without executing them.")
+        bool,
+        Field(
+            description=(
+                "When true, preview the tasks that would run without executing "
+                "or editing anything. Example: true."
+            ),
+            examples=[False, True],
+        ),
     ] = False,
 ) -> str:
     """Execute a project's ALREADY-PLANNED pending tasks (a devplan).
 
-    Use this when tasks already exist (from a prior ``plan`` or devplan) and you
-    just want to run them — it does NOT analyze or decompose a goal; that is
-    ``build``'s job. Pass ``task_id`` to run a single task.
+    Use when: tasks already exist (from a prior ``plan`` or a devplan directory)
+    and you want to execute them. Do NOT use when: no plan exists and you are
+    starting from a goal — that is ``build``'s job (it analyzes and decomposes).
+    Related: ``build`` (plan + execute a goal), ``status`` (see the task ids).
+    Pass ``task_id`` to run a single task.
 
-    DESTRUCTIVE: it edits files and commits. Use ``dry_run=True`` to preview.
-    Calls an external LLM provider (open-world). Returns a summary.
+    DESTRUCTIVE side effects: edits files and makes git commits, and calls an
+    external LLM provider (open-world, non-idempotent). ``dry_run=True`` previews
+    without changing anything.
+
+    Returns a short text summary of what was run or previewed.
     """
     orch = ProjectOrchestrator()
     if task_id:
