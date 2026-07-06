@@ -12,6 +12,23 @@ from .helpers import logger
 
 
 class CriticSpecMixin:
+    def _critic_enabled_for(self, project: Project, task: Task) -> bool:
+        """Whether the adversarial critic runs for this task.
+
+        ``adversarial_critic`` True/False forces it; "auto" (default) enables it
+        only for the cross-cutting categories in ``critic_auto_categories`` —
+        where symptom-fixes, incomplete refactors, and duplication cluster — so
+        the review runs out of the box on risky tasks without an extra call on
+        every trivial one.
+        """
+        setting = get_setting(project.config, "orchestrator", "adversarial_critic")
+        if isinstance(setting, str) and setting.strip().lower() == "auto":
+            categories = get_setting(
+                project.config, "orchestrator", "critic_auto_categories"
+            )
+            return getattr(task, "category", "") in (categories or [])
+        return bool(setting)
+
     def _run_edit_critic(self, project: Project, task: Task, edits: Dict[str, str]):
         """Run the independent adversarial critic over a candidate edit.
 

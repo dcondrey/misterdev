@@ -725,6 +725,29 @@ def test_acceptance_command_passes_completes():
         assert result.status == "completed"
 
 
+def test_critic_auto_enables_for_cross_cutting_categories():
+    from types import SimpleNamespace
+
+    ex = MarkdownPlanExecutor()
+    auto = {"orchestrator": {"adversarial_critic": "auto"}}
+    # auto: on for refactor/fix/integration, off for feature.
+    assert ex._critic_enabled_for(
+        SimpleNamespace(config=auto), SimpleNamespace(category="refactor")
+    )
+    assert not ex._critic_enabled_for(
+        SimpleNamespace(config=auto), SimpleNamespace(category="feature")
+    )
+    # explicit True/False override the auto behavior.
+    on = {"orchestrator": {"adversarial_critic": True}}
+    assert ex._critic_enabled_for(
+        SimpleNamespace(config=on), SimpleNamespace(category="feature")
+    )
+    off = {"orchestrator": {"adversarial_critic": False}}
+    assert not ex._critic_enabled_for(
+        SimpleNamespace(config=off), SimpleNamespace(category="refactor")
+    )
+
+
 def test_detect_dangling_references_flags_missed_caller():
     from types import SimpleNamespace
     from misterdev.core.context.topography.nodes import SymbolNode

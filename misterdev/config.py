@@ -290,9 +290,17 @@ class OrchestratorSettings:
     # truth; ``critic_max_rejections`` caps how many regenerations it may force per
     # task before deferring to those gates. The independent model id lives under
     # the top-level ``critic.model`` key.
-    adversarial_critic: bool = False
+    # True/False force it on/off; "auto" (default) enables it only for the
+    # cross-cutting categories where symptom-fixes, incomplete changes, and
+    # duplication cluster (refactor/fix/integration), so the quality review runs
+    # out of the box on the risky tasks without paying an extra call on every one.
+    adversarial_critic: Any = "auto"
     critic_timeout: int = 60
     critic_max_rejections: int = 2
+    # Task categories the critic auto-enables for when adversarial_critic="auto".
+    critic_auto_categories: List[str] = field(
+        default_factory=lambda: ["refactor", "fix", "integration"]
+    )
     # Independent completeness-claim verifier. Before a build composes its spec
     # and tasks, each feature the analyzer flagged "incomplete" and each "stub"
     # file is rechecked against the REAL file + tests by a second component

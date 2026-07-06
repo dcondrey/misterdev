@@ -178,9 +178,7 @@ class ExecuteMixin:
         # candidate edit before it is applied and can force a regeneration with
         # concrete objections. Off by default. Bounded so it defers to the real
         # gates after a few rejections rather than starving the attempt loop.
-        critic_enabled = get_setting(
-            project.config, "orchestrator", "adversarial_critic"
-        )
+        critic_enabled = self._critic_enabled_for(project, task)
         critic_max_rejections = get_setting(
             project.config, "orchestrator", "critic_max_rejections"
         )
