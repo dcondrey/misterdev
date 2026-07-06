@@ -215,6 +215,9 @@ class _FakeTopography:
     def reference_sites(self, target_files, max_refs=80):
         return ""
 
+    def invalidate(self):
+        pass
+
     def get_file_outline(self, file_path):
         return ""
 

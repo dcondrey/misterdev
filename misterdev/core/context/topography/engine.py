@@ -26,6 +26,18 @@ class TopographyEngine:
         logger.info(f"Symbol graph: {len(self.graph.symbols)} symbols indexed")
         self._initialized = True
 
+    def invalidate(self) -> None:
+        """Mark the symbol graph stale so the next access rebuilds it.
+
+        The graph is built once and then never reflected the edits tasks made, so
+        later tasks saw a stale map — missing new symbols, listing deleted ones —
+        which weakens reference discovery and the dangling-reference gate. Calling
+        this after a task changes the tree makes the next task rebuild from the
+        current on-disk state. Rebuild is cheap: the per-file symbol cache is
+        content-hashed, so only files that actually changed are re-parsed.
+        """
+        self._initialized = False
+
     def get_file_outline(self, file_path: str) -> str:
         self.initialize()
         return self.graph.file_outline(file_path)

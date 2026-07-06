@@ -195,6 +195,11 @@ class GitMixin:
         elif snapshot is not None:
             self._revert_files(project, snapshot)
             self._clean_task_orphans(project, untracked_before)
+        # The revert changed the tree back; drop the stale graph so the next task
+        # rebuilds from the restored state.
+        topo = getattr(project, "topography", None)
+        if topo is not None and hasattr(topo, "invalidate"):
+            topo.invalidate()
 
     def _clean_task_orphans(
         self, project: Project, untracked_before: Optional[set]

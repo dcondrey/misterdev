@@ -349,6 +349,25 @@ def test_topography_get_context_with_symbols():
         assert "Topological Context" in ctx
 
 
+def test_invalidate_rebuilds_from_current_disk_state():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "a.py").write_text("def foo():\n    return 1\n")
+        engine = TopographyEngine(root, None)
+        engine.initialize()
+        assert any("foo" in k for k in engine.graph.symbols)
+
+        # A new symbol appears on disk; the guarded graph does not see it.
+        (root / "b.py").write_text("def bar():\n    return 2\n")
+        engine.initialize()  # no-op: already initialized
+        assert not any("bar" in k for k in engine.graph.symbols)
+
+        # After invalidate, the next initialize rebuilds and picks it up.
+        engine.invalidate()
+        engine.initialize()
+        assert any("bar" in k for k in engine.graph.symbols)
+
+
 def test_reference_sites_lists_external_call_sites():
     with tempfile.TemporaryDirectory() as td:
         engine = TopographyEngine(Path(td), None)
