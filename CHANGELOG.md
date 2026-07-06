@@ -9,6 +9,13 @@ type.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-06
+
+### Fixed
+
+- Use an absolute logo URL in the README so it renders on the PyPI project page
+  (relative image paths only resolve on GitHub).
+
 ## [0.2.0] - 2026-07-06
 
 ### Added

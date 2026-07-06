@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.gif" alt="misterdev" width="220">
+  <img src="https://raw.githubusercontent.com/dcondrey/misterdev/main/assets/logo.gif" alt="misterdev" width="220">
 </p>
 
 <h1 align="center">misterdev</h1>
