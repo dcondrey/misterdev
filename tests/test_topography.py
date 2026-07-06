@@ -349,6 +349,37 @@ def test_topography_get_context_with_symbols():
         assert "Topological Context" in ctx
 
 
+def test_reference_sites_lists_external_call_sites():
+    with tempfile.TemporaryDirectory() as td:
+        engine = TopographyEngine(Path(td), None)
+        engine._initialized = True
+        # trope (in the file being edited) is referenced from two OTHER files
+        # and once from within its own file.
+        trope = SymbolNode("trope", "src/trope.rs", "function", 1, 5, "fn trope() {}")
+        trope.incoming_calls = {
+            "src/insights.rs:analyze",
+            "src/mod.rs:run",
+            "src/trope.rs:helper",  # same-file caller -> must be excluded
+        }
+        engine.graph.symbols["src/trope.rs:trope"] = trope
+        engine.graph.symbols["src/insights.rs:analyze"] = SymbolNode(
+            "analyze", "src/insights.rs", "function", 42, 50, ""
+        )
+        engine.graph.symbols["src/mod.rs:run"] = SymbolNode(
+            "run", "src/mod.rs", "function", 88, 90, ""
+        )
+        engine.graph.symbols["src/trope.rs:helper"] = SymbolNode(
+            "helper", "src/trope.rs", "function", 8, 9, ""
+        )
+
+        out = engine.reference_sites(["src/trope.rs"])
+        assert "src/insights.rs:42" in out  # external ref with exact line
+        assert "src/mod.rs:88" in out
+        assert "helper" not in out  # in-file caller excluded (visible in code_context)
+        # No external references -> empty string.
+        assert engine.reference_sites(["src/nowhere.rs"]) == ""
+
+
 def test_exclude_files_drops_own_symbols_keeps_neighbors():
     with tempfile.TemporaryDirectory() as td:
         engine = TopographyEngine(Path(td), None)

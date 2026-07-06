@@ -248,6 +248,11 @@ class ExecuteMixin:
                 ranker=getattr(project, "semantic_ranker", None),
                 exclude_files=self._fully_shown_target_files(project, target_files),
             )
+            # Exhaustive external references to the symbols being edited, so a
+            # delete/rename/refactor updates every call site in one attempt
+            # instead of chasing them one build-error at a time (the dominant
+            # failure mode: missing_symbol/wrong_type across attempts).
+            reference_sites = project.topography.reference_sites(target_files)
             scratchpad_context = self.scratchpad.format_context(
                 files=target_files + context_files,
                 tags=[task.category],
@@ -261,6 +266,9 @@ class ExecuteMixin:
             # Budget-aware context allocation using configured token limit
             budget = ContextBudget(max_tokens=context_budget_tokens)
             budget.set("code_context", code_context, priority=1)
+            # Correctness-critical: the complete reference set must survive
+            # truncation, or a rename/delete misses sites and the build fails.
+            budget.set("reference_sites", reference_sites, priority=1, min_lines=0)
             # topo_context is the task-ranked (relevant-first) symbol-graph map
             # that cross-file tasks (delete-all-refs, wire call-sites) need. At
             # priority=3/min_lines=10 it collapsed to ~10 lines on a large repo
@@ -277,6 +285,8 @@ class ExecuteMixin:
             allocated = budget.allocate()
 
             full_code_context = allocated["code_context"]
+            if allocated["reference_sites"]:
+                full_code_context += "\n\n" + allocated["reference_sites"]
             if allocated["topo_context"]:
                 full_code_context += "\n\n" + allocated["topo_context"]
             if allocated["recent_changes"]:

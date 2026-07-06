@@ -112,3 +112,49 @@ class TopographyEngine:
             )
 
         return output
+
+    def reference_sites(self, target_files: List[str], max_refs: int = 80) -> str:
+        """Every EXTERNAL call site of the symbols defined in ``target_files``.
+
+        A delete/rename/refactor task must update every reference to the symbol
+        it changes, but the referencing files often sit outside the task's
+        declared scope — so the model discovers them one build-error at a time
+        and runs out of attempts (whack-a-mole). Listing all of them up front,
+        with exact file:line, lets one attempt update them completely. Only
+        references OUTSIDE the target files are listed (in-file uses are already
+        visible in code_context). Returns '' when there are none.
+        """
+        self.initialize()
+        targets = set(target_files)
+        blocks: List[str] = []
+        shown = 0
+        for sym in self.graph.symbols.values():
+            if sym.file_path not in targets or not sym.incoming_calls:
+                continue
+            sites = set()
+            for caller_key in sym.incoming_calls:
+                caller = self.graph.symbols.get(caller_key)
+                if caller is not None and caller.file_path not in targets:
+                    sites.add((caller.file_path, caller.start_line, caller.name))
+            if not sites:
+                continue
+            lines = [f"- `{sym.name}` ({sym.kind}) is referenced by:"]
+            for fp, ln, nm in sorted(sites):
+                if shown >= max_refs:
+                    lines.append("    - (... more references omitted)")
+                    break
+                lines.append(f"    - {fp}:{ln} (in {nm})")
+                shown += 1
+            blocks.append("\n".join(lines))
+            if shown >= max_refs:
+                break
+        if not blocks:
+            return ""
+        return (
+            "## Complete External Reference Sites\n"
+            "Every reference to a symbol defined in the files you are editing "
+            "that lives OUTSIDE those files. If this task removes, renames, or "
+            "changes the signature of such a symbol, you MUST update ALL of these "
+            "sites in this attempt — the build fails on any you miss:\n"
+            + "\n".join(blocks)
+        )
