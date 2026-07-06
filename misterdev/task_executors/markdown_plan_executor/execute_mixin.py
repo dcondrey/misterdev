@@ -191,9 +191,11 @@ class ExecuteMixin:
         # Spec-as-tests (opt-in): generate a failing test from the acceptance
         # criteria BEFORE implementation, written under .orchestrator/spec_tests/
         # (outside the project suite, so it never flips the integration-gate
-        # baseline). After the task's gates pass, it is run scoped and must now
-        # pass (red -> green). Advisory unless spec_as_tests_block.
-        spec_test_path = self._maybe_generate_spec_test(project, task)
+        # baseline). The SOURCE is injected into the edit context as the concrete
+        # reproduction target (directed / TDD); after the task's gates pass it is
+        # run scoped and must now pass (red -> green), blocking under
+        # spec_as_tests_block, advisory otherwise.
+        spec_test_path, spec_test_source = self._maybe_generate_spec_test(project, task)
         spec_test_block = get_setting(
             project.config, "orchestrator", "spec_as_tests_block"
         )
@@ -280,6 +282,9 @@ class ExecuteMixin:
             # Correctness-critical: the complete reference set must survive
             # truncation, or a rename/delete misses sites and the build fails.
             budget.set("reference_sites", reference_sites, priority=1, min_lines=0)
+            # The self-authored reproduction test IS the task's concrete target;
+            # it must survive truncation so the model always edits toward it.
+            budget.set("spec_test", spec_test_source or "", priority=1, min_lines=0)
             # topo_context is the task-ranked (relevant-first) symbol-graph map
             # that cross-file tasks (delete-all-refs, wire call-sites) need. At
             # priority=3/min_lines=10 it collapsed to ~10 lines on a large repo
@@ -296,6 +301,13 @@ class ExecuteMixin:
             allocated = budget.allocate()
 
             full_code_context = allocated["code_context"]
+            if allocated["spec_test"]:
+                full_code_context += (
+                    "\n\n## Reproduction test — your change MUST make this pass\n"
+                    "This executable test defines DONE for this task. Write the "
+                    "implementation so this exact test passes; do not edit the "
+                    "test itself.\n\n" + allocated["spec_test"]
+                )
             if allocated["reference_sites"]:
                 full_code_context += "\n\n" + allocated["reference_sites"]
             if allocated["topo_context"]:

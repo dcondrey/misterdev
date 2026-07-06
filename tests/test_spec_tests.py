@@ -189,8 +189,12 @@ def test_maybe_generate_writes_outside_project_suite(tmp_path):
         config = {"orchestrator": {"spec_as_tests": True}, "language": "python"}
         llm_client = _SpecClient()
 
-    path = MarkdownPlanExecutor()._maybe_generate_spec_test(_Proj(), _task(tid="t9"))
+    path, source = MarkdownPlanExecutor()._maybe_generate_spec_test(
+        _Proj(), _task(tid="t9")
+    )
     assert path is not None
+    # The source is returned too, so it can be injected as the reproduction target.
+    assert source and source.strip()
     p = Path(path)
     assert p.exists()
     # Lives under .orchestrator/spec_tests/ — NOT the project's tests/ dir, so it
@@ -208,10 +212,63 @@ def test_maybe_generate_off_by_default(tmp_path):
         config = {}
         llm_client = _SpecClient()
 
-    assert (
-        MarkdownPlanExecutor()._maybe_generate_spec_test(_Proj(), _task(tid="t1"))
-        is None
+    assert MarkdownPlanExecutor()._maybe_generate_spec_test(
+        _Proj(), _task(tid="t1")
+    ) == (None, None)
+
+
+def test_spec_test_source_is_injected_as_edit_target(tmp_path, monkeypatch):
+    # Reproduction-first: the generated spec test's SOURCE must appear in the edit
+    # prompt as the concrete target, not just be checked after the fact.
+    import json
+    from misterdev.config import DEFAULT_CONFIG
+    from misterdev.core.execution.project import Project
+    from misterdev.llm.client import LLMResponse, LLMUsage
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+    from tests.test_llm_client import FakeLLMClient
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    (tmp_path / "mod.py").write_text("def answer():\n    return 0\n")
+    cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+    cfg.update({"name": "s", "build_command": "true", "language": "python"})
+    cfg.pop("test_command", None)
+    cfg["orchestrator"].update({"spec_as_tests": True, "max_task_attempts": 1})
+    project = Project(tmp_path, cfg)
+
+    spec_src = (
+        "def test_answer():\n    from mod import answer\n    assert answer() == 42"
     )
+
+    class _Cap(FakeLLMClient):
+        def __init__(self):
+            super().__init__(responses=[])
+            self.edit_prompts = []
+
+        def generate_code(self, prompt, system=""):
+            return f"```python\n{spec_src}\n```"
+
+        def _call(self, prompt, system_prompt):
+            self.edit_prompts.append(prompt)
+            return LLMResponse(
+                content="```python:mod.py\ndef answer():\n    return 42\n```\n",
+                usage=LLMUsage(),
+            )
+
+    cap = _Cap()
+    project.llm_client = cap
+    task = Task(
+        id="T-1",
+        description="make answer() return 42",
+        project_ref=str(tmp_path),
+    )
+    task.acceptance_criteria = "answer() returns 42"
+    task.files_to_modify = ["mod.py"]
+    task.processor_data["strategy"] = "surgical"
+    MarkdownPlanExecutor().execute(task, project, use_git_branch=False)
+
+    joined = "\n".join(cap.edit_prompts)
+    assert "Reproduction test" in joined  # the injected header
+    assert "answer() == 42" in joined  # the actual generated test body
 
 
 def test_run_spec_test_skip_without_path(tmp_path):

@@ -81,20 +81,27 @@ class CriticSpecMixin:
             diffs[path] = diff or "(no textual change)"
         return diffs
 
-    def _maybe_generate_spec_test(self, project: Project, task: Task) -> Optional[str]:
-        """Generate + write a failing spec test for the task, or return None.
+    def _maybe_generate_spec_test(
+        self, project: Project, task: Task
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Generate + write a failing spec test for the task, or (None, None).
 
         Off unless ``orchestrator.spec_as_tests`` and the task has acceptance
         criteria. The test is written under ``.orchestrator/spec_tests/`` — NOT
         the project's own test directory — so it is never collected by the
         project suite and so cannot flip the integration-gate baseline red. Run
         scoped later by :meth:`_run_spec_test`. Best-effort: any failure (no
-        client, model error, unwritable path) yields None.
+        client, model error, unwritable path) yields (None, None).
+
+        Returns ``(path, source)``: the path is run as a gate, and the SOURCE is
+        injected into the edit context as the concrete reproduction target the
+        model must make pass — turning the spec test from a passive after-the-fact
+        check into the directed objective (reproduction-first / TDD).
         """
         if not get_setting(project.config, "orchestrator", "spec_as_tests"):
-            return None
+            return None, None
         if not getattr(task, "acceptance_criteria", ""):
-            return None
+            return None, None
         from misterdev.core.verification.spec_tests import (
             generate_spec_test,
         )
@@ -104,9 +111,9 @@ class CriticSpecMixin:
             source = generate_spec_test(task, project.llm_client, language=language)
         except Exception as e:  # generation is best-effort
             logger.debug(f"Spec-test generation skipped: {e}")
-            return None
+            return None, None
         if not source:
-            return None
+            return None, None
         ext = {
             "python": ".py",
             "javascript": ".test.js",
@@ -119,9 +126,9 @@ class CriticSpecMixin:
             path.write_text(source, encoding="utf-8")
         except OSError as e:
             logger.debug(f"Spec-test write skipped: {e}")
-            return None
-        logger.info(f"Spec-as-test written (run scoped after gates): {path}")
-        return str(path)
+            return None, None
+        logger.info(f"Spec-as-test written (injected as target, run as gate): {path}")
+        return str(path), source
 
     def _run_spec_test(
         self, project: Project, spec_path: Optional[str], timeout: int
