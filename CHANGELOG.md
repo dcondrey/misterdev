@@ -9,6 +9,8 @@ type.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-06
+
 ### Added
 
 - **SWE-bench evaluation harness** (`evaluation/swebench/`) — run misterdev on
