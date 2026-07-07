@@ -158,7 +158,7 @@ class ExecuteMixin:
             if seed_output.strip()
             else None
         )
-        prior_errors: List[str] = []
+        prior_errors: list = []
         # Accumulated failure reflections (Reflexion): each failed attempt adds a
         # short root-cause reflection that the NEXT attempt sees, so a retry fixes
         # the underlying problem rather than re-patching the symptom.
@@ -319,7 +319,15 @@ class ExecuteMixin:
             allocated = budget.allocate()
 
             full_code_context = allocated["code_context"]
-            if allocated["spec_test"]:
+            # Only present the reproduction test as the concrete target when the
+            # FULL source survived allocation. Under extreme context pressure the
+            # allocator can trim this section to a fragment; a partial test framed
+            # as "the exact test to pass" would actively mislead, so in that rare
+            # case drop it rather than point the model at a stub.
+            if (
+                allocated["spec_test"]
+                and allocated["spec_test"].strip() == (spec_test_source or "").strip()
+            ):
                 full_code_context += (
                     "\n\n## Reproduction test — your change MUST make this pass\n"
                     "This executable test defines DONE for this task. Write the "

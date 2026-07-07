@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from misterdev.utils.process import kill_process_group
+
 from .instance import PolyglotInstance
 
 
@@ -41,16 +43,32 @@ def grade(
         return GradeResult(False, error="no test file present to grade against")
     cmd = instance.test_command
     full = f"{env_activate} && {cmd}" if env_activate else cmd
+    # start_new_session isolates the command in its own process group so a
+    # timeout SIGKILLs the whole tree (cargo/gradle/pytest workers) instead of
+    # leaving grandchildren orphaned holding the build/target lock.
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             full,
             shell=True,
             cwd=str(root),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            errors="replace",
+            start_new_session=True,
         )
+    except OSError as e:
+        return GradeResult(False, error=f"could not run test command: {e}")
+    try:
+        out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        kill_process_group(proc)
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
         return GradeResult(False, error=f"test command timed out after {timeout}s")
-    output = (proc.stdout or "") + (proc.stderr or "")
-    return GradeResult(resolved=proc.returncode == 0, output=output[-4000:])
+    # Bound each stream before concatenating so a runaway suite can't materialize
+    # a multi-MB string just to keep the 4KB tail that carries the failure.
+    output = ((out or "")[-4000:] + (err or "")[-4000:])[-4000:]
+    return GradeResult(resolved=proc.returncode == 0, output=output)

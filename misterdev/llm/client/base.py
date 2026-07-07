@@ -121,13 +121,22 @@ class BaseLLMClient(ABC):
     def _edit_tool_mode(self, value: bool) -> None:
         self._tls.edit_tool_mode = value
 
+    def _prepare_prompt(self, prompt: str) -> str:
+        """Enforce the budget and bound the prompt size in one place.
+
+        The single invariant that every outbound prompt is BOTH budget-checked and
+        size-capped: a new entry point calls this instead of repeating the pair and
+        risking one being satisfied while the other is forgotten.
+        """
+        self._enforce_budget()
+        return _bound_prompt(prompt)
+
     def generate(self, prompt: str, system_prompt: str = "") -> LLMResponse:
         """Generate a response with retry and budget enforcement.
 
         This is the primary public interface. Subclasses implement _call().
         """
-        self._enforce_budget()
-        prompt = _bound_prompt(prompt)
+        prompt = self._prepare_prompt(prompt)
 
         # Free models (`:free`) are frequently rate-limited upstream and slow to
         # even return the 429. Since routed calls fall back to the reliable paid
@@ -277,8 +286,7 @@ class BaseLLMClient(ABC):
         available (and estimated otherwise) so streaming honors the same budget
         accounting as generate().
         """
-        self._enforce_budget()
-        prompt = _bound_prompt(prompt)
+        prompt = self._prepare_prompt(prompt)
 
         chunks: list[str] = []
         usage: Optional[LLMUsage] = None

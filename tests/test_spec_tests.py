@@ -217,6 +217,28 @@ def test_maybe_generate_off_by_default(tmp_path):
     ) == (None, None)
 
 
+def test_maybe_generate_uses_language_extension_for_compiled_langs(tmp_path):
+    # A compiled-language spec test gets its real suffix (from the shared
+    # _LANG_EXT map), not a .txt stub that no runner can execute.
+    from misterdev.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+
+    class _RustClient:
+        def generate_code(self, prompt, system=""):
+            return "```rust\n#[test]\nfn spec() { assert!(false); }\n```"
+
+    class _Proj:
+        path = tmp_path
+        config = {"orchestrator": {"spec_as_tests": True}, "language": "rust"}
+        llm_client = _RustClient()
+
+    path, source = MarkdownPlanExecutor()._maybe_generate_spec_test(
+        _Proj(), _task(tid="tr")
+    )
+    assert path is not None and path.endswith(".rs")
+
+
 def test_spec_test_source_is_injected_as_edit_target(tmp_path, monkeypatch):
     # Reproduction-first: the generated spec test's SOURCE must appear in the edit
     # prompt as the concrete target, not just be checked after the fact.

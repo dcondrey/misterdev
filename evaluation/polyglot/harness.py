@@ -70,7 +70,9 @@ def discover_exercises(
             continue
         for ex in sorted(p for p in practice.iterdir() if p.is_dir()):
             found.append((str(ex), lang))
-    return found[: limit or len(found)]
+    if limit is not None:
+        found = found[: max(limit, 0)]
+    return found
 
 
 def run_suite(
