@@ -488,14 +488,18 @@ class ExecuteMixin:
                     )
                 continue
             edits = self._validate_edit_paths(project, task, edits)
-            if not edits:
+            no_gate = not (task_build_command or typecheck_command or test_command)
+            if not edits and not (no_gate and certainty >= certainty_threshold):
                 # A response that yields no applicable edit is a stall, not a
                 # no-op: without escalating it here the loop re-sends the same
                 # prompt and the model emits nothing again, spinning until the
                 # budget dies (observed: 9 empty attempts, 446K tokens). Treat it
                 # like an anchor miss — count it, and after two force a full-file
                 # rewrite via the apply_failures>=2 branch above — then retry
-                # immediately rather than gating an unchanged tree.
+                # immediately rather than gating an unchanged tree. The exception
+                # is a legitimately-editless task: no gate to satisfy and the
+                # model is confident the work already holds — fall through to the
+                # certainty-completion path below instead of spinning.
                 apply_failures += 1
                 logger.warning(
                     f"No applicable file edit in LLM response (#{apply_failures})."
@@ -513,6 +517,11 @@ class ExecuteMixin:
                         "file) in a code block whose fence carries the file path."
                     )
                 continue
+            if not edits:
+                # Legitimately editless (guarded above): skip the edits-present
+                # work and fall through to the gate/certainty logic, which
+                # completes a no-gate high-certainty task.
+                pass
             else:
                 stall_risk = self.stall_detector.push_edit(edits)
                 if stall_risk > 0.7:
