@@ -240,6 +240,14 @@ class ExecuteMixin:
 
         for attempt in range(max_retries):
             logger.info(f"Attempt {attempt + 1}/{max_retries} for task {task.id}")
+            # Diagnostic: sizes of the context that ACCUMULATES across attempts,
+            # so growth (or a runaway component) is visible per retry.
+            logger.info(
+                f"[attempt-ctx] task={task.id} #{attempt + 1} "
+                f"error_logs={len(error_logs or '')}c "
+                f"reflections={len(reflections)}x/{sum(len(r) for r in reflections)}c "
+                f"prior_errors={len(prior_errors)}"
+            )
             if pending_attempt is not None:
                 self._ledger_record(project, task, pending_attempt, success=False)
                 pending_attempt = None
@@ -481,7 +489,30 @@ class ExecuteMixin:
                 continue
             edits = self._validate_edit_paths(project, task, edits)
             if not edits:
-                logger.warning("No file edits detected in LLM response.")
+                # A response that yields no applicable edit is a stall, not a
+                # no-op: without escalating it here the loop re-sends the same
+                # prompt and the model emits nothing again, spinning until the
+                # budget dies (observed: 9 empty attempts, 446K tokens). Treat it
+                # like an anchor miss — count it, and after two force a full-file
+                # rewrite via the apply_failures>=2 branch above — then retry
+                # immediately rather than gating an unchanged tree.
+                apply_failures += 1
+                logger.warning(
+                    f"No applicable file edit in LLM response (#{apply_failures})."
+                )
+                if apply_failures >= 2:
+                    error_logs = (
+                        "ERROR: you produced no applicable file edit. Output the "
+                        "COMPLETE updated file in a single code block whose opening "
+                        "fence carries the file path."
+                    )
+                else:
+                    error_logs = (
+                        "ERROR: no file edit was detected in your response. Emit the "
+                        "change as an anchored SEARCH/REPLACE hunk (or the complete "
+                        "file) in a code block whose fence carries the file path."
+                    )
+                continue
             else:
                 stall_risk = self.stall_detector.push_edit(edits)
                 if stall_risk > 0.7:

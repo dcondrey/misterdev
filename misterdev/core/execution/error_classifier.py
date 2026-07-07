@@ -16,6 +16,7 @@ Categories:
 
 from typing import Dict, List, Tuple
 
+from misterdev.core.execution.error_log_compressor import compress_error_log
 from misterdev.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -349,18 +350,19 @@ def format_classified_error(error_output: str, max_lines: int = 50) -> str:
     """Classify error and format with guidance for LLM prompt."""
     category, guidance = classify_and_guide(error_output)
 
-    # Truncate raw output
-    lines = error_output.splitlines()
+    # Structure-aware compression first (drops source echo / caret art / explain
+    # hints, dedups, caps to the first errors); the line cap is then a belt-and-
+    # suspenders bound in case the compressor degraded to a raw-head fallback.
+    compact = compress_error_log(error_output) or error_output
+    lines = compact.splitlines()
     if len(lines) > max_lines:
-        truncated = (
+        compact = (
             "\n".join(lines[:max_lines])
             + f"\n... ({len(lines) - max_lines} more lines)"
         )
-    else:
-        truncated = error_output
 
     return (
         f"### Error Classification: {category.upper()}\n"
         f"**Fix Strategy**: {guidance}\n\n"
-        f"### Raw Error Output\n```\n{truncated}\n```"
+        f"### Raw Error Output\n```\n{compact}\n```"
     )

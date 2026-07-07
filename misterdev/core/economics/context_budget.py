@@ -94,6 +94,10 @@ class ContextBudget:
         """Allocate budget and return truncated sections."""
         total = sum(s.tokens for s in self._sections.values())
 
+        # Per-component breakdown on every allocation: this is the one line that
+        # answers "which section is eating the window" without guessing.
+        logger.info(f"[ctx-budget] {self.summary()}")
+
         if total <= self.available:
             return {name: s.content for name, s in self._sections.items()}
 

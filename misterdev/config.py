@@ -228,9 +228,11 @@ class OrchestratorSettings:
     # off by default (marginal value, large latency/cost).
     enable_ab_mcts: bool = False
     # Empirical probe discovery (SMART/CREATE Phase 1.5) runs an LLM call plus
-    # ephemeral scripts to verify facts before planning. On by default (it grounds
-    # the spec), but set false for a cheaper/faster run that skips the pre-work.
-    enable_probes: bool = True
+    # ephemeral scripts to verify facts before planning. OFF by default: measured
+    # to balloon the pre-execution context (~900K tokens over ~9 calls on a
+    # trivial task) and exhaust the whole budget before any code is written. Worth
+    # enabling only for complex work against an unfamiliar live codebase.
+    enable_probes: bool = False
     # Auto-detect polyglot sub-projects (targets) when none are declared, so a
     # monorepo gets per-toolchain gate routing with zero config. Off by default
     # (explicit ``targets`` is more precise); detected commands are best-effort.

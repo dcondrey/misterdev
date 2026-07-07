@@ -142,7 +142,9 @@ def test_format_classified_error():
 def test_format_truncates_long_output():
     long_error = "\n".join(f"error line {i}" for i in range(200))
     output = format_classified_error(long_error, max_lines=10)
-    assert "190 more lines" in output
+    # Structure-aware compression bounds 200 lines to a handful, with a marker.
+    assert output.count("\n") < 20
+    assert "omitted" in output or "more" in output
 
 
 def test_multiple_indicators_picks_strongest():
