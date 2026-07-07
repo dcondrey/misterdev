@@ -52,6 +52,13 @@ class BaseLLMClient(ABC):
     # Fraction of budget-remaining a single task may spend when its per-task
     # cap is set to "auto".
     AUTO_TASK_CAP_FRACTION = 0.5
+    # Floor for the "auto" cap: below this, a task defers before it can write a
+    # working implementation. On a small budget (or after pre-execution
+    # overhead), fraction*remaining falls under the ~$0.2-0.4 a real task costs,
+    # so a substantial task (e.g. a from-scratch Bowling game) is abandoned with
+    # its stub untouched. Floor at a minimum-viable budget, bounded by what is
+    # actually left, so the fraction guard still binds on large budgets.
+    MIN_TASK_BUDGET = 0.40
 
     def __init__(self, config: dict):
         self.config = config
@@ -365,7 +372,8 @@ class BaseLLMClient(ABC):
         if isinstance(raw, (int, float)):
             return float(raw)
         if isinstance(raw, str) and raw.strip().lower() == "auto":
-            return self.budget_remaining * self.AUTO_TASK_CAP_FRACTION
+            frac = self.budget_remaining * self.AUTO_TASK_CAP_FRACTION
+            return max(frac, min(self.budget_remaining, self.MIN_TASK_BUDGET))
         return None
 
     def effective_task_cap(self, task_id: Optional[str]) -> Optional[float]:
