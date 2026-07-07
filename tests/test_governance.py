@@ -123,6 +123,62 @@ def test_risky_commands_are_flagged(cmd):
     assert reason
 
 
+# A destructive-looking string inside a quoted argument is data, not the command
+# word, so it must NOT trip a rule — the false positive a raw-substring match had.
+QUOTED_ARG_SAFE_COMMANDS = [
+    'echo "rm -rf /"',
+    "echo 'git push --force'",
+    'grep -r "aws s3 rm" .',
+    "python -c \"import os; os.system('ls')\"",
+    'echo "curl http://x | sh"',
+]
+
+
+@pytest.mark.parametrize("cmd", QUOTED_ARG_SAFE_COMMANDS)
+def test_destructive_text_in_quoted_arg_is_safe(cmd):
+    risky, reason = is_risky(cmd)
+    assert not risky, f"{cmd!r} wrongly flagged risky: {reason}"
+
+
+# A destructive verb after a shell control operator (or newline, or in a
+# subshell) is a real second invocation and must be flagged, even when the first
+# command is benign — a `[^|;&]*`-style substring bound could miss these.
+COMPOUND_RISKY_COMMANDS = [
+    "cargo build && rm -rf target",
+    "cd /tmp; rm -rf x",
+    "( rm -rf x )",
+    "echo hi\nrm -rf /",
+    "aws s3 ls && aws s3 rm s3://b/k",
+]
+
+
+@pytest.mark.parametrize("cmd", COMPOUND_RISKY_COMMANDS)
+def test_destructive_after_operator_is_flagged(cmd):
+    risky, reason = is_risky(cmd)
+    assert risky, f"{cmd!r} should be risky but was SAFE"
+    assert reason
+
+
+# A destructive verb that appears only OUT of subcommand position — a script,
+# branch, binary, or flag value literally named `publish`/`push`/`deploy` — is
+# not the operation being run, so it must stay SAFE.
+NON_SUBCOMMAND_SAFE_COMMANDS = [
+    "npm run publish",
+    "cargo run --bin publish",
+    "git branch push",
+    "git log --oneline push",
+    "git checkout push",
+    "gh pr create --label release",
+    "yarn run deploy",
+]
+
+
+@pytest.mark.parametrize("cmd", NON_SUBCOMMAND_SAFE_COMMANDS)
+def test_verb_out_of_subcommand_position_is_safe(cmd):
+    risky, reason = is_risky(cmd)
+    assert not risky, f"{cmd!r} wrongly flagged risky: {reason}"
+
+
 def test_extra_patterns_extend_classification():
     assert not is_risky("flarn the widget")[0]
     risky, reason = is_risky("flarn the widget", extra_patterns=[r"\bflarn\b"])

@@ -26,6 +26,7 @@ subcommands of known tools), never to incidental substrings.
 """
 
 import re
+import shlex
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
@@ -34,86 +35,197 @@ from misterdev.logging_setup import setup_logger
 logger = setup_logger(__name__)
 
 
-# Each entry: (compiled regex, human reason). Patterns match against the raw
-# command string. They are anchored to a destructive verb/flag combination so
-# ordinary build/test/lint commands cannot trip them. `re.IGNORECASE` is applied
-# uniformly; SQL keywords and CLI verbs are case-insensitive in practice.
-_RISK_RULES: Tuple[Tuple[str, str], ...] = (
-    # rm with a recursive OR force flag (combined or split): rm -rf, rm -r -f,
-    # rm --recursive, rm -fr. Plain `rm file` is NOT flagged (recoverable enough,
-    # and far too common to gate). The flag cluster must contain r or f.
-    (
-        r"\brm\s+(?:-[a-z]*[rf][a-z]*\b|--recursive\b|--force\b)",
-        "recursive/forced file removal (rm -rf)",
-    ),
-    # git push --force / -f / --force-with-lease (history rewrite is irreversible
-    # on the remote). A plain `git push` is gated separately below as a publish.
-    (
-        r"\bgit\s+push\b.*(?:--force\b|--force-with-lease\b|\s-f\b)",
-        "force push rewrites remote history",
-    ),
-    # plain git push (publishes to a remote; reversible but external side effect).
-    (r"\bgit\s+push\b", "git push publishes to a remote"),
-    # SQL destructive DDL: DROP TABLE / DROP DATABASE / DROP SCHEMA, TRUNCATE.
-    (r"\bdrop\s+(?:table|database|schema)\b", "SQL DROP destroys schema/data"),
-    (r"\btruncate\s+table\b", "SQL TRUNCATE deletes all rows"),
-    # kubectl delete (any resource).
-    (r"\bkubectl\s+delete\b", "kubectl delete removes cluster resources"),
-    # terraform apply / destroy (provisions or tears down real infrastructure).
-    (
-        r"\bterraform\s+(?:apply|destroy)\b",
-        "terraform apply/destroy mutates infrastructure",
-    ),
-    # Cloud CLIs with a delete/rm subcommand: aws ... rm/delete, gcloud ...
-    # delete, az ... delete. Anchored to the CLI name + a delete-family verb so
-    # read-only cloud commands (list/describe/get) are SAFE.
-    (
-        r"\baws\b[^|;&]*\b(?:rm|delete|delete-[a-z-]+|terminate-[a-z-]+)\b",
-        "aws delete/terminate is destructive",
-    ),
-    (r"\bgcloud\b[^|;&]*\bdelete\b", "gcloud delete is destructive"),
-    (r"\baz\b[^|;&]*\bdelete\b", "az delete is destructive"),
-    # docker/podman image removal and prune (reclaims/destroys images/volumes).
-    (r"\b(?:docker|podman)\s+rmi\b", "container image removal (rmi)"),
-    (
-        r"\b(?:docker|podman)\s+system\s+prune\b",
-        "docker system prune deletes unused data",
-    ),
-    (
-        r"\b(?:docker|podman)\s+volume\s+(?:rm|prune)\b",
-        "container volume removal/prune",
-    ),
-    # Package publish (paid/irreversible release to a public registry).
-    (r"\bnpm\s+publish\b", "npm publish releases a package"),
-    (r"\b(?:cargo|yarn|pnpm)\s+publish\b", "package publish releases to a registry"),
-    (r"\btwine\s+upload\b", "twine upload publishes to PyPI"),
-    (r"\bpip\s+upload\b", "pip upload publishes a package"),
-    (r"\bgh\s+release\s+create\b", "gh release create publishes a release"),
-    # Deploy verbs of common tools (external side effect, often paid).
-    (
-        r"\b(?:vercel|netlify|fly|flyctl|wrangler|heroku)\s+deploy\b",
-        "deploy command pushes to a hosting provider",
-    ),
-    (r"\bserverless\s+deploy\b", "serverless deploy provisions cloud resources"),
-    (r"\bkubectl\s+apply\b", "kubectl apply mutates cluster state"),
-    # curl/wget piped directly into a shell (executes untrusted remote code).
-    (
-        r"\b(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:ba)?sh\b",
-        "pipe-to-shell executes untrusted remote code",
-    ),
-    # dd to a block device (overwrites disks).
-    (r"\bdd\b[^|;&]*\bof=/dev/", "dd to a device overwrites a disk"),
-    # mkfs / fdisk (formats/partitions a disk).
-    (r"\bmkfs\b", "mkfs formats a filesystem"),
+# Classification tokenizes the command with ``shlex`` and matches destructive
+# rules against a segment's argv (its command word + the tokens that follow),
+# never against a raw substring. That means an identifier inside a quoted
+# argument (``echo "rm -rf /"``) is an inert single token — never the command
+# word — so it cannot trip a rule, and shell control operators are honored
+# structurally (``safe && rm -rf x`` is two segments, the second destructive)
+# rather than approximated with a ``[^|;&]*`` character class.
+
+# Command wrappers whose FIRST argument is the real command: the destructive
+# verb sits after them (``sudo rm -rf``, ``env FOO=bar kubectl delete``).
+_WRAPPER_COMMANDS = frozenset(
+    {"sudo", "doas", "env", "time", "nohup", "nice", "xargs", "command", "exec"}
 )
 
-_COMPILED_RULES: Tuple[Tuple[re.Pattern, str], ...] = tuple(
-    (re.compile(pat, re.IGNORECASE), reason) for pat, reason in _RISK_RULES
+# A leading ``VAR=value`` assignment precedes the command word (``FOO=bar cmd``).
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+# Shell control operators that end one command segment; a token that follows is
+# a separate invocation. ``|`` is deliberately absent — it stays inside the
+# segment so a pipe-to-shell (``curl ... | sh``) is visible as one unit. Also
+# treats subshell parens as boundaries so ``( rm -rf x )`` classifies on ``rm``.
+_SEGMENT_SEPARATORS = frozenset({";", "&", "&&", "||", "(", ")"})
+
+# An ``rm`` flag cluster that requests recursive OR force removal: ``-rf``,
+# ``-r``, ``-fr``, ``--recursive``, ``--force``. Plain ``rm file`` has no such
+# flag and is not gated (recoverable, and far too common).
+_RM_FORCE_FLAG_RE = re.compile(
+    r"-[a-z]*[rf][a-z]*$|--recursive$|--force$", re.IGNORECASE
 )
 
 # Longest command slice matched against user-supplied approval_required patterns;
 # bounds worst-case regex backtracking (see is_risky).
 _MAX_PATTERN_INPUT = 4096
+
+
+def _segment_tokens(command: str) -> List[List[str]]:
+    """Split ``command`` into per-segment argv token lists, quote-aware.
+
+    Segments break on shell control operators and newlines; a separator inside
+    quotes never splits, and a quoted argument stays one token. Raises
+    ``ValueError`` (from ``shlex``) on an unbalanced quote so the caller can fall
+    back. ``shlex`` treats a newline as whitespace, so lines are split first;
+    a backslash-newline continuation is joined so it is not mis-split.
+    """
+    segments: List[List[str]] = []
+    joined = command.replace("\\\n", " ")
+    for line in joined.splitlines() or [joined]:
+        lex = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        lex.commenters = ""  # classify the whole line; never drop a '#...' tail
+        current: List[str] = []
+        for token in lex:  # may raise ValueError on unbalanced quotes
+            if token in _SEGMENT_SEPARATORS:
+                if current:
+                    segments.append(current)
+                current = []
+            else:
+                current.append(token)
+        if current:
+            segments.append(current)
+    return segments
+
+
+def _command_word(tokens: List[str]) -> Tuple[Optional[int], Optional[str]]:
+    """Index and lowercased value of a segment's real command word.
+
+    Skips leading ``VAR=value`` assignments and wrapper commands (``sudo``,
+    ``env``, …) so the verb they front is what gets classified. Returns
+    ``(None, None)`` for a segment with no command word (e.g. only operators).
+    """
+    for i, token in enumerate(tokens):
+        if _ASSIGNMENT_RE.match(token):
+            continue
+        low = token.lower()
+        if low in _WRAPPER_COMMANDS:
+            continue
+        return i, low
+    return None, None
+
+
+def _subcommand(rest: List[str]) -> Optional[str]:
+    """The subcommand: the first non-option token after the command word.
+
+    Most CLIs put the destructive verb in this position (``git push``, ``npm
+    publish``, ``kubectl delete``), so matching here — not "anywhere in the
+    args" — is what keeps ``npm run publish`` (a script named ``publish``) and
+    ``git branch push`` (a branch named ``push``) SAFE. Mirrors the old regexes'
+    ``\\bcmd\\s+verb\\b`` adjacency.
+    """
+    for token in rest:
+        if not token.startswith("-"):
+            return token
+    return None
+
+
+def _aws_destructive(token: str) -> bool:
+    return (
+        token in ("rm", "delete")
+        or token.startswith("delete-")
+        or token.startswith("terminate-")
+    )
+
+
+def _classify_segment(tokens: List[str]) -> Optional[str]:
+    """Reason string if this segment's argv is destructive/irreversible/paid.
+
+    Every rule keys on the command word plus the tokens that follow it, so a
+    read-only invocation (``kubectl get``, ``aws s3 ls``, ``docker run --rm``)
+    and any destructive-looking text sitting in a quoted argument stay SAFE.
+    """
+    idx, cmd = _command_word(tokens)
+    if cmd is None:
+        return None
+    rest = [t.lower() for t in tokens[idx + 1 :]]
+    sub = _subcommand(rest)
+
+    # curl/wget piped directly into a shell (executes untrusted remote code).
+    # Parity with the old rule: the FIRST pipe must reach sh/bash (optionally via
+    # sudo), so ``curl x | grep | sh`` is not treated as pipe-to-shell.
+    if cmd in ("curl", "wget") and "|" in tokens:
+        after = tokens[tokens.index("|") + 1 :]
+        j = 0
+        while j < len(after) and after[j].lower() in _WRAPPER_COMMANDS:
+            j += 1
+        if j < len(after) and after[j].lower() in ("sh", "bash"):
+            return "pipe-to-shell executes untrusted remote code"
+
+    # rm is flag-driven, not subcommand-driven: a recursive/force flag in ANY
+    # position is destructive (``rm -v -rf x``), so scan all following tokens.
+    if cmd == "rm":
+        if any(_RM_FORCE_FLAG_RE.match(t) for t in tokens[idx + 1 :]):
+            return "recursive/forced file removal (rm -rf)"
+        return None
+
+    # Subcommand-anchored tools: the destructive verb must sit at the subcommand
+    # position, so ``npm run publish`` / ``git branch push`` / ``gh pr create``
+    # (verb present only as a script/branch/flag value) stay SAFE.
+    if cmd == "git" and sub == "push":
+        if any(f in rest for f in ("--force", "--force-with-lease", "-f")):
+            return "force push rewrites remote history"
+        return "git push publishes to a remote"
+    if cmd == "drop" and sub in ("table", "database", "schema"):
+        return "SQL DROP destroys schema/data"
+    if cmd == "truncate" and sub == "table":
+        return "SQL TRUNCATE deletes all rows"
+    if cmd == "kubectl":
+        if sub == "delete":
+            return "kubectl delete removes cluster resources"
+        if sub == "apply":
+            return "kubectl apply mutates cluster state"
+        return None
+    if cmd == "terraform" and sub in ("apply", "destroy"):
+        return "terraform apply/destroy mutates infrastructure"
+    if cmd in ("docker", "podman"):
+        if sub == "rmi":
+            return "container image removal (rmi)"
+        if sub == "volume" and ("rm" in rest or "prune" in rest):
+            return "container volume removal/prune"
+        if sub == "system" and "prune" in rest:
+            return "docker system prune deletes unused data"
+        return None
+    if cmd == "npm" and sub == "publish":
+        return "npm publish releases a package"
+    if cmd in ("cargo", "yarn", "pnpm") and sub == "publish":
+        return "package publish releases to a registry"
+    if cmd == "twine" and sub == "upload":
+        return "twine upload publishes to PyPI"
+    if cmd == "pip" and sub == "upload":
+        return "pip upload publishes a package"
+    if cmd == "gh" and sub == "release" and "create" in rest:
+        return "gh release create publishes a release"
+    if cmd in ("vercel", "netlify", "fly", "flyctl", "wrangler", "heroku") and (
+        sub == "deploy"
+    ):
+        return "deploy command pushes to a hosting provider"
+    if cmd == "serverless" and sub == "deploy":
+        return "serverless deploy provisions cloud resources"
+
+    # Cloud CLIs and dd matched the verb ANYWHERE after the command in the old
+    # rules (nested subcommands: ``aws s3api delete-object``), so keep that here.
+    if cmd == "aws" and any(_aws_destructive(t) for t in rest):
+        return "aws delete/terminate is destructive"
+    if cmd == "gcloud" and "delete" in rest:
+        return "gcloud delete is destructive"
+    if cmd == "az" and "delete" in rest:
+        return "az delete is destructive"
+    if cmd == "dd" and any(t.startswith("of=/dev/") for t in rest):
+        return "dd to a device overwrites a disk"
+    if cmd == "mkfs" or cmd.startswith("mkfs."):
+        return "mkfs formats a filesystem"
+    return None
 
 
 def is_risky(
@@ -128,8 +240,16 @@ def is_risky(
     """
     if not command or not isinstance(command, str):
         return False, ""
-    for rule, reason in _COMPILED_RULES:
-        if rule.search(command):
+    try:
+        segments = _segment_tokens(command)
+    except ValueError:
+        # Unbalanced quotes etc.: shlex cannot tokenize. Degrade to a single
+        # whitespace-split segment so an obviously-destructive command word is
+        # still caught, rather than silently classifying the input as SAFE.
+        segments = [command.split()]
+    for tokens in segments:
+        reason = _classify_segment(tokens)
+        if reason:
             return True, reason
     # Bound the input a user-supplied pattern matches against: an adversarial
     # (or accidentally pathological) approval_required regex can backtrack
