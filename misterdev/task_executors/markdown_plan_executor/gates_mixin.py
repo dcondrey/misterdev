@@ -1,6 +1,7 @@
 """Test-gate acceptance, acceptance-criteria verification, and error context."""
 
-from typing import List, Optional, Tuple
+import re
+from typing import List, NamedTuple, Optional, Tuple
 
 from misterdev.core.models import Task
 from misterdev.core.execution.project import Project
@@ -10,17 +11,68 @@ from misterdev.config import get_setting
 from .helpers import logger, _extract_acceptance_command, JUDGE_MIN_BUDGET_FRACTION
 
 
+class _AttemptFailure(NamedTuple):
+    """One failed attempt: a human-readable label plus a stable error signature.
+
+    The signature lets the retry loop detect when an attempt reproduced an
+    earlier failure verbatim (the model's fix changed nothing) so it can escalate
+    to a different strategy instead of looping on the same error.
+    """
+
+    label: str
+    signature: str
+
+
+def _error_signature(output: str) -> str:
+    """A fingerprint that stays identical across attempts for the SAME failure.
+
+    Folds out the volatile parts (line/column numbers, counts, file paths) that
+    differ run-to-run without changing the underlying error, then keys on the
+    classified category plus a bounded normalized slice. Two attempts that hit
+    the same wall fingerprint the same; a genuinely different error does not.
+    """
+    norm = re.sub(r"\d+", "#", (output or "").lower())
+    norm = re.sub(r"[/\\][\w./\\-]+", "<path>", norm)
+    norm = re.sub(r"\s+", " ", norm).strip()
+    return f"{classify_error(output)}:{norm[:200]}"
+
+
 class GatesMixin:
     @staticmethod
-    def _prior_failures_history(prior_errors: List[str]) -> str:
+    def _prior_failures_history(prior_errors: List["_AttemptFailure"]) -> str:
         """Render all-but-the-latest prior attempt errors as a retry-context
         header, or '' when there is no earlier failure to summarize."""
         if len(prior_errors) <= 1:
             return ""
-        past = "\n".join(f"- {e}" for e in prior_errors[:-1])
+        past = "\n".join(f"- {e.label}" for e in prior_errors[:-1])
         return (
             "### Previous Attempt Failures (a different approach is required)\n"
             f"{past}\n\n"
+        )
+
+    @staticmethod
+    def _repeat_escalation(prior_errors: List["_AttemptFailure"]) -> str:
+        """Banner shown when the newest failure repeats an earlier one verbatim.
+
+        A recurring identical signature means the last fix changed nothing — the
+        approach is not converging — so instruct the model to change strategy
+        rather than re-edit the same way (the actionable half of reflection
+        scoring: detect that reflecting did not help). Additive: it only prepends
+        a directive, never removes context, so it cannot degrade a good attempt.
+        """
+        if len(prior_errors) < 2:
+            return ""
+        latest = prior_errors[-1].signature
+        repeats = sum(1 for e in prior_errors if e.signature == latest)
+        if repeats < 2:
+            return ""
+        return (
+            f"### Repeated failure ({repeats}x) — CHANGE YOUR APPROACH\n"
+            "Your last attempts produced the SAME error; the current approach is "
+            "not working. Do NOT make the same kind of edit again. Step back: "
+            "re-read the referenced code and interface contracts, question the "
+            "assumption that led to this error, and try a fundamentally different "
+            "fix.\n\n"
         )
 
     def _apply_reflection(
@@ -59,7 +111,7 @@ class GatesMixin:
 
     def _build_error_context(
         self,
-        prior_errors: List[str],
+        prior_errors: List["_AttemptFailure"],
         attempt: int,
         output: str,
         classified: str,
@@ -70,9 +122,15 @@ class GatesMixin:
         Surfacing what already failed (and how it was classified) stops the LLM
         from re-submitting the same broken fix across retries.
         """
-        prior_errors.append(f"Attempt {attempt + 1}: {classify_error(output)}")
+        prior_errors.append(
+            _AttemptFailure(
+                f"Attempt {attempt + 1}: {classify_error(output)}",
+                _error_signature(output),
+            )
+        )
+        escalation = self._repeat_escalation(prior_errors)
         history = self._prior_failures_history(prior_errors)
-        return f"{history}{classified}\n\n{attributed_error}"
+        return f"{escalation}{history}{classified}\n\n{attributed_error}"
 
     @staticmethod
     def _gate_accepts(
@@ -219,7 +277,7 @@ class GatesMixin:
 
     def _build_acceptance_error_context(
         self,
-        prior_errors: List[str],
+        prior_errors: List["_AttemptFailure"],
         attempt: int,
         task: Task,
         classified: str,
@@ -229,10 +287,16 @@ class GatesMixin:
         Makes the unmet criterion explicit so the next attempt targets it rather
         than re-submitting a change that only satisfies the build/test gates.
         """
-        prior_errors.append(f"Attempt {attempt + 1}: acceptance criteria not met")
+        prior_errors.append(
+            _AttemptFailure(
+                f"Attempt {attempt + 1}: acceptance criteria not met",
+                "acceptance:not_met",
+            )
+        )
+        escalation = self._repeat_escalation(prior_errors)
         history = self._prior_failures_history(prior_errors)
         return (
-            f"{history}### Acceptance criterion not met\n"
+            f"{escalation}{history}### Acceptance criterion not met\n"
             f"The build and tests passed, but the task's acceptance criterion "
             f"was not satisfied:\n{task.acceptance_criteria}\n\n{classified}"
         )
