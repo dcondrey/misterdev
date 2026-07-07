@@ -1,0 +1,70 @@
+import pytest
+
+from misterdev.core.evolution import (
+    Blame,
+    LLMProposer,
+    build_instruction,
+    parse_paths,
+    parse_tag,
+)
+
+_EDIT = (
+    "tag: contract-extraction\n"
+    "```python:misterdev/core/context/contracts/extraction.py\n"
+    "<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n```\n"
+    "```rust:misterdev/other.rs\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n```\n"
+)
+
+
+def test_parse_paths_extracts_fence_paths_in_order_without_dupes():
+    dup = _EDIT + "```python:misterdev/core/context/contracts/extraction.py\nx\n```"
+    assert parse_paths(dup) == [
+        "misterdev/core/context/contracts/extraction.py",
+        "misterdev/other.rs",
+    ]
+
+
+def test_parse_paths_empty_when_no_fences():
+    assert parse_paths("just prose, no edits") == []
+
+
+def test_parse_tag_reads_declared_kind():
+    assert parse_tag(_EDIT) == "contract-extraction"
+    assert parse_tag("no tag here\n```python:x.py\n```") is None
+
+
+def test_build_instruction_targets_niche_and_shows_failures():
+    blame = Blame(
+        niche="rust/wrong_type", failures=8, total=10, examples=["E0308: mismatch"]
+    )
+    instr = build_instruction(blame, favored_kinds=["prompt"])
+    assert "rust/wrong_type" in instr
+    assert "8/10" in instr and "80%" in instr
+    assert "E0308: mismatch" in instr
+    assert "prompt" in instr  # prior steer included
+    assert "tag:" in instr  # asks for the kind tag
+
+
+def test_propose_normalizes_editor_response_into_a_mutation():
+    prop = LLMProposer(generate=lambda instr: _EDIT)
+    blame = Blame(niche="rust/wrong_type", failures=1, total=1)
+    mut = prop.propose(blame)
+    assert mut.target == "rust/wrong_type"
+    assert mut.paths[0].endswith("extraction.py")
+    assert mut.note == "contract-extraction"
+    assert mut.patch == _EDIT
+
+
+def test_propose_defaults_note_to_niche_when_untagged():
+    edit = (
+        "```python:misterdev/x.py\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n```"
+    )
+    prop = LLMProposer(generate=lambda instr: edit)
+    mut = prop.propose(Blame(niche="go/missing_symbol", failures=1, total=1))
+    assert mut.note == "go/missing_symbol"
+
+
+def test_propose_raises_on_uneditable_response():
+    prop = LLMProposer(generate=lambda instr: "I could not find anything to change.")
+    with pytest.raises(ValueError):
+        prop.propose(Blame(niche="rust", failures=1, total=1))
