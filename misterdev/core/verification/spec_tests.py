@@ -120,6 +120,15 @@ def extract_code(text: str) -> Optional[str]:
     return text.strip() or None
 
 
+def safe_task_id(task) -> str:
+    """A filesystem-safe token for a task id (non-word chars -> ``_``).
+
+    Shared by every caller that names a spec-test file after a task so the
+    sanitization is defined once and cannot drift between them.
+    """
+    return re.sub(r"[^A-Za-z0-9_]", "_", str(getattr(task, "id", "task")))
+
+
 def spec_test_path(project_root: Path, task, language: str = "python") -> Path:
     """Compute the path the generated spec test would be written to.
 
@@ -130,8 +139,7 @@ def spec_test_path(project_root: Path, task, language: str = "python") -> Path:
     lang = (language or "python").lower()
     test_dir = _LANG_TEST_DIR.get(lang, "tests")
     ext = _LANG_EXT.get(lang, ".txt")
-    safe_id = re.sub(r"[^A-Za-z0-9_]", "_", str(getattr(task, "id", "task")))
-    name = f"spec_{safe_id}{ext}"
+    name = f"spec_{safe_task_id(task)}{ext}"
     return project_root / test_dir / name
 
 

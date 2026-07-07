@@ -1,6 +1,5 @@
 """Adversarial edit critic and spec-as-tests generation/execution."""
 
-import re
 import shlex
 from typing import Dict, List, Optional, Tuple
 
@@ -103,6 +102,8 @@ class CriticSpecMixin:
         if not getattr(task, "acceptance_criteria", ""):
             return None, None
         from misterdev.core.verification.spec_tests import (
+            _LANG_EXT,
+            safe_task_id,
             generate_spec_test,
         )
 
@@ -114,12 +115,10 @@ class CriticSpecMixin:
             return None, None
         if not source:
             return None, None
-        ext = {
-            "python": ".py",
-            "javascript": ".test.js",
-            "typescript": ".test.ts",
-        }.get(language, ".txt")
-        safe_id = re.sub(r"[^A-Za-z0-9_]", "_", str(getattr(task, "id", "task")))
+        # Reuse the generator's canonical language->extension map so a compiled
+        # language (rust/go/java) gets its real suffix instead of a .txt stub.
+        ext = _LANG_EXT.get(language, ".txt")
+        safe_id = safe_task_id(task)
         path = project.path / ".orchestrator" / "spec_tests" / f"spec_{safe_id}{ext}"
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
