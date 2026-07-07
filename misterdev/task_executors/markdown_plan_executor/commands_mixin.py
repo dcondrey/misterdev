@@ -30,14 +30,27 @@ class CommandsMixin:
         # is None unless orchestrator.governance is set; audit only appends).
         # getattr-guarded so a lightweight project stub without these subsystems
         # still executes commands unchanged.
-        return _run_cmd(
-            command,
-            run_dir,
-            activation,
-            timeout,
-            policy=getattr(project, "governance_policy", None),
-            audit=getattr(project, "audit_trail", None),
+        policy = getattr(project, "governance_policy", None)
+        audit = getattr(project, "audit_trail", None)
+        success, output = _run_cmd(
+            command, run_dir, activation, timeout, policy=policy, audit=audit
         )
+        # A timeout is an environment signal (machine under load), not a code
+        # failure. A slow-but-correct build wrongly marked "failing" poisons the
+        # baseline and every gate after it (observed: an untouched, dependency-
+        # free stub timing out at 120s under a competing compile, failing the
+        # whole task). Retry once at an extended timeout so a transient load
+        # spike self-heals; a genuine hang times out again and legitimately fails.
+        if not success and output and output.startswith("Command timed out after"):
+            extended = timeout * 2
+            logger.warning(
+                f"Command timed out after {timeout}s; retrying once at "
+                f"{extended}s (transient load, not a code failure): {command}"
+            )
+            success, output = _run_cmd(
+                command, run_dir, activation, extended, policy=policy, audit=audit
+            )
+        return success, output
 
     def _snapshot_files(
         self, project: Project, files: List[str]

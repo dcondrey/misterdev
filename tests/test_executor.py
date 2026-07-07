@@ -764,6 +764,49 @@ def test_extract_acceptance_command_keeps_hyphenated_connective_token():
     assert _extract_acceptance_command("make all") == "make all"
 
 
+def test_run_command_retries_once_on_timeout(monkeypatch):
+    # A timeout is an environment signal (machine under load), not a code
+    # failure. _run_command must retry once at an extended timeout so a
+    # transient load spike self-heals instead of poisoning the baseline.
+    from types import SimpleNamespace
+    from misterdev.task_executors.markdown_plan_executor import commands_mixin
+
+    calls = []
+
+    def fake_run_cmd(command, run_dir, activation, timeout, policy=None, audit=None):
+        calls.append(timeout)
+        if len(calls) == 1:
+            return False, f"Command timed out after {timeout}s: {command}"
+        return True, "ok"
+
+    monkeypatch.setattr(commands_mixin, "_run_cmd", fake_run_cmd)
+    project = SimpleNamespace(path=Path("."), env_manager=None)
+    ex = MarkdownPlanExecutor()
+    success, output = ex._run_command(project, "cargo build", timeout=120)
+    assert success and output == "ok"
+    assert calls == [120, 240]  # retried once at double the timeout
+
+
+def test_run_command_does_not_retry_real_failure(monkeypatch):
+    # A genuine non-zero exit (compile error) is a code failure, not a load
+    # spike — it must NOT trigger the timeout retry.
+    from types import SimpleNamespace
+    from misterdev.task_executors.markdown_plan_executor import commands_mixin
+
+    calls = []
+
+    def fake_run_cmd(command, run_dir, activation, timeout, policy=None, audit=None):
+        calls.append(timeout)
+        return False, "error[E0433]: cannot find value"
+
+    monkeypatch.setattr(commands_mixin, "_run_cmd", fake_run_cmd)
+    project = SimpleNamespace(path=Path("."), env_manager=None)
+    ex = MarkdownPlanExecutor()
+    success, _ = ex._run_command(project, "cargo build", timeout=120)
+    assert not success
+    assert calls == [120]  # no retry on a real failure
+
+
 def _run_acceptance_task(
     td, file_path, content, test_command, acceptance_criteria, config_extra=None
 ):
