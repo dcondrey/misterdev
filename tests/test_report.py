@@ -305,6 +305,60 @@ def test_report_to_dict_includes_token_split():
     assert d["llm_cache_read_tokens"] == 4000
 
 
+def test_apply_llm_usage_populates_all_token_fields():
+    # One populate path so the several report-finalization sites cannot drift.
+    class _Usage:
+        call_count = 7
+        total_tokens = 90000
+        prompt_tokens = 80000
+        completion_tokens = 10000
+        cache_read_tokens = 25000
+        cache_creation_tokens = 5000
+        estimated_cost = 0.42
+
+    r = _make_report()
+    r.apply_llm_usage(_Usage())
+    d = r.to_dict()
+    assert d["llm_calls"] == 7
+    assert d["llm_prompt_tokens"] == 80000
+    assert d["llm_completion_tokens"] == 10000
+    assert d["llm_cache_read_tokens"] == 25000
+    assert d["llm_cache_creation_tokens"] == 5000
+    assert r.llm_cost == 0.42
+
+
+def test_report_to_dict_includes_cache_creation_tokens():
+    r = _make_report()
+    r.llm_cache_creation_tokens = 8000
+    assert r.to_dict()["llm_cache_creation_tokens"] == 8000
+
+
+def test_report_flags_cache_busting_when_writes_dwarf_reads():
+    # Write-heavy, read-light: the cached prefix keeps changing between calls, so
+    # the report must flag it (writes > 2x reads) as actionable, not silent.
+    r = _make_report()
+    r.llm_calls = 10
+    r.llm_tokens = 100000
+    r.llm_cache_creation_tokens = 30000
+    r.llm_cache_read_tokens = 2000
+    r.finalize(datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc))
+    md = r.to_markdown()
+    assert "30,000 tokens WRITTEN" in md
+    assert "busting the cache" in md
+
+
+def test_report_no_cache_busting_flag_when_reads_dominate():
+    # Healthy cache reuse (reads >> writes) must NOT trip the warning.
+    r = _make_report()
+    r.llm_calls = 10
+    r.llm_tokens = 100000
+    r.llm_cache_creation_tokens = 3000
+    r.llm_cache_read_tokens = 40000
+    r.finalize(datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc))
+    md = r.to_markdown()
+    assert "busting the cache" not in md
+
+
 def test_report_to_dict_degraded_empty_by_default():
     r = _make_report()
     assert r.to_dict()["degraded_subsystems"] == []

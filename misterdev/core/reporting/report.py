@@ -75,6 +75,10 @@ class BuildReport:
         self.llm_completion_tokens: int = 0
         self.llm_cost: float = 0.0
         self.llm_cache_read_tokens: int = 0
+        # Cache WRITE tokens (priced ~25% over input). Tracked alongside reads so
+        # a write-heavy, read-light run — the fingerprint of a stable prefix that
+        # keeps changing between calls and busting the cache — is visible.
+        self.llm_cache_creation_tokens: int = 0
         self.cost_by_task: dict = {}
         # Best-effort subsystems that threw during the run (e.g. AB-MCTS,
         # probes). Surfaced in the report so a silently-dead subsystem is
@@ -87,6 +91,21 @@ class BuildReport:
 
     def finalize(self, end_time: Optional[datetime] = None):
         self.end_time = end_time or datetime.now(timezone.utc)
+
+    def apply_llm_usage(self, usage) -> None:
+        """Populate the LLM token/cost fields from a cumulative usage object.
+
+        One place so the several report-finalization paths cannot drift (one
+        forgetting cache tokens, another the cost). ``cost_by_task`` stays with
+        the caller: it comes from the client, not the usage accumulator.
+        """
+        self.llm_calls = usage.call_count
+        self.llm_tokens = usage.total_tokens
+        self.llm_prompt_tokens = getattr(usage, "prompt_tokens", 0)
+        self.llm_completion_tokens = getattr(usage, "completion_tokens", 0)
+        self.llm_cache_read_tokens = getattr(usage, "cache_read_tokens", 0)
+        self.llm_cache_creation_tokens = getattr(usage, "cache_creation_tokens", 0)
+        self.llm_cost = usage.estimated_cost
 
     def to_dict(self) -> dict:
         """Structured representation for programmatic access / history."""
@@ -104,6 +123,7 @@ class BuildReport:
             "llm_prompt_tokens": self.llm_prompt_tokens,
             "llm_completion_tokens": self.llm_completion_tokens,
             "llm_cache_read_tokens": self.llm_cache_read_tokens,
+            "llm_cache_creation_tokens": self.llm_cache_creation_tokens,
             "llm_cost": self.llm_cost,
             "degraded_subsystems": list(self.degraded_subsystems),
             "goal_gaps": list(self.goal_gaps),
@@ -339,6 +359,17 @@ class BuildReport:
                 rate = 100.0 * self.llm_cache_read_tokens / self.llm_tokens
                 lines.append(
                     f"- Cache: {self.llm_cache_read_tokens:,} tokens read from cache ({rate:.0f}% of total)"
+                )
+            # A run that writes far more cache than it reads is paying the ~25%
+            # write premium without recouping it via reads: the cached prefix is
+            # changing between calls (growing error context, non-deterministic
+            # context assembly) instead of being reused. Flag it as actionable.
+            if self.llm_cache_creation_tokens > 2 * max(1, self.llm_cache_read_tokens):
+                lines.append(
+                    f"- Cache: {self.llm_cache_creation_tokens:,} tokens WRITTEN vs "
+                    f"{self.llm_cache_read_tokens:,} read — prefix is busting the "
+                    "cache (stable context is changing between calls; keep it "
+                    "byte-identical across retries to recoup the write premium)."
                 )
             # Actionable token-efficiency signal: a run whose input dwarfs its
             # output is context-bound — the lever is narrower context / more

@@ -432,13 +432,7 @@ class ProjectOrchestrator:
             )
         report.key_decisions.append(f"Halted by budget ceiling: {error}")
         report.finalize()
-        usage = project.llm_client.cumulative_usage
-        report.llm_calls = usage.call_count
-        report.llm_tokens = usage.total_tokens
-        report.llm_prompt_tokens = getattr(usage, "prompt_tokens", 0)
-        report.llm_completion_tokens = getattr(usage, "completion_tokens", 0)
-        report.llm_cache_read_tokens = getattr(usage, "cache_read_tokens", 0)
-        report.llm_cost = usage.estimated_cost
+        report.apply_llm_usage(project.llm_client.cumulative_usage)
         report.save(project.path)
         return report.to_markdown()
 
@@ -872,13 +866,7 @@ class ProjectOrchestrator:
             logger.warning(f"Session audit failed (non-fatal): {e}")
             report.degraded_subsystems.append(f"Session audit: {e}")
 
-        usage = project.llm_client.cumulative_usage
-        report.llm_calls = usage.call_count
-        report.llm_tokens = usage.total_tokens
-        report.llm_prompt_tokens = getattr(usage, "prompt_tokens", 0)
-        report.llm_completion_tokens = getattr(usage, "completion_tokens", 0)
-        report.llm_cache_read_tokens = getattr(usage, "cache_read_tokens", 0)
-        report.llm_cost = usage.estimated_cost
+        report.apply_llm_usage(project.llm_client.cumulative_usage)
         report.cost_by_task = dict(getattr(project.llm_client, "cost_by_task", {}))
 
         report.save(project.path)
