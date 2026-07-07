@@ -466,15 +466,18 @@ def _graph_with_symbols(*nodes):
 
 
 def test_resolve_references_no_substring_false_positive():
+    # Extraction stores exact callee names (from the AST), so a caller that only
+    # invokes reparse() is never over-linked to the shorter-named parse().
     parse = SymbolNode("parse", "a.py", "function", 1, 2, "def parse():\n    return 1")
     reparse = SymbolNode(
         "reparse", "a.py", "function", 4, 5, "def reparse():\n    return parse()"
     )
+    reparse.call_names = {"parse"}
     caller = SymbolNode("C", "b.py", "function", 1, 2, "def C():\n    return reparse()")
+    caller.call_names = {"reparse"}
     g = _graph_with_symbols(parse, reparse, caller)
 
     c = g.symbols["b.py:C"]
-    # The old `f"{name}(" in content` substring test linked C->parse via "reparse(".
     assert "a.py:reparse" in c.outgoing_calls
     assert "a.py:parse" not in c.outgoing_calls
     assert "b.py:C" in g.symbols["a.py:reparse"].incoming_calls
@@ -486,6 +489,7 @@ def test_resolve_references_preserves_true_calls():
     caller = SymbolNode(
         "C", "b.py", "function", 1, 3, "def C(self):\n    parse()\n    self.foo()"
     )
+    caller.call_names = {"parse", "foo"}
     g = _graph_with_symbols(parse, foo, caller)
 
     c = g.symbols["b.py:C"]
@@ -497,6 +501,7 @@ def test_resolve_references_preserves_true_calls():
 def test_resolve_references_no_self_edge():
     # A recursive call must not produce a self-loop in the call graph.
     rec = SymbolNode("rec", "a.py", "function", 1, 2, "def rec():\n    return rec()")
+    rec.call_names = {"rec"}
     g = _graph_with_symbols(rec)
     assert "a.py:rec" not in g.symbols["a.py:rec"].outgoing_calls
 
@@ -509,6 +514,7 @@ def test_resolve_references_prefers_same_file_definition():
     caller = SymbolNode(
         "caller", "a.py", "function", 4, 5, "def caller():\n    return run()"
     )
+    caller.call_names = {"run"}
     g = _graph_with_symbols(run_a, run_b, caller)
     c = g.symbols["a.py:caller"]
     assert "a.py:run" in c.outgoing_calls
@@ -525,10 +531,56 @@ def test_resolve_references_ambiguous_cross_file_adds_no_edge():
     caller = SymbolNode(
         "caller", "c.py", "function", 1, 2, "def caller():\n    return run()"
     )
+    caller.call_names = {"run"}
     g = _graph_with_symbols(run_a, run_b, caller)
     c = g.symbols["c.py:caller"]
     assert "a.py:run" not in c.outgoing_calls
     assert "b.py:run" not in c.outgoing_calls
+
+
+def test_resolve_references_bare_call_resolves_qualified_method():
+    # A method calls a sibling method: the callee name is bare (`helper`) but the
+    # symbol is keyed by its qualified name (`C.helper`), so resolution must index
+    # the bare last segment to link them.
+    helper = SymbolNode("C.helper", "a.py", "method", 1, 2, "def helper(self): ...")
+    caller = SymbolNode("C.run", "a.py", "method", 4, 6, "def run(self): ...")
+    caller.call_names = {"helper"}
+    g = _graph_with_symbols(helper, caller)
+    assert "a.py:C.helper" in g.symbols["a.py:C.run"].outgoing_calls
+    assert "a.py:C.run" in g.symbols["a.py:C.helper"].incoming_calls
+
+
+def test_resolve_references_bare_call_ambiguous_qualified_adds_no_edge():
+    # The same bare method name defined in two files, caller in a THIRD: ambiguous
+    # without import resolution, so the bare-name index must not fabricate an edge.
+    run_a = SymbolNode("A.run", "a.py", "method", 1, 2, "def run(self): ...")
+    run_b = SymbolNode("B.run", "b.py", "method", 1, 2, "def run(self): ...")
+    caller = SymbolNode("C.go", "c.py", "method", 1, 2, "def go(self): ...")
+    caller.call_names = {"run"}
+    g = _graph_with_symbols(run_a, run_b, caller)
+    assert not g.symbols["c.py:C.go"].outgoing_calls
+
+
+def test_intra_class_method_call_edges_resolve(tmp_path):
+    # End-to-end: a method calling a sibling method must produce an edge — the
+    # gap the old bare-vs-qualified name mismatch left for every OO language.
+    from misterdev.core.context.topography import SymbolGraph
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "m.py").write_text(
+        "class C:\n"
+        "    def helper(self):\n"
+        "        return 1\n"
+        "    def run(self):\n"
+        "        return self.helper()\n",
+        encoding="utf-8",
+    )
+    g = SymbolGraph(tmp_path)
+    g.build()
+    if not g.symbols:
+        return  # tree-sitter unavailable in this environment
+    run_key = next(k for k in g.symbols if k.endswith(":C.run"))
+    assert any(k.endswith(":C.helper") for k in g.symbols[run_key].outgoing_calls)
 
 
 def test_resolve_references_recomputed_each_build():
@@ -551,6 +603,38 @@ def test_resolve_references_recomputed_each_build():
         g2.build()
         assert helper_key in g2.symbols[run_key].outgoing_calls
         assert run_key in g2.symbols[helper_key].incoming_calls
+
+
+def test_call_extraction_ignores_strings_comments_and_keywords(tmp_path):
+    # The AST extractor must not treat an identifier inside a string literal or a
+    # comment as a call — the failure mode of the old `name(` regex over source
+    # text, which linked run->ghost via the ghost() text in the string/comment.
+    from misterdev.core.context.topography import SymbolGraph
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text(
+        "def helper():\n"
+        "    return 1\n"
+        "\n"
+        "def ghost():\n"
+        "    return 2\n"
+        "\n"
+        "def run(x):\n"
+        "    # ghost() in a comment must not link\n"
+        '    note = "ghost() in a string must not link"\n'
+        "    if (x):\n"
+        "        return helper()\n"
+        "    return note\n",
+        encoding="utf-8",
+    )
+    g = SymbolGraph(tmp_path)
+    g.build()
+    if not g.symbols:
+        return  # tree-sitter unavailable in this environment
+    run_key = next(k for k in g.symbols if k.endswith(":run"))
+    edges = g.symbols[run_key].outgoing_calls
+    assert any(k.endswith(":helper") for k in edges)  # real call linked
+    assert not any(k.endswith(":ghost") for k in edges)  # string/comment ignored
 
 
 def test_symbol_graph_skips_hidden_and_vendor_dirs(tmp_path):

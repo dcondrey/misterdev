@@ -21,7 +21,7 @@ from .nodes import SymbolNode, _symbol_to_dict, _symbol_from_dict
 from .parsers import _get_ts_parsers, _EXT_TO_LANG, _node_text
 from .syntax import _SYNTAX_CHECK_LANGS, _first_error_node, check_syntax
 from .cache import _CACHE_FORMAT_VERSION, _TopographyCache
-from .graph import _CALL_PATTERN, SymbolGraph
+from .graph import SymbolGraph
 from .engine import TopographyEngine
 
 __all__ = [
@@ -39,5 +39,4 @@ __all__ = [
     "_SYNTAX_CHECK_LANGS",
     "_first_error_node",
     "_CACHE_FORMAT_VERSION",
-    "_CALL_PATTERN",
 ]

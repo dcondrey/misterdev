@@ -1,7 +1,6 @@
 """The scope-aware tree-sitter symbol graph."""
 
 import os
-import re
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Any
 
@@ -12,10 +11,32 @@ from .nodes import SymbolNode
 from .parsers import _get_ts_parsers, _EXT_TO_LANG, _node_text
 from .cache import _TopographyCache
 
-# Whole-identifier call detection: an identifier directly followed by "(" and
-# not preceded by an identifier char, so "reparse(" yields "reparse" — never a
-# spurious "parse" — unlike the old `f"{name}(" in content` substring test.
-_CALL_PATTERN = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z_]\w*)\s*\(")
+# Call-expression node types across the supported grammars. Collecting callees by
+# walking the AST for these — instead of regexing ``name(`` over source text —
+# means identifiers inside string literals and comments, and control-flow
+# keywords like ``if (``/``while (``, are never mistaken for calls, and a
+# function's own ``def name(`` signature is not counted as a call to itself.
+_CALL_NODE_TYPES = frozenset(
+    {
+        "call",  # python
+        "call_expression",  # rust, c, c++, js, ts, swift, kotlin
+        "invocation_expression",  # c#
+        "macro_invocation",  # rust (e.g. println!)
+    }
+)
+
+# Leaf identifier node types. The callee name is the last such leaf on the
+# function path, so ``a.b.method(`` -> ``method`` and ``Foo::bar(`` -> ``bar``,
+# matching the old "identifier immediately before the paren" resolution.
+_IDENT_LEAF_TYPES = frozenset(
+    {
+        "identifier",
+        "field_identifier",
+        "property_identifier",
+        "simple_identifier",
+        "type_identifier",
+    }
+)
 
 
 class SymbolGraph:
@@ -534,12 +555,58 @@ class SymbolGraph:
                 found = c
         return found
 
+    @staticmethod
+    def _last_identifier(node: Any, content: bytes) -> Optional[str]:
+        """The rightmost identifier leaf in a callee subtree, or None.
+
+        For ``obj.method`` / ``A::B::func`` the final segment (``method`` /
+        ``func``) is the name resolution keys on, so pick the identifier leaf with
+        the greatest start offset. Argument nodes are excluded by construction —
+        only the callee subtree is passed in.
+        """
+        best = None
+        stack = [node]
+        while stack:
+            n = stack.pop()
+            if n.type in _IDENT_LEAF_TYPES and (
+                best is None or n.start_byte > best.start_byte
+            ):
+                best = n
+            stack.extend(n.children)
+        return _node_text(content, best) if best is not None else None
+
+    @classmethod
+    def _collect_call_names(cls, root: Any, content: bytes) -> Set[str]:
+        """Callee names invoked anywhere in ``root``'s subtree.
+
+        Walks every node so calls nested in arguments (``f(g(x))`` -> f, g) are
+        caught; the callee is the ``function``/``macro`` field where the grammar
+        exposes one, else the first named child (Swift/Kotlin).
+        """
+        names: Set[str] = set()
+        stack = [root]
+        while stack:
+            n = stack.pop()
+            if n.type in _CALL_NODE_TYPES:
+                callee = n.child_by_field_name("function") or n.child_by_field_name(
+                    "macro"
+                )
+                if callee is None:
+                    named = n.named_children
+                    callee = named[0] if named else None
+                if callee is not None:
+                    name = cls._last_identifier(callee, content)
+                    if name:
+                        names.add(name)
+            stack.extend(n.children)
+        return names
+
     def _add_symbol(
         self, name: str, file_path: str, kind: str, node: Any, content: str
     ):
         key = f"{file_path}:{name}"
         symbol_content = _node_text(content, node)
-        self.symbols[key] = SymbolNode(
+        symbol = SymbolNode(
             name,
             file_path,
             kind,
@@ -547,6 +614,17 @@ class SymbolGraph:
             node.end_point.row,
             symbol_content,
         )
+        symbol.call_names = self._collect_call_names(node, content)
+        self.symbols[key] = symbol
+
+    @staticmethod
+    def _bare_name(name: str) -> str:
+        """The last segment of a qualified symbol name (``C.foo`` -> ``foo``,
+        ``Foo::bar`` -> ``bar``). Callee names extracted from the AST are always
+        bare identifiers, so methods must be indexed under their bare name to be
+        reachable — else an intra-class ``self.foo()`` never resolves to ``C.foo``.
+        """
+        return name.rsplit(".", 1)[-1].rsplit("::", 1)[-1]
 
     def _resolve_references(self):
         # Names can collide across files (two functions both named ``run``).
@@ -556,12 +634,19 @@ class SymbolGraph:
         # globally-unique definition; when several files define the name and none
         # is local, the call is genuinely ambiguous without import resolution, so
         # we add no edge rather than guess wrong.
+        #
+        # Index each symbol under BOTH its full name and its bare last segment so
+        # a bare callee (``foo`` from ``self.foo()``) reaches a qualified method
+        # (``C.foo``). The same same-file/unique-global cascade below keeps the
+        # extra collisions this introduces conservative (ambiguous -> no edge).
         name_to_keys: Dict[str, List[str]] = {}
         for key, s in self.symbols.items():
             name_to_keys.setdefault(s.name, []).append(key)
+            bare = self._bare_name(s.name)
+            if bare != s.name:
+                name_to_keys.setdefault(bare, []).append(key)
         for key, symbol in self.symbols.items():
-            called = {m.group(1) for m in _CALL_PATTERN.finditer(symbol.content)}
-            for name in called:
+            for name in symbol.call_names:
                 candidates = name_to_keys.get(name)
                 if not candidates:
                     continue

@@ -12,7 +12,7 @@ from .nodes import SymbolNode, _symbol_to_dict, _symbol_from_dict
 
 # Bump when the parse output shape or any _traverse_* logic changes, so a stale
 # on-disk cache from an older grammar/format is discarded rather than served.
-_CACHE_FORMAT_VERSION = 1
+_CACHE_FORMAT_VERSION = 2
 
 
 class _TopographyCache:

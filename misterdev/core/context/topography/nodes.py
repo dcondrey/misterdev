@@ -19,6 +19,11 @@ class SymbolNode:
         self.start_line = start_line
         self.end_line = end_line
         self.content = content
+        # Callee identifier names invoked within this symbol's span, extracted
+        # from the tree-sitter AST at parse time (call/invocation nodes only, so
+        # identifiers in strings/comments and `if (`/`while (` keywords are never
+        # counted). Resolved into concrete edges by SymbolGraph._resolve_references.
+        self.call_names: Set[str] = set()
         self.outgoing_calls: Set[str] = set()
         self.incoming_calls: Set[str] = set()
         self.imports: List[Dict[str, str]] = []  # {name: ..., module: ...}
@@ -30,9 +35,9 @@ class SymbolNode:
 def _symbol_to_dict(s: "SymbolNode") -> Dict[str, Any]:
     """Serialize the parse-derived fields of a SymbolNode for the disk cache.
 
-    Only the fields produced by parsing are stored; call neighbors (rebuilt by
-    ``_resolve_references`` from content) and imports are intentionally omitted
-    so the cache never has to track derived/global state.
+    Stores the parse-derived fields, including ``call_names`` (the AST-extracted
+    callees, cached so ``_resolve_references`` need not re-parse). The graph-wide
+    call neighbors and imports are omitted so the cache never tracks global state.
     """
     return {
         "name": s.name,
@@ -41,11 +46,12 @@ def _symbol_to_dict(s: "SymbolNode") -> Dict[str, Any]:
         "start_line": s.start_line,
         "end_line": s.end_line,
         "content": s.content,
+        "call_names": sorted(s.call_names),
     }
 
 
 def _symbol_from_dict(d: Dict[str, Any]) -> "SymbolNode":
-    return SymbolNode(
+    node = SymbolNode(
         d["name"],
         d["file_path"],
         d["kind"],
@@ -53,3 +59,5 @@ def _symbol_from_dict(d: Dict[str, Any]) -> "SymbolNode":
         d["end_line"],
         d["content"],
     )
+    node.call_names = set(d.get("call_names", ()))
+    return node
