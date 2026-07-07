@@ -125,9 +125,17 @@ class EditsMixin:
         for sym in symbols.values():
             if sym.file_path not in edited or not sym.incoming_calls:
                 continue
-            word = re.compile(rf"\b{re.escape(sym.name)}\b")
-            if word.search(edits.get(sym.file_path, "")):
+            # A method's defining file spells it `fn new`, never the qualified
+            # `Type::new` — that form appears only at call sites. Test the edited
+            # file with the unqualified definition token so an intact method is
+            # not misread as "removed"; callers are still matched on the
+            # qualified name below. For a free function the two are identical.
+            defined_token = sym.name.rsplit("::", 1)[-1]
+            if re.compile(rf"\b{re.escape(defined_token)}\b").search(
+                edits.get(sym.file_path, "")
+            ):
                 continue  # symbol still defined in the edited file -> not removed
+            word = re.compile(rf"\b{re.escape(sym.name)}\b")
             for caller_key in sym.incoming_calls:
                 caller = symbols.get(caller_key)
                 if caller is None or caller.file_path in edited:

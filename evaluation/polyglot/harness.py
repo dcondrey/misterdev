@@ -78,20 +78,26 @@ def discover_exercises(
     benchmark_dir: str,
     languages: Optional[List[str]] = None,
     limit: Optional[int] = None,
+    only: Optional[List[str]] = None,
 ) -> List[tuple]:
     """Find (exercise_dir, language) pairs in a polyglot-benchmark checkout.
 
     ``languages`` filters which language trees to include (default: all found);
-    ``limit`` caps the total. Returns pairs ready for :func:`load_local_exercise`.
+    ``only`` restricts to specific exercise slugs (by directory name) for
+    targeted re-runs; ``limit`` caps the total. Returns pairs ready for
+    :func:`load_local_exercise`.
     """
     root = Path(benchmark_dir)
     langs = languages or ["cpp", "go", "java", "javascript", "python", "rust"]
+    slugs = set(only) if only else None
     found: List[tuple] = []
     for lang in langs:
         practice = root / lang / "exercises" / "practice"
         if not practice.is_dir():
             continue
         for ex in sorted(p for p in practice.iterdir() if p.is_dir()):
+            if slugs is not None and ex.name not in slugs:
+                continue
             found.append((str(ex), lang))
     if limit is not None:
         found = found[: max(limit, 0)]
@@ -104,6 +110,7 @@ def run_suite(
     *,
     languages: Optional[List[str]] = None,
     limit: Optional[int] = None,
+    only: Optional[List[str]] = None,
     progress=None,
     **run_kwargs,
 ) -> SuiteReport:
@@ -113,7 +120,7 @@ def run_suite(
     called with each :class:`RunResult` as it completes.
     """
     report = SuiteReport()
-    for exercise_dir, lang in discover_exercises(benchmark_dir, languages, limit):
+    for exercise_dir, lang in discover_exercises(benchmark_dir, languages, limit, only):
         instance = load_local_exercise(exercise_dir, lang)
         result = run_instance(
             instance, workdir, prepare_from_source(exercise_dir), **run_kwargs

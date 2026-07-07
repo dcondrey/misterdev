@@ -28,6 +28,12 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--limit", type=int, default=None, help="cap exercises run")
     parser.add_argument(
+        "--only",
+        nargs="*",
+        default=None,
+        help="run only these exercise slugs (e.g. bowling decimal)",
+    )
+    parser.add_argument(
         "--model",
         default=None,
         help="pin a single model (e.g. a ':free' id) with no paid escalation",
@@ -48,6 +54,7 @@ def main(argv=None) -> int:
         args.workdir,
         languages=args.languages,
         limit=args.limit,
+        only=args.only,
         model=args.model,
         build_args=args.build_args,
         env_activate=args.env_activate,

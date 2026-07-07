@@ -850,6 +850,45 @@ def test_detect_dangling_references_flags_missed_caller():
         )
 
 
+def test_detect_dangling_references_qualified_method_not_false_flagged():
+    # Regression: a Rust method's graph name is qualified (`Type::method`) but
+    # its definition file spells it `fn method` — the qualified form appears
+    # only at call sites. An edit that correctly (re)implements the method must
+    # NOT be misread as "removed" just because `Type::method` is literally
+    # absent from the definition. This false positive hard-blocked every
+    # associated-function exercise (bowling `BowlingGame::new`, etc.), since the
+    # only callers live in the uneditable test file.
+    from types import SimpleNamespace
+    from misterdev.core.context.topography.nodes import SymbolNode
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "tests" / "bowling.rs").parent.mkdir(parents=True, exist_ok=True)
+        (root / "tests" / "bowling.rs").write_text(
+            "fn t() { let g = BowlingGame::new(); }\n"
+        )
+        new = SymbolNode(
+            "BowlingGame::new", "src/lib.rs", "method", 2, 4, "pub fn new() {}"
+        )
+        new.incoming_calls = {"tests/bowling.rs:t"}
+        caller = SymbolNode("t", "tests/bowling.rs", "function", 1, 1, "")
+        graph = SimpleNamespace(
+            symbols={"src/lib.rs:BowlingGame::new": new, "tests/bowling.rs:t": caller}
+        )
+        project = SimpleNamespace(path=root, topography=SimpleNamespace(graph=graph))
+        ex = MarkdownPlanExecutor()
+
+        # Method correctly implemented in the edited file -> not dangling.
+        impl = "impl BowlingGame {\n    pub fn new() -> Self { Self {} }\n}\n"
+        assert ex._detect_dangling_references(project, {"src/lib.rs": impl}) is None
+
+        # A genuine removal (method gone from the file) is still flagged.
+        flagged = ex._detect_dangling_references(
+            project, {"src/lib.rs": "impl BowlingGame {}\n"}
+        )
+        assert flagged and "tests/bowling.rs:1" in flagged
+
+
 def test_acceptance_manifest_error_passes_through(monkeypatch):
     # A manifest error from the acceptance command means the command is
     # malformed (build/test already passed, so the manifest exists) — it must
