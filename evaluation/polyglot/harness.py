@@ -35,6 +35,29 @@ class SuiteReport:
                 agg[0] += 1
         return out
 
+    def to_dict(self) -> dict:
+        """Machine-readable form: aggregate rates plus every per-instance result.
+
+        Lets a programmatic consumer (e.g. the self-improvement loop) reconstruct
+        per-language / per-error blame and count regressions against a baseline,
+        which scraping the text ``summary`` cannot do reliably.
+        """
+        return {
+            "total": self.total,
+            "resolved": self.resolved,
+            "resolved_rate": self.resolved_rate,
+            "results": [
+                {
+                    "name": r.name,
+                    "language": r.language,
+                    "resolved": r.resolved,
+                    "duration_s": r.duration_s,
+                    "error": r.error,
+                }
+                for r in self.results
+            ],
+        }
+
     def summary(self) -> str:
         lines = [
             f"Polyglot: {self.resolved}/{self.total} resolved "

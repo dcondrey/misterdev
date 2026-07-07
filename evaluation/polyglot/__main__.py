@@ -6,6 +6,7 @@ toolchain you have locally, and misterdev's free-model routing for a ~$0 run.
 """
 
 import argparse
+import json
 import sys
 
 from .harness import run_suite
@@ -37,6 +38,9 @@ def main(argv=None) -> int:
         help="args passed to misterdev build",
     )
     parser.add_argument("--env-activate", default=None, help="env prefix for tests")
+    parser.add_argument(
+        "--json", default=None, help="also write the full report as JSON to this path"
+    )
     args = parser.parse_args(argv)
 
     report = run_suite(
@@ -52,6 +56,9 @@ def main(argv=None) -> int:
         ),
     )
     _emit(report.summary())
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as fh:
+            json.dump(report.to_dict(), fh, indent=2)
     return 0
 
 
