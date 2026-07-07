@@ -719,6 +719,51 @@ def test_extract_acceptance_command_keeps_balanced_quoted_args():
     assert _extract_acceptance_command('pytest -k "test_foo"') == 'pytest -k "test_foo"'
 
 
+def test_extract_acceptance_command_keeps_boolean_selection_expressions():
+    # A connective word (and/with/...) INSIDE a quoted -k/-m expression is part of
+    # the command, not trailing prose, and must survive extraction. Regression for
+    # the clause-stripper firing inside quotes and false-failing correct code.
+    assert (
+        _extract_acceptance_command('pytest -k "test_foo and test_bar"')
+        == 'pytest -k "test_foo and test_bar"'
+    )
+    assert (
+        _extract_acceptance_command('pytest -m "slow and not network"')
+        == 'pytest -m "slow and not network"'
+    )
+    # A real trailing clause AFTER the closed quote is still trimmed.
+    assert (
+        _extract_acceptance_command('pytest -k "a or b" and it passes')
+        == 'pytest -k "a or b"'
+    )
+
+
+def test_extract_acceptance_command_keeps_apostrophe_in_quoted_arg():
+    # An apostrophe inside a balanced double-quoted arg is not a stray quote and
+    # must not trigger truncation.
+    assert (
+        _extract_acceptance_command('pytest -k "it\'s_a_test"')
+        == 'pytest -k "it\'s_a_test"'
+    )
+
+
+def test_extract_acceptance_command_keeps_hyphenated_connective_token():
+    # A real arg whose text merely contains a connective substring (a Rust
+    # feature like `with-serde`) is one shell token, not trailing prose, and must
+    # survive. Regression for token-boundary trimming that fired on the substring.
+    assert (
+        _extract_acceptance_command("cargo test --features with-serde")
+        == "cargo test --features with-serde"
+    )
+    # But a bare connective token after a real arg still ends the command.
+    assert (
+        _extract_acceptance_command("cargo build --features with-default so it works")
+        == "cargo build --features with-default"
+    )
+    # `make all` — "all" is a real target, not a prose stop word.
+    assert _extract_acceptance_command("make all") == "make all"
+
+
 def _run_acceptance_task(
     td, file_path, content, test_command, acceptance_criteria, config_extra=None
 ):

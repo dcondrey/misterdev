@@ -7,6 +7,7 @@ movement: behaviour is identical.
 
 import ast
 import re
+import shlex
 from collections import Counter
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -343,24 +344,71 @@ _ACCEPTANCE_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Trailing prose that commonly follows a quoted command and is not part of it,
-# e.g. "pytest tests/test_auth.py passes". Stripped from the extracted command.
-_ACCEPTANCE_TAIL_RE = re.compile(
-    r"\s+(?:passes?|succeeds?|should\s+pass|must\s+pass|exits?\s+0|"
-    r"returns?\s+0|is\s+green|all\s+green|cleanly|without\s+errors?)\b.*$",
-    re.IGNORECASE,
+# Prose words an LLM appends after a command (outcome verbs like "passes",
+# sentence connectives like "and"/"with", tail adjectives like "cleanly"). A
+# bare token equal to one of these ends the command; everything from it on is
+# trailing prose. Matching is on whole shell tokens, so a connective inside a
+# quoted argument (`-k "a and b"`) or fused into a real token (`with-serde`) is
+# never mistaken for prose. Kept lowercase; tokens are compared case-folded.
+_PROSE_STOP_WORDS = frozenset(
+    {
+        "and",
+        "with",
+        "so",
+        "that",
+        "which",
+        "when",
+        "should",
+        "must",
+        "exit",
+        "exits",
+        "return",
+        "returns",
+        "pass",
+        "passes",
+        "succeed",
+        "succeeds",
+        "cleanly",
+        "green",
+        "without",
+        "is",
+    }
 )
 
-# Prose CLAUSE that an LLM often appends to a command mid-sentence (no period),
-# e.g. "pytest -q' exits with code 0 and all tests pass". These connective words
-# do not appear in a real test command, so cutting at the first one recovers just
-# the command — and if that over-trims, the real build/test gate is still the
-# ground truth (acceptance runs only after it already passed).
-_ACCEPTANCE_CLAUSE_RE = re.compile(
-    r"\s+(?:exits?|returns?|and\s|with\s|so\s|that\s|which\s|when\s|to\s+ensure|"
-    r"in\s+order|should\s|must\s|all\s+\d)\b.*$",
-    re.IGNORECASE,
-)
+
+def _strip_stray_trailing_quote(cmd: str) -> str:
+    """Drop a single stray trailing quote (e.g. ``-q'``) left by a prose cut.
+
+    Because the command is rebuilt from ``shlex`` tokens, a quote that legitimately
+    closes an argument leaves the trailing quote char with even parity; only an
+    unbalanced trailing quote (odd parity) is stray and removed.
+    """
+    if cmd and cmd[-1] in "\"'" and cmd.count(cmd[-1]) % 2 == 1:
+        return cmd[:-1].strip()
+    return cmd
+
+
+def _trim_acceptance_command(cmd: str) -> Optional[str]:
+    """Trim trailing prose off a runner-anchored command string.
+
+    Tokenizes with ``shlex`` (quote-aware, so a connective inside a quoted arg is
+    one token and never a stop word), keeps tokens up to the first bare prose
+    stop word, then drops any stray trailing quote left behind.
+    """
+    cmd = cmd.strip()
+    if not cmd:
+        return None
+    try:
+        tokens = shlex.split(cmd, posix=False)
+    except ValueError:
+        tokens = cmd.split()
+    kept: List[str] = []
+    for tok in tokens:
+        if tok.lower() in _PROSE_STOP_WORDS:
+            break
+        kept.append(tok)
+    result = _strip_stray_trailing_quote(" ".join(kept).strip())
+    return result or None
 
 
 def _extract_acceptance_command(criteria: str) -> Optional[str]:
@@ -378,7 +426,7 @@ def _extract_acceptance_command(criteria: str) -> Optional[str]:
     for candidate in re.findall(r"`([^`]+)`", criteria):
         m = _ACCEPTANCE_COMMAND_RE.match(candidate.strip())
         if m:
-            return _ACCEPTANCE_TAIL_RE.sub("", m.group("cmd")).strip()
+            return _trim_acceptance_command(m.group("cmd"))
     m = _ACCEPTANCE_COMMAND_RE.search(criteria)
     if not m:
         return None
@@ -386,15 +434,7 @@ def _extract_acceptance_command(criteria: str) -> Optional[str]:
     # Cut at the first sentence boundary so a trailing English sentence on the
     # same line doesn't get fed to the shell.
     cmd = re.split(r"(?<=\S)[.;]\s+[A-Z]", cmd, maxsplit=1)[0].strip()
-    cmd = _ACCEPTANCE_TAIL_RE.sub("", cmd).strip()
-    # Cut a mid-sentence prose clause the model appended without a period, then
-    # drop a stray unbalanced trailing quote left by the cut (e.g. "-q'").
-    cmd = _ACCEPTANCE_CLAUSE_RE.sub("", cmd).strip()
-    if cmd.count("'") % 2 == 1:
-        cmd = cmd.rsplit("'", 1)[0].strip()
-    if cmd.count('"') % 2 == 1:
-        cmd = cmd.rsplit('"', 1)[0].strip()
-    return cmd or None
+    return _trim_acceptance_command(cmd)
 
 
 def _test_metrics(content: str) -> Tuple[int, int, int]:
