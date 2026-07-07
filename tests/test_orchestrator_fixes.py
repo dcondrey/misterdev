@@ -2273,9 +2273,10 @@ def test_save_lessons_handles_dict_rules_without_crashing():
         # The LLM returned objects, not strings -- previously crashed set() dedup.
         auditor._save_lessons(["use ruff", {"rule": "close db"}, "use ruff"])
         saved = json.loads(auditor.lessons_file.read_text())
-        assert "use ruff" in saved  # plain string kept
-        assert any("close db" in str(s) for s in saved)  # object coerced, not lost
-        assert saved.count("use ruff") == 1  # deduped
+        texts = [le["text"] for le in saved["lessons"]]
+        assert "use ruff" in texts  # plain string kept
+        assert any("close db" in t for t in texts)  # object coerced, not lost
+        assert texts.count("use ruff") == 1  # deduped
 
 
 # --- consolidated JSON-array extraction (was duplicated 4x) ------------------

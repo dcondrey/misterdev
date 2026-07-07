@@ -34,6 +34,13 @@ from .rust_tree_sitter import (
     _ts_variant_names,
     _walk_rust_ts,
 )
+from .c_tree_sitter import _extract_c_symbols_ts
+from .cpp_tree_sitter import _extract_cpp_symbols_ts
+from .csharp_tree_sitter import _extract_csharp_symbols_ts
+from .javascript_tree_sitter import _extract_javascript_symbols_ts
+from .kotlin_tree_sitter import _extract_kotlin_symbols_ts
+from .swift_tree_sitter import _extract_swift_symbols_ts
+from .typescript_tree_sitter import _extract_typescript_symbols_ts
 
 __all__ = [
     "logger",
@@ -60,4 +67,11 @@ __all__ = [
     "_ts_pub_members",
     "_ts_variant_names",
     "_ts_trait_methods",
+    "_extract_swift_symbols_ts",
+    "_extract_kotlin_symbols_ts",
+    "_extract_typescript_symbols_ts",
+    "_extract_javascript_symbols_ts",
+    "_extract_cpp_symbols_ts",
+    "_extract_c_symbols_ts",
+    "_extract_csharp_symbols_ts",
 ]

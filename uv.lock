@@ -1031,6 +1031,7 @@ web = [
 dev = [
     { name = "coverage" },
     { name = "mcp" },
+    { name = "multilspy" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -1065,6 +1066,7 @@ provides-extras = ["local-embeddings", "lsp", "web", "mcp"]
 dev = [
     { name = "coverage", specifier = ">=7.0" },
     { name = "mcp", specifier = ">=1.0.0" },
+    { name = "multilspy", specifier = ">=0.0.1" },
     { name = "pytest", specifier = ">=9.1.0" },
     { name = "ruff", specifier = ">=0.10" },
 ]

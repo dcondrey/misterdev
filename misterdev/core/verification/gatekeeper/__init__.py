@@ -25,6 +25,22 @@ if TYPE_CHECKING:
 
 logger = setup_logger(__name__)
 
+# Signals that an audit command isn't installed (so the gate SKIPs rather than
+# reporting a false vulnerability from a shell "not found" error).
+_AUDIT_MISSING_SIGNALS = (
+    "command not found",
+    "no such file",
+    "not recognized",
+    ": not found",
+    "cannot find",
+    "is not installed",
+)
+
+
+def _audit_tool_missing(output: str) -> bool:
+    low = output.lower()
+    return any(sig in low for sig in _AUDIT_MISSING_SIGNALS)
+
 
 class GateKeeper:
     """Implements the gate sequence for project validation.
@@ -32,6 +48,7 @@ class GateKeeper:
     Gates:
       G1: Build compiles
       G2: Lint passes
+      G2.5: Dependency/security audit (advisory; surfaces known CVEs)
       G3: Tests pass
       G3.5: Golden suite (model-blind, immutable; if configured)
       G3.6: Mutation-score gate (optional; suite must kill injected faults)
@@ -146,6 +163,22 @@ class GateKeeper:
         else:
             health.lint_clean = True
 
+        # G2.5: Dependency/security audit (advisory). Surfaces known-vulnerable
+        # dependencies as an issue for the model to weigh, but never blocks: an
+        # unfixable transitive CVE must not stall a build, and a missing audit
+        # tool degrades to a silent SKIP rather than a false RED.
+        audit_cmd = commands.get("audit_command")
+        if audit_cmd:
+            success, output = _run_cmd(
+                audit_cmd,
+                self.project_path,
+                self.env_activate,
+                timeout=self.lint_timeout,
+                runner=self._runner,
+            )
+            if not success and not _audit_tool_missing(output):
+                issues.append("G2.5: Dependency audit flagged vulnerabilities")
+
         # G3: Tests
         test_cmd = commands.get("test_command")
         if test_cmd:
@@ -221,14 +254,16 @@ class GateKeeper:
         # can't slip through. When none is configured, skip with no penalty.
         typecheck_cmd = commands.get("typecheck_command")
         if typecheck_cmd:
-            success, _output = _run_cmd(
+            success, output = _run_cmd(
                 typecheck_cmd,
                 self.project_path,
                 self.env_activate,
                 timeout=self.test_timeout,
                 runner=self._runner,
             )
-            if not success:
+            # A missing type-checker (tsc/mypy not installed) SKIPs rather than
+            # blocking — only a genuine type error should short-circuit here.
+            if not success and not _audit_tool_missing(output):
                 issues.append("G4: Type check failed")
                 return False, issues, health
 

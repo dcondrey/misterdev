@@ -131,6 +131,110 @@ def detect_build_command(project_path: Path) -> Optional[str]:
     return None
 
 
+def detect_audit_command(project_path: Path) -> Optional[str]:
+    """Detect a dependency/security-audit command from project markers.
+
+    Supply-chain scanning (the layer above lint): surfaces known-vulnerable
+    dependencies. Returns a runnable command, or None when no recognized
+    ecosystem is found. The audit gate is advisory and SKIPs when the tool is
+    absent, so returning a command the environment may lack is safe.
+    """
+    p = project_path
+    if (p / "Cargo.toml").exists():
+        return "cargo audit"
+    if (p / "package.json").exists():
+        return "npm audit --omit=dev"
+    if (p / "pyproject.toml").exists() or (p / "requirements.txt").exists():
+        return "uv run pip-audit" if (p / "uv.lock").exists() else "pip-audit"
+    if any(p.glob("*.sln")) or any(p.glob("*.csproj")):
+        return "dotnet list package --vulnerable --include-transitive"
+    return None
+
+
+def detect_lint_command(project_path: Path) -> Optional[str]:
+    """Detect a strict linter command from project markers.
+
+    Fallback used when no ``lint_command`` is configured — so the strict tools
+    the guidance recommends actually run in the G2 gate. Conservative: only
+    returns a command when the tool is standard for the ecosystem (clippy ships
+    with rustup) or a config file proves it is set up, so an absent linter never
+    produces a false lint failure.
+    """
+    p = project_path
+    if (p / "Cargo.toml").exists():
+        return "cargo clippy --all-targets --all-features -- -D warnings"
+    ruff_cfg = (p / "ruff.toml").exists() or (p / ".ruff.toml").exists()
+    if ruff_cfg or (
+        (p / "pyproject.toml").exists() and _file_mentions(p / "pyproject.toml", "ruff")
+    ):
+        return "uv run ruff check ." if (p / "uv.lock").exists() else "ruff check ."
+    if (p / "package.json").exists() and any(
+        any(p.glob(pat)) for pat in ("eslint.config.*", ".eslintrc", ".eslintrc.*")
+    ):
+        return "npx --no-install eslint . --max-warnings 0"
+    if (p / "Package.swift").exists() and (p / ".swiftlint.yml").exists():
+        return "swiftlint --strict"
+    if (p / "detekt.yml").exists() or (p / "detekt-config.yml").exists():
+        return "detekt"
+    return None
+
+
+def detect_typecheck_command(project_path: Path) -> Optional[str]:
+    """Detect a standalone type-check command, distinct from the build.
+
+    Only for ecosystems where type-checking is separate from compilation
+    (TypeScript's ``tsc --noEmit``, Python's mypy/pyright) — for compiled
+    languages the build gate already type-checks, so returning one would just
+    duplicate G1. Gated on a config file; the G4 gate SKIPs when the tool is
+    absent, so an uninstalled checker never blocks.
+    """
+    p = project_path
+    if (p / "tsconfig.json").exists():
+        return "npx --no-install tsc --noEmit"
+    mypy_cfg = (
+        (p / "mypy.ini").exists()
+        or (p / ".mypy.ini").exists()
+        or (
+            (p / "pyproject.toml").exists()
+            and _file_mentions(p / "pyproject.toml", "[tool.mypy]")
+        )
+    )
+    if mypy_cfg:
+        return "uv run mypy ." if (p / "uv.lock").exists() else "mypy ."
+    if (p / "pyrightconfig.json").exists():
+        return "pyright"
+    return None
+
+
+def dependency_add_command(project_path: Path, package: str) -> Optional[str]:
+    """Return the command to add a dependency, respecting the lock/manager in use.
+
+    None when the ecosystem edits its manifest by hand (SwiftPM) or is
+    unrecognized. Callers use this for deliberate dependency additions; a
+    refactor must not touch the lock file, only a genuine add.
+    """
+    p = project_path
+    if (p / "Cargo.toml").exists():
+        return f"cargo add {package}"
+    if (p / "package.json").exists():
+        if (p / "pnpm-lock.yaml").exists():
+            return f"pnpm add {package}"
+        if (p / "yarn.lock").exists():
+            return f"yarn add {package}"
+        if (p / "bun.lockb").exists():
+            return f"bun add {package}"
+        return f"npm install {package}"
+    if (p / "pyproject.toml").exists():
+        return (
+            f"uv add {package}"
+            if (p / "uv.lock").exists()
+            else f"pip install {package}"
+        )
+    if any(p.glob("*.csproj")):
+        return f"dotnet add package {package}"
+    return None
+
+
 def _file_mentions(path: Path, needle: str) -> bool:
     try:
         return needle in path.read_text(encoding="utf-8")

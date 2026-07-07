@@ -17,6 +17,7 @@ from misterdev.llm.client import BaseLLMClient
 from misterdev.logging_setup import setup_logger
 
 from .detection import (
+    detect_audit_command,
     detect_build_command,
     detect_test_command,
     has_test_files,
@@ -109,6 +110,7 @@ def analyze_project(
     )
     assessment.structure.build_command = bc
     assessment.structure.test_command = tc
+    assessment.structure.audit_command = detect_audit_command(project_path)
     health_ground = _health_ground_truth(assessment.health)
 
     def analyze_structure():

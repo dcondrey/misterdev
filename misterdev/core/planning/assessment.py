@@ -68,6 +68,7 @@ class ProjectStructure(_AssessmentModel):
     test_system: Optional[str] = None
     test_command: Optional[str] = None
     lint_command: Optional[str] = None
+    audit_command: Optional[str] = None
     package_manager: Optional[str] = None
     entry_points: list[str] = Field(default_factory=list)
     directory_structure: str = ""

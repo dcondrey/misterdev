@@ -113,6 +113,10 @@ dev = [
     # MCP SDK in the dev group so the suite exercises the REAL substrate path
     # (an in-process stdio MCP server, fully offline) rather than skipping it.
     "mcp>=1.0.0",
+    # multilspy (the `lsp` extra) in the dev group so the LSP integration harness
+    # drives a REAL language server (jedi, offline) instead of skipping — same
+    # rationale as the MCP SDK above. Off the normal install; dev/CI only.
+    "multilspy>=0.0.1",
 ]
 
 [project.scripts]

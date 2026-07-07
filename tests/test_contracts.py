@@ -36,7 +36,7 @@ def test_public_symbols_rust_treesitter_enum_trait_type_impl():
 
 def test_public_symbols_generic_language_fallback():
     content = "export function render() {}\nfunc Handle(w, r) {}\n"
-    syms = _extract_public_symbols(content, "typescript")
+    syms = _extract_public_symbols(content, "java")
     kinds = {s["kind"] for s in syms}
     assert "export" in kinds and "func" in kinds
 

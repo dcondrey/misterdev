@@ -172,3 +172,39 @@ def _to_errors(captured: List[dict]) -> List[dict]:
                     }
                 )
     return errors
+
+
+def format_lsp_context(diagnostics: Optional[List[dict]], cap: int = 20) -> str:
+    """Render collected LSP diagnostics as a prompt-injectable block.
+
+    Turns the semantic-error list from :func:`collect_diagnostics` into context
+    the editor can read while fixing code — richer than raw compiler stderr
+    because it is per-file, per-line, and semantic (unresolved symbols, type
+    mismatches). Returns "" for None (LSP had no opinion) or an empty list, so
+    the caller can inject unconditionally. Bounded to ``cap`` lines so a flood
+    of diagnostics can't dominate the prompt.
+    """
+    if not diagnostics:
+        return ""
+    lines = ["## Language-server diagnostics (semantic errors to resolve):"]
+    for d in diagnostics[:cap]:
+        loc = f"{d.get('file', '?')}:{d.get('line', '?')}"
+        lines.append(f"- {loc}: {d.get('message', '').strip()}")
+    remaining = len(diagnostics) - cap
+    if remaining > 0:
+        lines.append(f"- ... and {remaining} more")
+    return "\n".join(lines)
+
+
+def collect_and_format_lsp_context(
+    project_root, language: str, rel_files: List[str], timeout: float = 30.0
+) -> str:
+    """Collect semantic diagnostics for the edited files and render them.
+
+    Convenience over :func:`collect_diagnostics` + :func:`format_lsp_context` for
+    the editor's retry context. Returns "" when the LSP has no opinion
+    (unsupported language, server absent, or timed out), so a caller can append
+    it unconditionally. Timeout-bounded via ``collect_diagnostics``.
+    """
+    diagnostics = collect_diagnostics(Path(project_root), language, rel_files, timeout)
+    return format_lsp_context(diagnostics)

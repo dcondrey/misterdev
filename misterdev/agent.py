@@ -51,6 +51,10 @@ from misterdev.core.models import Task
 from misterdev.analyzers.project_analyzer import (
     analyze_project,
 )
+from misterdev.analyzers.project_analyzer.detection import (
+    detect_lint_command,
+    detect_typecheck_command,
+)
 from misterdev.core.planning.advisor import recommend_work
 from misterdev.llm.client import BudgetExceededError
 from misterdev.task_executors.markdown_plan_executor import (
@@ -651,7 +655,8 @@ class ProjectOrchestrator:
         # current spec on failure rather than aborting before any work is done.
         auditor = SessionAuditor(project.path, project.llm_client)
         try:
-            lessons = auditor.get_lessons_context()
+            # Bias retrieval toward lessons relevant to this build's goal.
+            lessons = auditor.get_lessons_context(prompt)
             if lessons:
                 spec = f"{lessons}\n\n{spec}"
         except Exception as e:
@@ -760,7 +765,11 @@ class ProjectOrchestrator:
             commands = {
                 "build_command": assessment.structure.build_command,
                 "test_command": assessment.structure.test_command,
-                "lint_command": assessment.structure.lint_command,
+                "lint_command": assessment.structure.lint_command
+                or detect_lint_command(project.path),
+                "audit_command": assessment.structure.audit_command,
+                "typecheck_command": project.config.get("typecheck_command")
+                or detect_typecheck_command(project.path),
                 "golden_command": get_setting(
                     project.config, "orchestrator", "golden_command"
                 ),

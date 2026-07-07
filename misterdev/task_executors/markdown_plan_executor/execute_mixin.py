@@ -16,6 +16,7 @@ from misterdev.core.execution.error_classifier import (
 from misterdev.llm.client import CACHE_BREAKPOINT
 from misterdev.llm.prompt_manager import PromptManager
 from misterdev.config import get_setting
+from misterdev.core.context.guidance import guidance_for_files
 
 from .helpers import (
     logger,
@@ -251,6 +252,23 @@ class ExecuteMixin:
                 error_logs = self._apply_reflection(
                     project, task, error_logs, reflections
                 )
+                # Fold in the language server's semantic diagnostics for the
+                # touched files — per-file, per-line errors the compiler's raw
+                # stderr may not spell out. Gated behind lsp_diagnostics (off by
+                # default) and bounded, so it only costs a server round-trip on a
+                # retry when the user opted in; "" when the LSP has no opinion.
+                if get_setting(project.config, "orchestrator", "lsp_diagnostics"):
+                    from misterdev.core.context.lsp import (
+                        collect_and_format_lsp_context,
+                    )
+
+                    lsp_ctx = collect_and_format_lsp_context(
+                        project.path,
+                        project.config.get("language") or "",
+                        target_files,
+                    )
+                    if lsp_ctx:
+                        error_logs = f"{error_logs}\n\n{lsp_ctx}"
 
             code_context = self._get_code_context(
                 project, target_files, context_files, task=task
@@ -323,6 +341,21 @@ class ExecuteMixin:
                 full_code_context += mcp_gathered
             full_code_context += self._mcp_awareness(project)
 
+            guidance_context = " ".join(
+                str(s)
+                for s in (
+                    task.description,
+                    task.acceptance_criteria,
+                    allocated["error_logs"],
+                    full_code_context,
+                )
+                if s
+            )
+            language_guidance = guidance_for_files(
+                target_files,
+                project.config.get("language") or "",
+                context=guidance_context,
+            )
             context_dict = {
                 "project": project,
                 "task": task,
@@ -340,6 +373,7 @@ class ExecuteMixin:
                 "invariants": (
                     f"Strategy: {strategy.upper()}. Output MUST be syntactically valid. "
                     "Provide certainty indicators."
+                    + (f"\n\n{language_guidance}" if language_guidance else "")
                 ),
                 # Marks the boundary between the cacheable stable context above
                 # and the volatile tail below (see PROMPT_TEMPLATES); the client

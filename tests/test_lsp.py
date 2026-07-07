@@ -1,9 +1,6 @@
-import os
 import time
 import tempfile
 from pathlib import Path
-
-import pytest
 
 import misterdev.core.context.lsp as lsp
 from misterdev.core.context.lsp import (
@@ -11,23 +8,6 @@ from misterdev.core.context.lsp import (
     find_source_files,
     _to_errors,
 )
-
-
-def test_live_diagnostics_runs_or_skips():
-    # Opportunistic live integration: drive a real language server on a file with
-    # a known error. Gated behind RUN_LSP_INTEGRATION so the slow server startup
-    # never taxes the normal suite; even when enabled it skips (never fails) if
-    # no server responds within the timeout, and the timeout guarantees it can't
-    # hang. When a server does respond, it must surface the planted error.
-    if not os.environ.get("RUN_LSP_INTEGRATION"):
-        pytest.skip("set RUN_LSP_INTEGRATION=1 to exercise a real LSP server")
-    with tempfile.TemporaryDirectory() as td:
-        td = Path(td)
-        (td / "m.py").write_text("def f():\n    return undefined_name_xyz + 1\n")
-        diags = collect_diagnostics(td, "python", ["m.py"], timeout=20)
-        if not diags:
-            pytest.skip("no LSP server responded within the timeout")
-        assert any(d.get("line", 0) >= 1 and d.get("message") for d in diags)
 
 
 def test_collect_diagnostics_returns_collected_errors(monkeypatch):
