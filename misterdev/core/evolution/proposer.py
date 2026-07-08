@@ -15,6 +15,7 @@ pipeline, which supplies the source context anchored edits need.
 """
 
 import re
+from pathlib import Path
 from typing import Callable, List, Optional
 
 from .attribution import Blame
@@ -44,22 +45,48 @@ def parse_tag(response: str) -> Optional[str]:
     return m.group(1).lower() if m else None
 
 
+# misterdev's real editable surfaces, so the editor proposes edits at paths that
+# EXIST and are wired in — not plausible-looking invented files (observed: the
+# unguided editor proposed `src/prompts/...`, which misterdev has no concept of,
+# yielding an inert mutation). Also steers toward a GENERAL mechanism that removes
+# a whole failure class over a niche-specific tweak (which would overfit).
+_STRUCTURAL_SURFACES = (
+    "misterdev's editable structural surfaces — edit one of THESE (or add a module "
+    "beside it); do NOT invent paths:\n"
+    "- misterdev/core/context/guidance/<lang>.py — per-language best-practice RULES, "
+    "relevance-selected. Add/adjust a GENERAL rule, never a task-specific one.\n"
+    "- misterdev/task_executors/markdown_plan_executor/gates_mixin.py — correctness "
+    "gates and the error context fed back to the model on a failure.\n"
+    "- misterdev/task_executors/markdown_plan_executor/edits_mixin.py — edit "
+    "application and the structural guards (dangling-ref, test-tamper).\n"
+    "- misterdev/core/execution/failure_view.py — parses runner output into exact "
+    "expected/actual (the observation seam).\n"
+    "- misterdev/core/planning/decomposer.py — how a goal is split into tasks.\n"
+    "- misterdev/core/execution/error_classifier.py — how errors are classified.\n"
+)
+
+
 def build_instruction(blame: Blame, favored_kinds: Optional[List[str]] = None) -> str:
     """The targeting instruction handed to the editor.
 
-    Focuses the edit on the blamed niche, shows real failures to fix, biases
-    toward proven mutation kinds when the prior has evidence, and asks for a
-    ``tag:`` line so the outcome can teach the prior. It does NOT restate the
-    edit-format rules — the editor pipeline already supplies those.
+    Focuses the edit on the blamed niche, shows real failures to fix, grounds the
+    editor in misterdev's real editable surfaces, steers toward a GENERAL fix over
+    a niche tweak, biases toward proven mutation kinds when the prior has evidence,
+    and asks for a ``tag:`` line so the outcome can teach the prior. It does NOT
+    restate the edit-format rules — the editor pipeline already supplies those.
     """
     lines = [
         f"## Self-improvement target: {blame.niche}",
         (
             f"misterdev fails {blame.failures}/{blame.total} "
-            f"({blame.failure_rate:.0%}) of benchmark tasks in this niche. Propose "
-            "the SMALLEST edit to misterdev's own source that would make these fail "
-            "cases pass, without regressing anything else."
+            f"({blame.failure_rate:.0%}) of {blame.source} in this niche. Propose an "
+            "edit to misterdev's own source that makes these cases pass WITHOUT "
+            "regressing anything else. Prefer a GENERAL mechanism — a guard, a "
+            "parser/observation seam, a guidance rule, a gate — that removes this "
+            "whole class of failure, NOT a change keyed to these specific tasks "
+            "(that would overfit and is rejected)."
         ),
+        "\n" + _STRUCTURAL_SURFACES,
     ]
     if favored_kinds:
         lines.append(
@@ -73,7 +100,8 @@ def build_instruction(blame: Blame, favored_kinds: Optional[List[str]] = None) -
             lines.append(f"Failure {i}:\n```\n{ex}\n```")
     lines.append(
         "\nBegin your reply with a single line `tag: <kind>` naming the kind of "
-        "change (e.g. `tag: contract-extraction`, `tag: prompt`, `tag: gate-tuning`)."
+        "change (e.g. `tag: guard`, `tag: guidance-rule`, `tag: observation-seam`, "
+        "`tag: gate-tuning`, `tag: contract-extraction`)."
     )
     return "\n".join(lines)
 
@@ -81,8 +109,23 @@ def build_instruction(blame: Blame, favored_kinds: Optional[List[str]] = None) -
 class LLMProposer:
     """Blame -> targeted :class:`Mutation`, via an injected editor call."""
 
-    def __init__(self, generate: Callable[[str], str]):
+    def __init__(
+        self, generate: Callable[[str], str], repo_root: Optional[object] = None
+    ):
         self.generate = generate
+        self.repo_root = Path(repo_root) if repo_root is not None else None
+
+    def _grounded(self, path: str) -> bool:
+        """A path is real when it exists, or is a new file in an existing dir.
+
+        Rejects invented paths (a nonexistent parent dir), so an inert mutation
+        that edits files misterdev has no concept of never reaches the paid
+        sandbox. With no repo_root, validation is skipped (kept for pure tests).
+        """
+        if self.repo_root is None:
+            return True
+        target = self.repo_root / path
+        return target.exists() or target.parent.is_dir()
 
     def propose(
         self, blame: Blame, favored_kinds: Optional[List[str]] = None
@@ -90,16 +133,22 @@ class LLMProposer:
         """Produce a targeted mutation for ``blame``.
 
         Raises ``ValueError`` when the editor returns nothing editable (no parseable
-        file path), so the loop counts it as a dead candidate rather than sandboxing
-        an empty diff. The kind tag defaults to the niche when the editor omits one.
+        file path) or every path it names is invented (no such directory) — so the
+        loop counts it a dead candidate rather than sandboxing an inert diff. The
+        kind tag defaults to the niche when the editor omits one.
         """
         response = self.generate(build_instruction(blame, favored_kinds))
         paths = parse_paths(response)
         if not paths:
             raise ValueError("proposal contained no editable file")
+        grounded = [p for p in paths if self._grounded(p)]
+        if not grounded:
+            raise ValueError(
+                f"proposal names only invented paths (not in repo): {paths}"
+            )
         return Mutation(
             target=blame.niche,
-            paths=paths,
+            paths=grounded,
             patch=response,
             note=parse_tag(response) or blame.niche,
         )

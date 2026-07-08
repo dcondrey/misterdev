@@ -68,3 +68,42 @@ def test_propose_raises_on_uneditable_response():
     prop = LLMProposer(generate=lambda instr: "I could not find anything to change.")
     with pytest.raises(ValueError):
         prop.propose(Blame(niche="rust", failures=1, total=1))
+
+
+def test_build_instruction_grounds_in_real_surfaces_and_biases_structural():
+    instr = build_instruction(Blame(niche="rust/test_assertion", failures=2, total=2))
+    # Grounds the editor in a real editable surface (prevents invented paths).
+    assert "misterdev/core/context/guidance/" in instr
+    assert "failure_view.py" in instr
+    assert "do NOT invent paths" in instr
+    # Steers toward a general structural fix, not a task-keyed (overfit) tweak.
+    assert "GENERAL mechanism" in instr and "overfit" in instr
+    # Tag examples are structural; the old "tag: prompt" nudge is gone.
+    assert "tag: guard" in instr
+    assert "tag: prompt" not in instr
+
+
+def test_propose_rejects_invented_paths(tmp_path):
+    # repo_root has a real package dir but not the invented one the editor names.
+    (tmp_path / "misterdev" / "core").mkdir(parents=True)
+    invented = (
+        "```python:src/prompts/rust_test_assertion.md\n"
+        "<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n```"
+    )
+    prop = LLMProposer(generate=lambda instr: invented, repo_root=tmp_path)
+    with pytest.raises(ValueError, match="invented paths"):
+        prop.propose(Blame(niche="rust/test_assertion", failures=2, total=2))
+
+
+def test_propose_keeps_grounded_paths_and_drops_invented(tmp_path):
+    (tmp_path / "misterdev" / "core").mkdir(parents=True)
+    (tmp_path / "misterdev" / "real.py").write_text("x = 1\n")
+    mixed = (
+        "tag: guard\n"
+        "```python:misterdev/real.py\n<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n```\n"
+        "```python:totally/invented/path.py\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE\n```\n"
+    )
+    prop = LLMProposer(generate=lambda instr: mixed, repo_root=tmp_path)
+    mut = prop.propose(Blame(niche="rust/test_assertion", failures=2, total=2))
+    assert mut.paths == ["misterdev/real.py"]  # invented path dropped
+    assert mut.note == "guard"

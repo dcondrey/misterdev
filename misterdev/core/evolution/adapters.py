@@ -99,15 +99,16 @@ def run_benchmark(
     languages: Optional[List[str]] = None,
     model: Optional[str] = None,
     build_args: Optional[str] = None,
+    only: Optional[List[str]] = None,
     timeout: int = 7200,
 ) -> Tuple[List[BenchResult], float, dict]:
     """Run the polyglot suite as a subprocess in ``cwd`` and return
     (per-instance results, cost, raw report).
 
     Runs from ``cwd`` so a mutated checkout's misterdev is the one under test.
-    Cost is best-effort ``0.0`` — the harness does not aggregate per-run spend yet,
-    which only disables the cost tie-breaker (resolved-rate and regressions, the
-    load-bearing objectives, are unaffected). Raises on a non-zero exit or timeout.
+    ``only`` restricts the run to specific exercise slugs — the cheap, targeted
+    evaluation the micro-eval screen depends on (run the handful of cases a
+    mutation targets, not the whole suite). Raises on a non-zero exit or timeout.
     """
     out_json = Path(tempfile.mkdtemp(prefix="evo-bench-")) / "report.json"
     cmd = [
@@ -129,6 +130,8 @@ def run_benchmark(
         cmd += ["--model", model]
     if build_args:
         cmd += ["--build-args", build_args]
+    if only:
+        cmd += ["--only", *only]
     env = {
         **os.environ,
         "PYTHONPATH": cwd + os.pathsep + os.environ.get("PYTHONPATH", ""),
@@ -136,7 +139,14 @@ def run_benchmark(
     logger.info(f"Evolution: running benchmark subprocess in {cwd} (limit={limit}).")
     subprocess.run(cmd, cwd=cwd, env=env, timeout=timeout, check=True)
     report = json.loads(out_json.read_text(encoding="utf-8"))
-    return results_from_report(report), 0.0, report
+    # Real per-run spend when the harness reports it (best-effort); a suite from
+    # before the cost field was added simply reports 0.0, which only disables the
+    # cost tie-breaker, not the load-bearing resolved-rate/regression objectives.
+    try:
+        cost = float(report.get("cost", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        cost = 0.0
+    return results_from_report(report), cost, report
 
 
 def make_proposer(project) -> LLMProposer:
@@ -156,7 +166,7 @@ def make_proposer(project) -> LLMProposer:
         prompt = instruction + "\n" + EDIT_FORMAT_INSTRUCTIONS
         return project.llm_client.generate_edits(prompt, system).content
 
-    return LLMProposer(generate=generate)
+    return LLMProposer(generate=generate, repo_root=project.path)
 
 
 class RealSandbox:
@@ -235,6 +245,20 @@ class RealSandbox:
         )
         report = _DuckReport(results)
         return report, cost
+
+    def benchmark_only(self, only: List[str]) -> Tuple[List[BenchResult], float]:
+        """Run ONLY the named exercise slugs in the current worktree — the cheap,
+        targeted evaluation the micro-eval screen uses (a handful of cases, not the
+        whole suite). ``limit``/``languages`` are dropped: ``only`` is the selector.
+        """
+        results, cost, _raw = run_benchmark(
+            self._worktree,
+            self.benchmark_dir,
+            self.workdir,
+            model=self.model,
+            only=only,
+        )
+        return results, cost
 
 
 @dataclass
