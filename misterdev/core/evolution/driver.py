@@ -64,6 +64,7 @@ def run_evolution(
     live: bool = False,
     archive_path=None,
     gate_commands: Optional[dict] = None,
+    build_args: Optional[str] = None,
     run_bench: Optional[Callable] = None,
     proposer: Optional[LLMProposer] = None,
     sandbox: Optional[object] = None,
@@ -91,7 +92,13 @@ def run_evolution(
     """
     bench = run_bench or (
         lambda cwd: run_benchmark(
-            cwd, benchmark_dir, workdir, limit=limit, languages=languages, model=model
+            cwd,
+            benchmark_dir,
+            workdir,
+            limit=limit,
+            languages=languages,
+            model=model,
+            build_args=build_args,
         )
     )
     results, cost, _raw = bench(str(project.path))
@@ -170,6 +177,7 @@ def run_evolution(
             limit=limit,
             languages=languages,
             model=model,
+            build_args=build_args,
         )
     evaluate = SandboxEvaluator(
         apply=sandbox.apply,
