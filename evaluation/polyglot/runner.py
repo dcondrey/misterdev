@@ -25,6 +25,11 @@ _BUILD_META = (
     "package.json",
     "build.gradle",
     "CMakeLists.txt",
+    # JS/TS toolchain config a jest run needs (Exercism uses babel + jest);
+    # copied only when present, so harmless for other languages.
+    "babel.config.js",
+    ".npmrc",
+    ".eslintrc",
 )
 
 # Flags misterdev's build parser (misterdev.core.modes.parse_flags) recognizes.
@@ -149,6 +154,24 @@ def prepare_from_source(source_dir: str) -> Callable[[PolyglotInstance, Path], P
             m = src / meta
             if m.exists():
                 shutil.copy2(m, dest / meta)
+        # A jest/npm exercise cannot run its test gate until dependencies are
+        # installed; do it once here at prep time so the workdir is runnable
+        # (offline-preferred to reuse the warm cache). A failure is left for the
+        # test gate to surface rather than aborting prep.
+        if (dest / "package.json").exists():
+            subprocess.run(
+                [
+                    "npm",
+                    "install",
+                    "--prefer-offline",
+                    "--no-audit",
+                    "--no-fund",
+                    "--loglevel=error",
+                ],
+                cwd=dest,
+                capture_output=True,
+                text=True,
+            )
         return dest
 
     return _prepare
