@@ -55,6 +55,37 @@ def test_all_passing_baseline_short_circuits():
     assert res.note == "nothing to improve"
 
 
+def test_real_failure_target_overrides_and_bypasses_short_circuit():
+    from misterdev.core.evolution.attribution import Blame
+
+    # Benchmark is all-green, so benchmark blame is None and the run would normally
+    # short-circuit. A real-failure target drives a proposal anyway — evolution
+    # improves what actually breaks in use, not only the benchmark.
+    results = [BenchResult("a", "rust", True), BenchResult("b", "go", True)]
+    target = Blame(
+        niche="rust/wrong_type",
+        failures=4,
+        total=4,
+        examples=["E0308"],
+        source="real-build failures",
+    )
+    mutation = Mutation(
+        target="rust/wrong_type", paths=["misterdev/x.py"], patch="p", note="prompt"
+    )
+    res = run_evolution(
+        _Project(),
+        "bench",
+        "work",
+        run_bench=_bench(results),
+        proposer=_Proposer(mutation),
+        live=False,
+        target=target,
+    )
+    assert res.blame is target
+    assert res.blame.source == "real-build failures"
+    assert res.proposals == [mutation]
+
+
 class _Sandbox:
     """Fake sandbox: applies nothing, gates pass, benchmark returns an improved run."""
 
@@ -93,6 +124,52 @@ def test_live_run_promotes_a_real_improvement():
     assert len(res.steps) == 1
     assert res.steps[0].promoted
     assert res.champion is not None and res.champion.resolved == 2
+
+
+class _ScreeningSandbox(_Sandbox):
+    """Sandbox that can run a case subset (benchmark_only), so the screen arms."""
+
+    def __init__(self, improved):
+        super().__init__(improved)
+        self.only_calls = []
+
+    def benchmark_only(self, only):
+        self.only_calls.append(list(only))
+        # The mutation flips every requested case to passing.
+        return [BenchResult(cid, "rust", True) for cid in only], 0.001
+
+
+def test_live_run_arms_screen_from_corpus_and_promotes(tmp_path):
+    # Baseline: a,b fail (targets), g passes (guard). The screen should run the
+    # targeted+guard subset, accept, and the oracle should then promote.
+    baseline = [
+        BenchResult("a", "rust", False, "error[E0308]: mismatched types"),
+        BenchResult("b", "rust", False, "error[E0308]: mismatched types"),
+        BenchResult("g", "rust", True),
+    ]
+    improved = [BenchResult(x, "rust", True) for x in ("a", "b", "g")]
+    mutation = Mutation(
+        target="rust", paths=["misterdev/x.py"], patch="p", note="prompt"
+    )
+    sandbox = _ScreeningSandbox(improved)
+    res = run_evolution(
+        _Project(),
+        "bench",
+        "work",
+        run_bench=_bench(baseline),
+        proposer=_Proposer(mutation),
+        sandbox=sandbox,
+        live=True,
+        steps=1,
+        noise_band=0.05,
+        screen=True,
+        beam=3,
+        corpus_path=tmp_path / "repro.json",
+    )
+    assert sandbox.only_calls, "screen never ran the targeted subset"
+    # The subset ran the targets and the guard, not the whole suite.
+    assert set(sandbox.only_calls[0]) == {"a", "b", "g"}
+    assert res.steps[0].promoted
 
 
 def test_live_run_does_not_promote_within_noise():

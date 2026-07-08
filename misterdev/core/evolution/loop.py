@@ -21,7 +21,7 @@ forgotten), and advances the incumbent only on a real win.
 """
 
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from misterdev.logging_setup import setup_logger
 
@@ -62,30 +62,66 @@ class EvolutionLoop:
     propose: Callable[[str], Mutation]
     noise_band: float
     champion: FitnessScore
+    # Optional cheap screen (a MicroEvaluator.screen): when set, ``beam`` candidates
+    # are proposed and screened, and only the best survivor reaches the expensive
+    # ``evaluate`` oracle — so the loop widens its search without widening its cost.
+    # Unset (the default), behaviour is unchanged: one candidate, straight to eval.
+    screen: Optional[Callable[[Mutation], object]] = None
+    beam: int = 1
     _counter: int = field(default=0, init=False)
 
+    def _pick(self, target: str) -> Tuple[Optional[Mutation], str]:
+        """Choose the candidate to spend the oracle on: propose (a beam of) one or
+        more, guardrail each, and — when a screen is armed — keep only screened
+        survivors and return the best. Returns (mutation, "") or (None, reason)."""
+        n = self.beam if self.screen is not None else 1
+        candidates: List[Mutation] = []
+        reason = "no viable proposal"
+        for _ in range(max(1, n)):
+            try:
+                m = self.propose(target)
+            except Exception as e:  # one dead candidate, not a crash
+                logger.warning(f"Evolution: proposal for {target!r} failed: {e}")
+                reason = f"proposal failed: {e}"
+                continue
+            try:
+                assert_mutation_allowed(m.paths)
+            except ProtectedPathError as e:
+                # Reward-hacking wall: refuse before the candidate is ever scored.
+                logger.warning(f"Evolution: refused a candidate — {e}")
+                reason = f"guardrail: {e}"
+                continue
+            candidates.append(m)
+
+        if not candidates:
+            return None, reason
+        if self.screen is None:
+            return candidates[0], ""
+
+        survivors: List[Tuple[tuple, Mutation]] = []
+        for m in candidates:
+            verdict = self.screen(m)
+            if getattr(verdict, "accepted", False):
+                survivors.append((verdict.rank_key, m))
+        if not survivors:
+            return None, "all candidates screened out"
+        # Best survivor first: most targets fixed with the fewest guard breaks.
+        survivors.sort(key=lambda sv: sv[0], reverse=True)
+        return survivors[0][1], ""
+
     def step(self, target: str, niche: str) -> StepResult:
-        """Run one propose → guardrail → sandbox-eval → archive → promote cycle.
+        """Run one propose → (screen) → sandbox-eval → archive → promote cycle.
 
         Never raises: a proposer/evaluator failure or a guardrail violation ends
         the step as a non-promotion with a reason, so one bad candidate can never
         halt the search.
         """
+        mutation, reason = self._pick(target)
+        if mutation is None:
+            return StepResult(False, False, reason)
+
         self._counter += 1
         cand_id = f"cand-{self._counter}"
-
-        try:
-            mutation = self.propose(target)
-        except Exception as e:  # a proposer failure is one dead candidate, not a crash
-            logger.warning(f"Evolution: proposal for {target!r} failed: {e}")
-            return StepResult(False, False, f"proposal failed: {e}")
-
-        try:
-            assert_mutation_allowed(mutation.paths)
-        except ProtectedPathError as e:
-            # Reward-hacking wall: refuse the candidate before it is ever scored.
-            logger.warning(f"Evolution: refused {cand_id} — {e}")
-            return StepResult(False, False, f"guardrail: {e}")
 
         try:
             score = self.evaluate(mutation)

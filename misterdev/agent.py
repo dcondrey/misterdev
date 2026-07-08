@@ -38,6 +38,7 @@ from misterdev.core.planning.sovereign import (
     ProbeGenerator,
 )
 from misterdev.core.planning.metacognition import SessionAuditor
+from misterdev.core.learning import FailureLog, SolvedTaskIndex
 from misterdev.core.context.contracts import ContractRegistry
 from misterdev.core.verification.preflight import PreflightValidator
 from misterdev.core.execution.progress import (
@@ -90,6 +91,7 @@ class ProjectOrchestrator:
     def __init__(self):
         self.registry = ProjectRegistry()
         self.last_build_succeeded = True
+        self.last_build_cost = 0.0
 
     def scan_directory(self, path: str | Path):
         self.registry.discover_projects(path)
@@ -433,8 +435,38 @@ class ProjectOrchestrator:
         report.key_decisions.append(f"Halted by budget ceiling: {error}")
         report.finalize()
         report.apply_llm_usage(project.llm_client.cumulative_usage)
+        self._persist_learning(project, report)
         report.save(project.path)
         return report.to_markdown()
+
+    def _persist_learning(self, project: Project, report: BuildReport) -> None:
+        """Record this build's spend, real failures, and solved tasks.
+
+        Runs on EVERY terminated build — normal completion and budget halt alike.
+        A budget-exhausted run spent the whole cap and still failed, so it is the
+        highest-signal failure; dropping it would blind the exact features
+        (evolution-from-failures, warm-start) that learn from real use. Each write
+        is best-effort so bookkeeping never turns a finished build into a crash.
+        """
+        # Expose this build's spend so a caller (e.g. the benchmark runner) can
+        # attribute per-run cost without re-deriving it from the saved report.
+        self.last_build_cost = float(
+            getattr(project.llm_client.cumulative_usage, "estimated_cost", 0.0)
+        )
+        try:
+            FailureLog(
+                project.path / ".orchestrator" / "failures.jsonl"
+            ).record_failures(report.failed_tasks)
+        except Exception as e:
+            logger.warning(f"Failure logging failed (non-fatal): {e}")
+            report.degraded_subsystems.append(f"Failure logging: {e}")
+        try:
+            SolvedTaskIndex(
+                project.path / ".orchestrator" / "solved_tasks.jsonl"
+            ).record(report.completed_tasks)
+        except Exception as e:
+            logger.warning(f"Solved-task indexing failed (non-fatal): {e}")
+            report.degraded_subsystems.append(f"Solved-task indexing: {e}")
 
     def interactive_plan(self, project_path: str | Path, args: str = "") -> str:
         """Analyze the project, recommend work, and compose a plan with the user.
@@ -647,7 +679,11 @@ class ProjectOrchestrator:
         # Sovereign enhancements (metacognition, AB-MCTS) are best-effort: they
         # refine the spec but must not crash the build, so each degrades to the
         # current spec on failure rather than aborting before any work is done.
-        auditor = SessionAuditor(project.path, project.llm_client)
+        # One embedder, shared by lesson retrieval and warm-start, so a similar
+        # lesson/task surfaces by MEANING, not just shared tokens. Best-effort:
+        # None (no fastembed / disabled) degrades both to lexical ranking.
+        embedder = self._learning_embedder(project)
+        auditor = SessionAuditor(project.path, project.llm_client, embedder=embedder)
         try:
             # Bias retrieval toward lessons relevant to this build's goal.
             lessons = auditor.get_lessons_context(prompt)
@@ -656,6 +692,19 @@ class ProjectOrchestrator:
         except Exception as e:
             logger.warning(f"Lesson injection failed (non-fatal): {e}")
             report.degraded_subsystems.append(f"Lesson injection: {e}")
+
+        # Warm-start: seed the spec with how similar tasks were solved before, so a
+        # recurring shape starts from a proven approach instead of cold.
+        solved_index = SolvedTaskIndex(
+            project.path / ".orchestrator" / "solved_tasks.jsonl", embedder=embedder
+        )
+        try:
+            priors = solved_index.context(prompt)
+            if priors:
+                spec = f"{priors}\n\n{spec}"
+        except Exception as e:
+            logger.warning(f"Warm-start injection failed (non-fatal): {e}")
+            report.degraded_subsystems.append(f"Warm-start injection: {e}")
 
         # AB-MCTS branch-and-evaluate is off by default: it fires several serial
         # LLM calls before any work begins (observed ~30 min on one build) for
@@ -868,9 +917,28 @@ class ProjectOrchestrator:
 
         report.apply_llm_usage(project.llm_client.cumulative_usage)
         report.cost_by_task = dict(getattr(project.llm_client, "cost_by_task", {}))
+        # Learning writes + spend accounting, shared with the budget-halt path so
+        # a budget-exhausted run (the highest-signal failure) is not silently
+        # dropped from the streams the self-improvement features learn from.
+        self._persist_learning(project, report)
 
         report.save(project.path)
         return report.to_markdown()
+
+    def _learning_embedder(self, project: Project):
+        """A shared embedder for lesson/warm-start retrieval, or None.
+
+        Reuses the project's embedding-backend config (which prefers a free,
+        offline local model and honours "none"), so semantic ranking is opt-in via
+        the same setting that governs context ranking. Any failure returns None,
+        degrading retrieval to lexical rather than breaking the build."""
+        try:
+            from misterdev.llm.client.embeddings import create_embedding_client
+
+            return create_embedding_client(project.config)
+        except Exception as e:
+            logger.debug(f"Learning embedder unavailable, using lexical ranking: {e}")
+            return None
 
     def _capture_head(self, project: Project) -> Optional[str]:
         """Best-effort current HEAD sha, or None outside a git repo / on error."""

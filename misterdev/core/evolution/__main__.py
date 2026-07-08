@@ -38,6 +38,23 @@ def _gate_commands(repo: str) -> dict:
     }
 
 
+def _failure_target(repo: str):
+    """Highest-weight niche from the repo's real-build failure stream, or None.
+
+    Reads ``.orchestrator/failures.jsonl`` (written by finished builds) and ranks
+    niches by recency-decayed, recurrence-amplified weight so evolution aims at
+    what is still breaking in real use. Best-effort: an unreadable/empty stream
+    yields None, which the caller treats as "nothing to do".
+    """
+    from pathlib import Path
+
+    from misterdev.core.learning.failure_log import FailureLog
+    from misterdev.core.learning.targeting import top_stream_target
+
+    records = FailureLog(Path(repo) / ".orchestrator" / "failures.jsonl").load()
+    return top_stream_target(records)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="misterdev.core.evolution")
     parser.add_argument(
@@ -67,6 +84,26 @@ def main(argv=None) -> int:
         action="store_true",
         help="apply/gate/benchmark/promote self-edits (spends budget); default is dry-run",
     )
+    parser.add_argument(
+        "--from-failures",
+        action="store_true",
+        help="aim the mutation at the repo's REAL-build failure stream "
+        "(.orchestrator/failures.jsonl) instead of the benchmark's worst niche; "
+        "the benchmark still gates promotion",
+    )
+    parser.add_argument(
+        "--screen",
+        action="store_true",
+        help="live: cheaply screen each candidate on only the targeted + guard "
+        "cases (from the reproduction corpus) before spending the full benchmark",
+    )
+    parser.add_argument(
+        "--beam",
+        type=int,
+        default=1,
+        help="live: propose this many candidates per step and keep the best "
+        "screened survivor (implies --screen; widens search without widening cost)",
+    )
     args = parser.parse_args(argv)
 
     from misterdev.config import ConfigManager
@@ -75,6 +112,11 @@ def main(argv=None) -> int:
     repo = args.repo or os.getcwd()
     config = ConfigManager().load_project_config(repo)
     project = Project(repo, config)
+
+    target = _failure_target(repo) if args.from_failures else None
+    if args.from_failures and target is None:
+        _emit("from-failures: no logged real failures to target; nothing to do")
+        return 0
 
     result = run_evolution(
         project,
@@ -87,6 +129,9 @@ def main(argv=None) -> int:
         model=args.model,
         live=args.live,
         gate_commands=_gate_commands(repo) if args.live else None,
+        target=target,
+        screen=args.screen or args.beam > 1,
+        beam=max(1, args.beam),
     )
 
     _emit(

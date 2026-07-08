@@ -32,6 +32,9 @@ class Blame:
     failures: int
     total: int
     examples: List[str] = field(default_factory=list)
+    # Where the blame came from, phrased to read in the proposer sentence
+    # "misterdev fails N/M of {source} in this niche".
+    source: str = "benchmark tasks"
 
     @property
     def failure_rate(self) -> float:

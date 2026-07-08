@@ -1,5 +1,6 @@
 """Run a suite of polyglot exercises and report the resolved rate."""
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -26,6 +27,11 @@ class SuiteReport:
     def resolved_rate(self) -> float:
         return self.resolved / self.total if self.total else 0.0
 
+    @property
+    def cost(self) -> float:
+        """Total dollars misterdev spent across the suite (best-effort sum)."""
+        return math.fsum(getattr(r, "cost", 0.0) or 0.0 for r in self.results)
+
     def by_language(self) -> dict:
         out: dict = {}
         for r in self.results:
@@ -46,6 +52,7 @@ class SuiteReport:
             "total": self.total,
             "resolved": self.resolved,
             "resolved_rate": self.resolved_rate,
+            "cost": self.cost,
             "results": [
                 {
                     "name": r.name,
@@ -53,6 +60,7 @@ class SuiteReport:
                     "resolved": r.resolved,
                     "duration_s": r.duration_s,
                     "error": r.error,
+                    "cost": r.cost,
                 }
                 for r in self.results
             ],

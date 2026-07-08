@@ -37,6 +37,57 @@ def test_real_gain_is_promoted_and_advances_the_champion():
     assert not res2.promoted
 
 
+class _Verdict:
+    def __init__(self, accepted, targeted_resolved=1):
+        self.accepted = accepted
+        self.rank_key = (targeted_resolved, 0)
+
+
+def test_beam_screen_picks_best_survivor_for_the_oracle():
+    # Propose 3 candidates distinguished by patch; screen accepts two, ranking the
+    # one that fixes more targets first. Only that one reaches the oracle.
+    patches = iter(["worst", "best", "rejected"])
+    evaluated = []
+
+    def propose(target):
+        return Mutation(
+            target=target, paths=["misterdev/config.py"], patch=next(patches)
+        )
+
+    def screen(m):
+        return {
+            "worst": _Verdict(True, targeted_resolved=1),
+            "best": _Verdict(True, targeted_resolved=3),
+            "rejected": _Verdict(False),
+        }[m.patch]
+
+    def evaluate(m):
+        evaluated.append(m.patch)
+        return FitnessScore(60, 100, 1.0)
+
+    loop = _loop(evaluate=evaluate, propose=propose)
+    loop.screen = screen
+    loop.beam = 3
+    res = loop.step("misterdev/config.py", "cost")
+    assert res.promoted
+    assert evaluated == ["best"]  # oracle ran exactly once, on the top survivor
+
+
+def test_all_screened_out_skips_the_oracle():
+    evaluated = []
+
+    def evaluate(m):
+        evaluated.append(m)
+        return FitnessScore(60, 100, 1.0)
+
+    loop = _loop(evaluate=evaluate, propose=_mut())
+    loop.screen = lambda m: _Verdict(False)
+    loop.beam = 3
+    res = loop.step("misterdev/config.py", "cost")
+    assert not res.promoted and res.reason == "all candidates screened out"
+    assert evaluated == []  # never spent the expensive oracle
+
+
 def test_within_noise_gain_is_archived_but_not_promoted():
     loop = _loop(evaluate=lambda m: FitnessScore(52, 100, 1.0), propose=_mut())
     res = loop.step("misterdev/config.py", "cost")

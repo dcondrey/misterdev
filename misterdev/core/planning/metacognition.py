@@ -21,10 +21,15 @@ __all__ = ["SessionAuditor", "_extract_json_array", "_MAX_LESSONS"]
 class SessionAuditor:
     """Audits task execution traces to extract and reinforce 'Lessons Learned'."""
 
-    def __init__(self, project_path: Path, llm_client: BaseLLMClient):
+    def __init__(self, project_path: Path, llm_client: BaseLLMClient, embedder=None):
         self.project_path = Path(project_path)
         self.llm = llm_client
-        self.store = LessonStore(self.project_path / ".orchestrator" / "lessons.json")
+        self.store = LessonStore(
+            self.project_path / ".orchestrator" / "lessons.json", embedder=embedder
+        )
+        # Ids of the lessons injected into THIS build, captured at retrieval so the
+        # end-of-run audit can credit exactly those with the run's outcome.
+        self._injected_ids: List[int] = []
 
     @property
     def lessons_file(self) -> Path:
@@ -57,6 +62,7 @@ Example: 'Always run black before committing', 'The database connection must be 
 
 Return a JSON array of strings. Return ONLY the JSON array.
 """
+        result = "No new lessons learned."
         try:
             response = self.llm.generate_code(
                 prompt, "You are a senior project auditor."
@@ -64,11 +70,22 @@ Return a JSON array of strings. Return ONLY the JSON array.
             new_rules = _extract_json_array(response)
             if new_rules:
                 self.store.record(new_rules)
-                return "\n".join(f"- {r}" for r in new_rules)
+                result = "\n".join(f"- {r}" for r in new_rules)
         except Exception as e:
             logger.error(f"Metacognitive audit failed: {e}")
 
-        return "No new lessons learned."
+        # Credit the lessons injected into this build with its measured outcome, so
+        # future retrieval reinforces what actually helped rather than what merely
+        # recurred. Runs with no attempted tasks carry no signal and are skipped.
+        try:
+            attempted = len(completed_tasks) + len(failed_tasks)
+            if attempted and self._injected_ids:
+                outcome = len(completed_tasks) / attempted
+                self.store.credit(self._injected_ids, outcome)
+        except Exception as e:
+            logger.warning(f"Lesson efficacy crediting failed (non-fatal): {e}")
+
+        return result
 
     def _save_lessons(self, new_rules: List) -> int:
         """Fold rules into the scored store (kept as a thin, direct entry point)."""
@@ -80,11 +97,12 @@ Return a JSON array of strings. Return ONLY the JSON array.
         ``query`` (typically the build goal) biases retrieval toward lessons that
         pertain to the work at hand; empty ranks by proven value alone.
         """
-        lessons = self.store.retrieve(query)
-        if not lessons:
+        injected = self.store.retrieve_lessons(query)
+        self._injected_ids = [le.id for le in injected]
+        if not injected:
             return ""
         return "## Project-Specific Lessons (Historical)\n" + "\n".join(
-            f"- {r}" for r in lessons
+            f"- {le.text}" for le in injected
         )
 
 

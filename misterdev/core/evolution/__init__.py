@@ -23,8 +23,11 @@ from .loop import EvolutionLoop, Mutation, StepResult
 from .prior import KindWeight, MutationPrior
 from .proposer import LLMProposer, build_instruction, parse_paths, parse_tag
 from .sandbox import SandboxEvaluator
+from .screen import MicroEvaluator, ScreenVerdict
 
 __all__ = [
+    "MicroEvaluator",
+    "ScreenVerdict",
     "FitnessScore",
     "estimate_noise_band",
     "EvolutionArchive",

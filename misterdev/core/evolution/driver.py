@@ -25,11 +25,14 @@ from misterdev.logging_setup import setup_logger
 from .adapters import baseline_passed, make_proposer, run_benchmark, score_of
 from .archive import Candidate, EvolutionArchive
 from .attribution import Blame, top_target
+from misterdev.core.learning.reproduction import ReproductionCorpus
+
 from .fitness import FitnessScore
 from .loop import EvolutionLoop, Mutation, StepResult
 from .prior import MutationPrior
 from .proposer import LLMProposer
 from .sandbox import SandboxEvaluator
+from .screen import MicroEvaluator
 
 logger = setup_logger(__name__)
 
@@ -64,6 +67,12 @@ def run_evolution(
     run_bench: Optional[Callable] = None,
     proposer: Optional[LLMProposer] = None,
     sandbox: Optional[object] = None,
+    target: Optional[Blame] = None,
+    screen: bool = False,
+    beam: int = 1,
+    targets: int = 12,
+    guards: int = 8,
+    corpus_path=None,
 ) -> EvolutionResult:
     """Run one evolution pass. See module docstring for dry-run vs live.
 
@@ -71,6 +80,14 @@ def run_evolution(
     default to the real adapters but are injectable for tests. ``gate_commands``
     (required for live) are misterdev's own build/test/lint commands, run in the
     sandbox to prove a self-edit did not break misterdev before it is scored.
+
+    ``target`` overrides where the mutation is aimed: when supplied (e.g. the
+    highest-weight niche from the REAL-build failure stream), evolution improves
+    what actually breaks in use instead of the benchmark's worst niche. The
+    benchmark still runs — it supplies the baseline, the regression reference set,
+    and the promotion gate — so a real-failure-targeted edit still cannot be
+    promoted unless it holds or improves benchmark capability with zero
+    regressions. This is the cross-gate that keeps real-data targeting safe.
     """
     bench = run_bench or (
         lambda cwd: run_benchmark(
@@ -79,10 +96,24 @@ def run_evolution(
     )
     results, cost, _raw = bench(str(project.path))
     baseline = score_of(results, cost=cost)
-    blame = top_target(results)
+    # Accumulate this run's per-case outcomes into the reproduction corpus — the
+    # growing ground truth that the micro-eval screen draws its targets and guard
+    # from. Best-effort: a corpus write must never abort an evolution run.
+    corpus = ReproductionCorpus(
+        corpus_path
+        or (project.path / ".orchestrator" / "evolution" / "reproduction.json")
+    )
+    try:
+        corpus.update(results)
+    except Exception as e:
+        logger.warning(f"Evolution: corpus update failed (non-fatal): {e}")
+    # A real-failure target overrides the benchmark's worst niche; the benchmark
+    # blame is the fallback when no target is supplied.
+    blame = target or top_target(results)
     logger.info(
         f"Evolution: baseline {baseline.resolved}/{baseline.total}; "
-        f"top blame = {blame.niche if blame else 'none (all passed)'}."
+        f"target = {blame.niche if blame else 'none (all passed)'} "
+        f"(source: {blame.source if blame else 'n/a'})."
     )
     if blame is None:
         return EvolutionResult(baseline=baseline, blame=None, note="nothing to improve")
@@ -128,6 +159,29 @@ def run_evolution(
         benchmark=sandbox.benchmark,
         baseline_passed=baseline_passed(results),
     )
+    # Optional cheap screen: derive the targeted (currently-failing, in-niche) and
+    # guard (currently-passing) cases from the corpus and build a micro-evaluator
+    # over the sandbox's selective benchmark. Only armed when there are real
+    # targets AND the sandbox can run a case subset; otherwise the loop runs
+    # single-candidate straight to the oracle, exactly as before.
+    screen_fn = None
+    if (screen or beam > 1) and hasattr(sandbox, "benchmark_only"):
+        target_ids = [c.id for c in corpus.failing(niche=blame.niche, limit=targets)]
+        if target_ids:
+            guard_ids = [
+                c.id for c in corpus.guard_sample(guards, exclude=set(target_ids))
+            ]
+            screen_fn = MicroEvaluator(
+                apply=sandbox.apply,
+                gates=sandbox.gates,
+                run_only=sandbox.benchmark_only,
+                target_ids=target_ids,
+                guard_ids=guard_ids,
+            ).screen
+            logger.info(
+                f"Evolution: screen armed ({len(target_ids)} targets, "
+                f"{len(guard_ids)} guards, beam {max(1, beam)})."
+            )
     loop = EvolutionLoop(
         archive=archive,
         evaluate=evaluate,
@@ -136,6 +190,8 @@ def run_evolution(
         ),
         noise_band=noise_band,
         champion=baseline,
+        screen=screen_fn,
+        beam=max(1, beam),
     )
     step_results: List[StepResult] = []
     for i in range(max(1, steps)):

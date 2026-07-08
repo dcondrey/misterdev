@@ -59,6 +59,31 @@ def test_unfixed_exercise_is_unresolved(tmp_path):
     assert res.resolved is False
 
 
+def test_per_instance_cost_captured_from_orchestrator(tmp_path):
+    class _CostingOrchestrator(_FixOrchestrator):
+        last_build_cost = 0.037
+
+    res = run_instance(
+        _instance(), str(tmp_path), _prepare_stub, orchestrator=_CostingOrchestrator()
+    )
+    assert res.cost == 0.037
+
+
+def test_suite_report_aggregates_cost():
+    from evaluation.polyglot.harness import SuiteReport
+    from evaluation.polyglot.runner import RunResult
+
+    report = SuiteReport(
+        results=[
+            RunResult("a", "rust", True, cost=0.02),
+            RunResult("b", "go", False, cost=0.03),
+        ]
+    )
+    assert report.cost == 0.05
+    assert report.to_dict()["cost"] == 0.05
+    assert report.to_dict()["results"][0]["cost"] == 0.02
+
+
 def test_default_test_command_by_language():
     assert PolyglotInstance("x", "rust", "", [], []).test_command == "cargo test"
     assert PolyglotInstance("x", "go", "", [], []).test_command == "go test ./..."
