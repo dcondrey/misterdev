@@ -1720,6 +1720,69 @@ class ProjectOrchestrator:
         choice = Prompt.ask("Proceed?", choices=["y", "n", "s", "q"], default="y")
         return {"y": "proceed", "q": "quit", "s": "skip", "n": "quit"}[choice]
 
+    def _ground_completion_spec(
+        self, assessment: ProjectAssessment, project: Project
+    ) -> str:
+        """Build a COMPLETE-mode spec grounded in objective signals.
+
+        A vague "complete everything" goal on a real codebase otherwise churns:
+        the completeness analyzer flags "incomplete"/"stub" items from a lossy
+        overview and mislabels deliberate design (graceful degradation, platform
+        no-ops) as work, so the spec becomes a pile of speculative tasks. Instead
+        lead with HARD signals — a failing build, failing tests, located
+        TODO/FIXME markers, broken references — which are objective and
+        verifiable, add features the docs promise but are absent, and demote the
+        analyzer's guesses to an explicit "do NOT task these unless corroborated"
+        advisory. When nothing hard or documented exists, the goal is ill-posed:
+        emit zero-task guidance rather than fabricate work.
+        """
+        h = assessment.health
+        f = assessment.features
+        hard: list[str] = []
+        if not h.builds and h.build_output:
+            hard.append(
+                f"- The build is FAILING; fix it first:\n{h.build_output[:400]}"
+            )
+        if not h.tests_pass and h.test_output:
+            hard.append(f"- Tests are FAILING:\n{h.test_output[:400]}")
+        hard.extend(f"- Broken: {item}" for item in f.broken)
+        hard.extend(
+            f"- {t.get('file', '?')}:{t.get('line', '?')} {t.get('text', '')}"
+            for t in f.todos[:20]
+        )
+        documented = [f"- {m.name}: {m.description}" for m in f.missing]
+        speculative = [f"- {i.name}: {i.description}" for i in f.incomplete]
+        speculative += [f"- Stub: {s}" for s in f.stubs]
+
+        parts = [f"# Completion Spec\n## Project: {project.name}\n"]
+        if hard:
+            parts.append(
+                "## Must Fix — objective, verifiable failures\n" + "\n".join(hard)
+            )
+        if documented:
+            parts.append(
+                "\n## Should Add — promised by the docs but absent\n"
+                + "\n".join(documented)
+            )
+        if not hard and not documented:
+            parts.append(
+                "## No concrete objective found\n"
+                "The build and tests pass and there are no TODO/FIXME markers or "
+                "documented-but-missing features. A vague 'complete everything' goal "
+                "has no well-posed work here. Do NOT fabricate tasks from speculation: "
+                "produce ZERO tasks and report that a specific objective (a feature, a "
+                "bug to fix, or --focus <area>) is required."
+            )
+        if speculative:
+            parts.append(
+                "\n## Advisory — analyzer guesses, NOT tasks\n"
+                "Inferred as incomplete/stub from a lossy overview; these often "
+                "mislabel deliberate design. Do NOT create a task for any of these "
+                "unless a failing test or build error above corroborates it.\n"
+                + "\n".join(speculative[:15])
+            )
+        return "\n".join(parts)
+
     def _generate_spec(
         self,
         mode: BuildMode,
@@ -1748,28 +1811,7 @@ class ProjectOrchestrator:
             return "\n".join(parts)
 
         if mode == BuildMode.COMPLETE:
-            parts = [
-                f"# Completion Spec\n## Project: {project.name}",
-                "## Goal: Complete all work\n",
-                "### Must Complete",
-            ]
-            for f in assessment.features.incomplete:
-                parts.append(f"- {f.name}: {f.description}")
-            parts.append("\n### Must Fix")
-            for item in assessment.features.broken:
-                parts.append(f"- {item}")
-            for item in assessment.features.stubs:
-                parts.append(f"- Stub: {item}")
-            parts.append("\n### Should Add")
-            for f in assessment.features.missing:
-                parts.append(f"- {f.name}: {f.description}")
-            if assessment.features.todos:
-                parts.append(f"\n### TODOs ({len(assessment.features.todos)} items)")
-                for todo in assessment.features.todos[:20]:
-                    parts.append(
-                        f"- {todo.get('file', '?')}:{todo.get('line', '?')} {todo.get('text', '')}"
-                    )
-            return "\n".join(parts)
+            return self._ground_completion_spec(assessment, project)
 
         if mode == BuildMode.SPEC:
             spec_path = project.path / prompt.strip()
