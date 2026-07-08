@@ -856,6 +856,23 @@ def test_critic_auto_enables_for_cross_cutting_categories():
     )
 
 
+def test_critic_auto_defers_to_objective_test_gate():
+    from types import SimpleNamespace
+
+    ex = MarkdownPlanExecutor()
+    auto = {"orchestrator": {"adversarial_critic": "auto"}}
+    # Same cross-cutting category, but now the task carries a real test command:
+    # the test suite is the authoritative gate, so the critic defers (saves a
+    # model call per attempt) rather than running redundantly.
+    tested = SimpleNamespace(
+        category="refactor", processor_data={"test_command": "pytest -q"}
+    )
+    assert not ex._critic_enabled_for(SimpleNamespace(config=auto), tested)
+    # Explicit True still forces the critic on even alongside tests.
+    on = {"orchestrator": {"adversarial_critic": True}}
+    assert ex._critic_enabled_for(SimpleNamespace(config=on), tested)
+
+
 def test_detect_dangling_references_flags_missed_caller():
     from types import SimpleNamespace
     from misterdev.core.context.topography.nodes import SymbolNode

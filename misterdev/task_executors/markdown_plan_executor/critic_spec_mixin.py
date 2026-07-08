@@ -16,17 +16,40 @@ class CriticSpecMixin:
 
         ``adversarial_critic`` True/False forces it; "auto" (default) enables it
         only for the cross-cutting categories in ``critic_auto_categories`` —
-        where symptom-fixes, incomplete refactors, and duplication cluster — so
-        the review runs out of the box on risky tasks without an extra call on
-        every trivial one.
+        where symptom-fixes, incomplete refactors, and duplication cluster — AND
+        only when the task has no objective test gate. A real test suite catches
+        the same implementation bugs authoritatively and far more cheaply than an
+        extra model call on every attempt, so the critic (whose unique value is
+        reviewing what a test cannot) defers to it; set ``adversarial_critic:
+        true`` to force the critic even alongside tests.
         """
         setting = get_setting(project.config, "orchestrator", "adversarial_critic")
         if isinstance(setting, str) and setting.strip().lower() == "auto":
             categories = get_setting(
                 project.config, "orchestrator", "critic_auto_categories"
             )
-            return getattr(task, "category", "") in (categories or [])
+            if getattr(task, "category", "") not in (categories or []):
+                return False
+            return not self._has_objective_test_gate(project, task)
         return bool(setting)
+
+    def _has_objective_test_gate(self, project: Project, task: Task) -> bool:
+        """True when this task will run a real test command (the authoritative gate)."""
+        if (getattr(task, "processor_data", None) or {}).get("test_command"):
+            return True
+        try:
+            from misterdev.core.planning.targets import (
+                select_target,
+                target_commands,
+            )
+
+            files = list(getattr(task, "files_to_modify", []) or []) + list(
+                getattr(task, "context_files", []) or []
+            )
+            routed = select_target(project.config.get("targets") or [], files)
+            return bool(target_commands(routed, project.config).get("test_command"))
+        except (KeyError, AttributeError, TypeError):
+            return False
 
     def _run_edit_critic(self, project: Project, task: Task, edits: Dict[str, str]):
         """Run the independent adversarial critic over a candidate edit.
