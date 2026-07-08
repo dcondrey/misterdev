@@ -6,6 +6,10 @@ from typing import List, NamedTuple, Optional, Tuple
 from misterdev.core.models import Task
 from misterdev.core.execution.project import Project
 from misterdev.core.execution.error_classifier import classify_error, ErrorCategory
+from misterdev.core.execution.failure_view import (
+    extract_failures,
+    render_failure_view,
+)
 from misterdev.config import get_setting
 
 from .helpers import logger, _extract_acceptance_command, JUDGE_MIN_BUDGET_FRACTION
@@ -130,7 +134,13 @@ class GatesMixin:
         )
         escalation = self._repeat_escalation(prior_errors)
         history = self._prior_failures_history(prior_errors)
-        return f"{escalation}{history}{classified}\n\n{attributed_error}"
+        # Lead with the exact failing assertions (expected vs actual, per test)
+        # parsed straight from the runner output — the model fixes what it can
+        # precisely see. Empty for unrecognized output, so the compressed
+        # classified/attributed view below is preserved as the fallback.
+        view = render_failure_view(extract_failures(output))
+        lead = f"{view}\n\n" if view else ""
+        return f"{escalation}{history}{lead}{classified}\n\n{attributed_error}"
 
     @staticmethod
     def _gate_accepts(
