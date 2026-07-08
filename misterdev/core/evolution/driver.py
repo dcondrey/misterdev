@@ -200,6 +200,62 @@ def run_evolution(
                 f"Evolution: screen armed ({len(target_ids)} targets, "
                 f"{len(guard_ids)} guards, beam {max(1, beam)})."
             )
+    # L4 held-out gate: split the baseline tasks into disjoint DERIVE/HOLDOUT pools
+    # and promote a candidate only when it gains on DERIVE without dropping HOLDOUT,
+    # rejecting a gain that does not generalize. Falls back to the single-set rule
+    # when there is no holdout signal (too few tasks). The split is on RESULTS, not
+    # runs, so this adds no benchmark cost.
+    from .holdout import decide_promotion, split_tasks
+
+    def _pool_score(pool_results, base_passed) -> FitnessScore:
+        passed_now = {r.name for r in pool_results if getattr(r, "resolved", False)}
+        regressions = sum(1 for n in base_passed if n not in passed_now)
+        return FitnessScore(
+            resolved=len(passed_now),
+            total=len(pool_results),
+            cost=0.0,
+            regressions=regressions,
+        )
+
+    derive_slugs, holdout_slugs = split_tasks(
+        [getattr(r, "name", "") for r in results], holdout_fraction=0.3
+    )
+    derive_set, holdout_set = set(derive_slugs), set(holdout_slugs)
+
+    def _partition(res):
+        return (
+            [r for r in res if getattr(r, "name", "") in derive_set],
+            [r for r in res if getattr(r, "name", "") in holdout_set],
+        )
+
+    base_d, base_h = _partition(results)
+    derive_base = _pool_score(base_d, set())
+    holdout_base = _pool_score(base_h, set())
+    derive_base_passed = {r.name for r in base_d if getattr(r, "resolved", False)}
+    holdout_base_passed = {r.name for r in base_h if getattr(r, "resolved", False)}
+
+    promote_decider = None
+    if holdout_set:
+
+        def promote_decider(score):
+            rep = getattr(evaluate, "last_report", None)
+            if rep is None:
+                return score.beats(baseline, noise_band), ""
+            mut_d, mut_h = _partition(list(getattr(rep, "results", [])))
+            decision = decide_promotion(
+                _pool_score(mut_d, derive_base_passed),
+                derive_base,
+                _pool_score(mut_h, holdout_base_passed),
+                holdout_base,
+                noise_band,
+            )
+            return decision.promote, decision.reason
+
+        logger.info(
+            f"Evolution: held-out gate armed "
+            f"({len(derive_set)} derive, {len(holdout_set)} holdout)."
+        )
+
     loop = EvolutionLoop(
         archive=archive,
         evaluate=evaluate,
@@ -210,6 +266,7 @@ def run_evolution(
         champion=baseline,
         screen=screen_fn,
         beam=max(1, beam),
+        promote_decider=promote_decider,
     )
     step_results: List[StepResult] = []
     for i in range(max(1, steps)):

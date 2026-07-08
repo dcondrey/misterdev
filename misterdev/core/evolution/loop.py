@@ -68,6 +68,11 @@ class EvolutionLoop:
     # Unset (the default), behaviour is unchanged: one candidate, straight to eval.
     screen: Optional[Callable[[Mutation], object]] = None
     beam: int = 1
+    # Optional held-out promotion gate (L4). When set, it replaces the single-set
+    # ``beats`` decision: the caller supplies a decider that scores the candidate on
+    # disjoint DERIVE/HOLDOUT pools and returns (promote, reason), rejecting a gain
+    # that does not generalize. Unset (default), the single-set behaviour is intact.
+    promote_decider: Optional[Callable[[FitnessScore], Tuple[bool, str]]] = None
     _counter: int = field(default=0, init=False)
 
     def _pick(self, target: str) -> Tuple[Optional[Mutation], str]:
@@ -146,7 +151,11 @@ class EvolutionLoop:
         )
         archived = self.archive.consider(candidate)
 
-        promoted = score.beats(self.champion, self.noise_band)
+        if self.promote_decider is not None:
+            promoted, gate_reason = self.promote_decider(score)
+        else:
+            promoted = score.beats(self.champion, self.noise_band)
+            gate_reason = ""
         if promoted:
             self.champion = (
                 score  # advance the incumbent so the next step must beat this
@@ -155,7 +164,7 @@ class EvolutionLoop:
                 f"Evolution: promoted {cand_id} "
                 f"({score.resolved}/{score.total}, ${score.cost:.4f})."
             )
-        reason = (
+        reason = gate_reason or (
             "promoted"
             if promoted
             else ("regression" if score.regressions else "within noise band")

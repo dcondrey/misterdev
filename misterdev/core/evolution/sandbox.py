@@ -54,6 +54,10 @@ class SandboxEvaluator:
                 logger.info("Sandbox: gates failed; candidate discarded unscored.")
                 return None
             report, cost = self.benchmark()
+            # Expose the per-instance report so a held-out promotion gate (L4) can
+            # partition this candidate's results into DERIVE/HOLDOUT pools; the
+            # aggregate FitnessScore alone cannot be split.
+            self.last_report = report
             regressions = self._count_regressions(report)
             return FitnessScore.from_report(report, cost=cost, regressions=regressions)
         finally:
