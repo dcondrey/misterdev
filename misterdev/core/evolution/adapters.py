@@ -188,6 +188,7 @@ class RealSandbox:
         languages: Optional[List[str]] = None,
         model: Optional[str] = None,
         build_args: Optional[str] = None,
+        only: Optional[List[str]] = None,
         gate_timeout: int = 600,
     ):
         from misterdev.tools.git_tool import GitTool
@@ -201,6 +202,7 @@ class RealSandbox:
         self.languages = languages
         self.model = model
         self.build_args = build_args
+        self.only = only
         self.gate_timeout = gate_timeout
         self._git = GitTool()
         self._worktree: Optional[str] = None
@@ -245,6 +247,7 @@ class RealSandbox:
             languages=self.languages,
             model=self.model,
             build_args=self.build_args,
+            only=self.only,
         )
         report = _DuckReport(results)
         return report, cost

@@ -65,6 +65,7 @@ def run_evolution(
     archive_path=None,
     gate_commands: Optional[dict] = None,
     build_args: Optional[str] = None,
+    only: Optional[List[str]] = None,
     run_bench: Optional[Callable] = None,
     proposer: Optional[LLMProposer] = None,
     sandbox: Optional[object] = None,
@@ -99,6 +100,7 @@ def run_evolution(
             languages=languages,
             model=model,
             build_args=build_args,
+            only=only,
         )
     )
     results, cost, _raw = bench(str(project.path))
@@ -178,6 +180,7 @@ def run_evolution(
             languages=languages,
             model=model,
             build_args=build_args,
+            only=only,
         )
     evaluate = SandboxEvaluator(
         apply=sandbox.apply,
