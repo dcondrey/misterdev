@@ -21,6 +21,10 @@ RUST_RULES = [
         core=True,
     ),
     Rule(
+        "Model state before writing code: name the data you must hold and the invariants over it; prefer ONE flat owned structure (e.g. a Vec of raw events) over nested/cross-referential structs, and derive results by folding that flat state rather than mutating an object web.",
+        core=True,
+    ),
+    Rule(
         "Must pass: clippy -D warnings, rustfmt. DRY via traits/generics/blanket impls; delete dead code & unused deps (cargo machete).",
         core=True,
     ),
@@ -37,6 +41,18 @@ RUST_RULES = [
             "panic",
             "fail",
             "?",
+        ),
+    ),
+    Rule(
+        "Validate each input against its invariant at function entry and return Err immediately (early return, one guard per invariant); keep the happy path flat — never deep nested if/else that later resists refactoring.",
+        triggers=(
+            "error",
+            "result",
+            "validate",
+            "invalid",
+            "guard",
+            "return",
+            "fail",
         ),
     ),
     # --- API / trait design ---
