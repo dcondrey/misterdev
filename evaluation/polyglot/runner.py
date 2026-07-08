@@ -62,6 +62,7 @@ class RunResult:
     resolved: bool
     duration_s: float = 0.0
     error: str = ""
+    cost: float = 0.0  # dollars misterdev spent solving this instance (best-effort)
     grade: Optional[GradeResult] = None
 
 
@@ -188,8 +189,12 @@ def _write_project_yaml(
     selection off, so a free-model run cannot escalate to a paid model — a real
     ~$0 benchmark run — and disables the reflection loop, whose extra per-failure
     model call would otherwise spend the run's budget on something other than the
-    edits. Scalar values are JSON-encoded (a valid YAML double-quoted scalar) so
-    a name/model containing a quote or backslash never emits invalid YAML.
+    edits. ``verify_claims`` is off too: an exercise stub is always genuinely
+    incomplete, so the completeness-claim verifier can never prune anything — it
+    only spends parallel model calls to confirm the obvious, and the spec is
+    identical with it off. Scalar values are JSON-encoded (a valid YAML
+    double-quoted scalar) so a name/model containing a quote or backslash never
+    emits invalid YAML.
     """
     cfg = (
         f"name: {json.dumps(instance.name)}\n"
@@ -205,6 +210,7 @@ def _write_project_yaml(
             "  dynamic_selection: false\n"
             "orchestrator:\n"
             "  reflection: false\n"
+            "  verify_claims: false\n"
         )
     (repo / "project.yaml").write_text(cfg, encoding="utf-8")
 
@@ -255,6 +261,7 @@ def run_instance(
             resolved=result.resolved,
             duration_s=time.time() - start,
             error=result.error,
+            cost=float(getattr(orchestrator, "last_build_cost", 0.0) or 0.0),
             grade=result,
         )
     except Exception as e:  # one bad exercise must not sink the suite
