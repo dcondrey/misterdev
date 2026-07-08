@@ -118,6 +118,24 @@ def run_evolution(
     if blame is None:
         return EvolutionResult(baseline=baseline, blame=None, note="nothing to improve")
 
+    # L2 self-awareness: classify WHY this niche fails so the proposer aims the
+    # right KIND of structural fix (and a capability-wall is flagged, not blindly
+    # mutated). Best-effort — a classification failure must not abort the run.
+    try:
+        from types import SimpleNamespace
+        from misterdev.core.learning.failure_taxonomy import classify_failure
+
+        sample = blame.examples[0] if blame.examples else ""
+        cls = classify_failure(SimpleNamespace(error=sample, category=""))
+        blame.cause = cls.cause.value
+        blame.cause_evidence = cls.evidence
+        logger.info(
+            f"Evolution: blame cause = {blame.cause} ({blame.cause_evidence}); "
+            f"{'removable' if cls.removable else 'possible capability wall'}."
+        )
+    except Exception as e:
+        logger.warning(f"Evolution: cause classification failed (non-fatal): {e}")
+
     archive = EvolutionArchive(
         archive_path or (project.path / ".orchestrator" / "evolution" / "archive.json"),
         noise_band=noise_band,

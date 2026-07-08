@@ -65,6 +65,21 @@ _STRUCTURAL_SURFACES = (
     "- misterdev/core/execution/error_classifier.py — how errors are classified.\n"
 )
 
+# The kind of fix that fits each L2 failure cause — so the editor aims at the
+# mechanism, not a symptom. (saturation is a capability signal, not a fix target.)
+_CAUSE_FIX = {
+    "artifact": "fix the guard/gate that wrongly blocked a correct edit "
+    "(edits_mixin.py / gates_mixin.py) — a correct solution must never be rejected",
+    "observation": "improve the observation seam so the model sees the exact "
+    "failure (failure_view.py / error_classifier.py)",
+    "convergence": "force approach diversity on repeated failure so the model "
+    "stops thrashing one strategy (the retry/decomposition path)",
+    "search": "make the search cheaper or better-guided so it converges within "
+    "budget (gates_mixin.py error context / decomposer.py)",
+    "saturation": "this looks like a capability wall, not a harness defect — a "
+    "guidance rule that raises solution quality is the only apt edit; do not hack",
+}
+
 
 def build_instruction(blame: Blame, favored_kinds: Optional[List[str]] = None) -> str:
     """The targeting instruction handed to the editor.
@@ -88,6 +103,18 @@ def build_instruction(blame: Blame, favored_kinds: Optional[List[str]] = None) -
         ),
         "\n" + _STRUCTURAL_SURFACES,
     ]
+    cause = getattr(blame, "cause", "") or ""
+    if cause:
+        matching = _CAUSE_FIX.get(cause, "a structural fix that removes this class")
+        lines.append(
+            f"\nFailure cause (classified): {cause}"
+            + (
+                f" — {blame.cause_evidence}"
+                if getattr(blame, "cause_evidence", "")
+                else ""
+            )
+            + f". The fitting fix: {matching}"
+        )
     if favored_kinds:
         lines.append(
             "Prior runs show these edit kinds pay off here; prefer them if apt: "

@@ -35,6 +35,10 @@ class Blame:
     # Where the blame came from, phrased to read in the proposer sentence
     # "misterdev fails N/M of {source} in this niche".
     source: str = "benchmark tasks"
+    # Failure CAUSE (from the L2 taxonomy), set by the driver so the proposer aims
+    # the right KIND of structural fix; empty until classified.
+    cause: str = ""
+    cause_evidence: str = ""
 
     @property
     def failure_rate(self) -> float:

@@ -83,6 +83,21 @@ def test_build_instruction_grounds_in_real_surfaces_and_biases_structural():
     assert "tag: prompt" not in instr
 
 
+def test_build_instruction_uses_classified_cause_to_steer_fix_kind():
+    blame = Blame(niche="rust/test_assertion", failures=2, total=2)
+    blame.cause = "artifact"
+    blame.cause_evidence = "a guard rejected the candidate edit"
+    instr = build_instruction(blame)
+    assert "cause (classified): artifact" in instr.lower()
+    assert "guard rejected the candidate edit" in instr
+    # Steers at the mechanism for THIS cause (a wrongly-blocking guard/gate).
+    assert "must never be rejected" in instr
+    # A different cause routes to a different fix.
+    blame.cause = "observation"
+    blame.cause_evidence = "failure output was truncated"
+    assert "observation seam" in build_instruction(blame)
+
+
 def test_propose_rejects_invented_paths(tmp_path):
     # repo_root has a real package dir but not the invented one the editor names.
     (tmp_path / "misterdev" / "core").mkdir(parents=True)
