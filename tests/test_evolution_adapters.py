@@ -5,6 +5,7 @@ import pytest
 
 from misterdev.core.evolution.adapters import (
     BenchResult,
+    RealSandbox,
     apply_patch_to_worktree,
     baseline_passed,
     results_from_report,
@@ -49,6 +50,26 @@ def test_apply_patch_refuses_traversal():
 def test_apply_patch_empty_raises():
     with pytest.raises(ValueError):
         apply_patch_to_worktree(tempfile.mkdtemp(), "no blocks here")
+
+
+def test_real_sandbox_constructs_without_config_error():
+    # Regression: RealSandbox built GitTool() with no config, which raised
+    # BaseTool.__init__ missing 'config' the first time a live run reached the
+    # sandbox. Constructing it must not raise (GitTool needs an explicit config).
+    from types import SimpleNamespace
+
+    project = SimpleNamespace(path=Path("/tmp"))
+    sandbox = RealSandbox(
+        project,
+        "bench",
+        "work",
+        {"build": "true"},
+        limit=2,
+        build_args="--budget 0.5",
+        only=["forth"],
+    )
+    assert sandbox.build_args == "--budget 0.5"
+    assert sandbox.only == ["forth"]
 
 
 def test_results_from_report_reconstructs_records():

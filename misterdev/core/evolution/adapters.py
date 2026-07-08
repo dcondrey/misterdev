@@ -204,7 +204,7 @@ class RealSandbox:
         self.build_args = build_args
         self.only = only
         self.gate_timeout = gate_timeout
-        self._git = GitTool()
+        self._git = GitTool({})
         self._worktree: Optional[str] = None
         self._branch: Optional[str] = None
 
