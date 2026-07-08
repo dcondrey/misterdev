@@ -149,6 +149,46 @@ maps; require the reproduction corpus (`learning/reproduction.py`) to stay green
 - **True out-of-tier tasks** cap 100% until L5 escalation exists; that's a
   capability lever (model/tools), not an orchestration bug — name it, don't hide it.
 
+## Deepening (v2): where the first cut was too conventional
+
+The v1 layers above are necessary but settle for textbook answers in five places.
+The real leverage:
+
+- **D1 — Held-out must be CROSS-DISTRIBUTION, not in-distribution.** In-distribution
+  held-out catches task-memorization but not *benchmark-specialization*: since the
+  benchmark is the target, "generalizes across it" and "overfits to it" coincide. A
+  fix derived from a kata must lift a held-out pool of a *different kind* (real-repo
+  bug / SWE-bench instance), or it is rejected as a benchmark trick. This replaces
+  L4's HOLDOUT with a cross-domain HOLDOUT. It is the actual meaning of "never
+  overfit."
+- **D2 — The taxonomy (L2) must SELF-CORRECT from outcomes.** A static classifier
+  inherits our own bias (we called artifacts "saturation" every time). Every
+  "saturation/give-up" verdict is periodically **re-attempted under a changed
+  condition**; a later pass is a labeled counterexample that moves the classifier's
+  boundary. The cause-model learns its own error from a positive signal (the
+  re-attempt outcome), not from hand-labels alone. Directly enforces I3.
+- **D3 — Verifier decomposition (dense reward) is the primary `p`-raiser.** At 100%
+  the binding constraint is tasks with tiny per-attempt `p`; you cannot out-search
+  that. Raise `p` structurally by **synthesizing intermediate property/invariant
+  checks** from the task's own tests and types, turning one low-`p` verified goal
+  into a chain of high-`p` verified subgoals. Staged decomposition (already shipped)
+  is the primitive; the general form densifies a sparse reward gradient. This is
+  central, not a diversity tactic — it is what makes the hard tail reachable.
+- **D4 — Run before refine.** M0 is the validation gate for the entire plan, not a
+  warm-up. No run artifacts exist yet; the loop may not complete a cycle. Weight
+  building over planning until one real accepted mutation exists.
+- **D5 — Unify benchmark and open-ended under verifier-synthesis.** One engine
+  (verified search), two verifier sources: *given* (benchmark tests) or *synthesized*
+  (grounded acceptance criteria from a vague goal — `_ground_completion_spec` is the
+  primitive). Open-ended work becomes tractable the moment a verifier is synthesized;
+  then the same search + self-repair machinery applies. This collapses the two goals
+  into one architecture.
+
+Revised through-line: the two levers that actually reach 100% without overfitting
+are **D3 (dense reward via verifier decomposition)** to raise effective `p` on the
+hard tail, and **D1 (cross-distribution held-out)** to prove every fix is a real
+capability. L2/L4 support them; everything else is plumbing. D4 still comes first.
+
 ## One-line status
 
 Verified-search core, structural guards, faithful observation, and the full
