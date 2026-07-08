@@ -85,10 +85,12 @@ session (1-20 files) and have a concrete "done" condition.
   genuinely absent from the map.
 {targets_rule}{existing_guidance}- Max {max_tasks} tasks. Prioritize: must-fix > must-complete > should-add.
 - Use the FEWEST tasks that cover the work. Each task should be a coherent unit
-  of change, not a fragment. Do NOT split one small file into several tasks: if
-  the whole goal is implementing or fixing a single file, that is ONE task. Only
-  create multiple tasks when they touch different files or genuinely depend on
-  each other in sequence.
+  of change, not a fragment. A simple single file is ONE task. Split a single
+  file into at most 2-3 SEQUENTIAL tasks only when its logic has distinct,
+  independently-verifiable stages that build on each other (e.g. the state model
+  + input validation, THEN the operations/scoring over it) — each stage must
+  compile and leave the test suite no worse than before. Never fragment further,
+  and prefer one task when unsure. Separate files are separate tasks as usual.
 - Order: infrastructure > core types > core logic > features > integration > tests > fixes > cleanup.
 - Each task's files_to_modify must not overlap with another task's files_to_create unless a dependency is declared.
 - For DEBUG mode: order by build-blocking > test-blocking > runtime errors > warnings.
