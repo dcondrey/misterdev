@@ -103,4 +103,31 @@ CSS_RULES = [
             "letter",
         ),
     ),
+    # --- Sass / SCSS (.scss/.sass fold into this module) ---
+    Rule(
+        "Sass: @use/@forward (the namespaced module system) — never the deprecated @import (global leakage, repeated re-parsing). One concern per _partial.scss. Keep anything themed at RUNTIME in CSS custom properties (var()), NOT Sass $variables: $vars compile away and cannot react to :root overrides, media queries, or JS.",
+        triggers=(
+            "sass",
+            "scss",
+            "@use",
+            "@forward",
+            "@import",
+            "partial",
+            "$variable",
+            "preprocessor",
+        ),
+    ),
+    Rule(
+        "Sass: @mixin/@include for parameterized reuse; @extend/%placeholder only WITHIN one file (cross-file @extend reorders the cascade and bloats output). math.div() not the deprecated /; keep nesting ≤3 levels so compiled selectors don't explode in length/specificity — & is for state/variants, not deep trees.",
+        triggers=(
+            "sass",
+            "scss",
+            "@mixin",
+            "@include",
+            "@extend",
+            "placeholder",
+            "math.div",
+            "nesting",
+        ),
+    ),
 ]
