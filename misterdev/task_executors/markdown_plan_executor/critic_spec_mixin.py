@@ -104,7 +104,7 @@ class CriticSpecMixin:
         return diffs
 
     def _maybe_generate_spec_test(
-        self, project: Project, task: Task
+        self, project: Project, task: Task, validate_timeout: Optional[int] = None
     ) -> Tuple[Optional[str], Optional[str]]:
         """Generate + write a failing spec test for the task, or (None, None).
 
@@ -119,6 +119,14 @@ class CriticSpecMixin:
         injected into the edit context as the concrete reproduction target the
         model must make pass — turning the spec test from a passive after-the-fact
         check into the directed objective (reproduction-first / TDD).
+
+        When ``validate_timeout`` is given, the generated test is run once on the
+        CLEAN (pre-edit) tree and KEPT ONLY IF IT ACTUALLY FAILS there — i.e. it
+        genuinely reproduces the gap. A test that passes pre-implementation
+        encodes nothing the code must satisfy, so trusting it as the gate/target
+        is worse than having none (a false green that a wrong edit also passes);
+        such a test is discarded. A run we cannot score (no scoped runner for the
+        language -> ``skip``) is kept, since we can't disprove it reproduces.
         """
         if not get_setting(project.config, "orchestrator", "spec_as_tests"):
             return None, None
@@ -149,6 +157,26 @@ class CriticSpecMixin:
         except OSError as e:
             logger.debug(f"Spec-test write skipped: {e}")
             return None, None
+        if validate_timeout is not None:
+            status, _ = self._run_spec_test(project, str(path), validate_timeout)
+            if status == "green":
+                # Passes without the change: it reproduces nothing, so it is a
+                # false gate. Discard it rather than mislead the edit and the gate.
+                logger.info(
+                    f"Spec-as-test for {task.id} PASSES pre-implementation "
+                    "(reproduces nothing); discarded."
+                )
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+                return None, None
+            logger.info(
+                "Spec-as-test written (validated: "
+                f"{'reproduces' if status == 'red' else 'unscored'}; injected as "
+                f"target, run as gate): {path}"
+            )
+            return str(path), source
         logger.info(f"Spec-as-test written (injected as target, run as gate): {path}")
         return str(path), source
 

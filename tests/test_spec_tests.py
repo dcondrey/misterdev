@@ -239,6 +239,68 @@ def test_maybe_generate_uses_language_extension_for_compiled_langs(tmp_path):
     assert path is not None and path.endswith(".rs")
 
 
+def test_maybe_generate_discards_spec_that_passes_pre_patch(tmp_path):
+    # A generated spec that PASSES on the clean tree reproduces nothing, so it is
+    # a false gate (a wrong edit would also pass it). Validation discards it.
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+
+    class _Exec(MarkdownPlanExecutor):
+        def _run_command(self, project, command, *a, **k):
+            return True, "1 passed"  # spec passes pre-implementation
+
+    class _Proj:
+        path = tmp_path
+        config = {"orchestrator": {"spec_as_tests": True}, "language": "python"}
+        llm_client = _SpecClient()
+
+    result = _Exec()._maybe_generate_spec_test(
+        _Proj(), _task(tid="tp"), validate_timeout=30
+    )
+    assert result == (None, None)
+    specdir = tmp_path / ".orchestrator" / "spec_tests"
+    # The discarded test file is removed, not left behind as a stale gate.
+    assert not specdir.exists() or not list(specdir.glob("*.py"))
+
+
+def test_maybe_generate_keeps_spec_that_fails_pre_patch(tmp_path):
+    # A spec that FAILS on the clean tree genuinely reproduces the gap -> kept.
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+
+    class _Exec(MarkdownPlanExecutor):
+        def _run_command(self, project, command, *a, **k):
+            return False, "1 failed"  # spec fails pre-implementation (reproduces)
+
+    class _Proj:
+        path = tmp_path
+        config = {"orchestrator": {"spec_as_tests": True}, "language": "python"}
+        llm_client = _SpecClient()
+
+    path, source = _Exec()._maybe_generate_spec_test(
+        _Proj(), _task(tid="tf"), validate_timeout=30
+    )
+    assert path is not None and source and Path(path).exists()
+
+
+def test_maybe_generate_keeps_unscored_spec(tmp_path):
+    # A compiled-language spec has no scoped single-file runner (skip); we cannot
+    # disprove it reproduces, so it is kept rather than discarded.
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+
+    class _RustClient:
+        def generate_code(self, prompt, system=""):
+            return "```rust\n#[test]\nfn spec() { assert!(false); }\n```"
+
+    class _Proj:
+        path = tmp_path
+        config = {"orchestrator": {"spec_as_tests": True}, "language": "rust"}
+        llm_client = _RustClient()
+
+    path, source = MarkdownPlanExecutor()._maybe_generate_spec_test(
+        _Proj(), _task(tid="tu"), validate_timeout=30
+    )
+    assert path is not None and path.endswith(".rs")
+
+
 def test_spec_test_source_is_injected_as_edit_target(tmp_path, monkeypatch):
     # Reproduction-first: the generated spec test's SOURCE must appear in the edit
     # prompt as the concrete target, not just be checked after the fact.

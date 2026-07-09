@@ -196,7 +196,9 @@ class ExecuteMixin:
         # reproduction target (directed / TDD); after the task's gates pass it is
         # run scoped and must now pass (red -> green), blocking under
         # spec_as_tests_block, advisory otherwise.
-        spec_test_path, spec_test_source = self._maybe_generate_spec_test(project, task)
+        spec_test_path, spec_test_source = self._maybe_generate_spec_test(
+            project, task, validate_timeout=test_timeout
+        )
         spec_test_block = get_setting(
             project.config, "orchestrator", "spec_as_tests_block"
         )

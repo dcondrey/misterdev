@@ -64,10 +64,18 @@ def _write_project_yaml(repo: Path, instance: SWEBenchInstance) -> None:
     """
     if (repo / "project.yaml").exists():
         return
+    # spec_as_tests engages reproduce-then-fix: the model never sees the hidden
+    # FAIL_TO_PASS tests, so a validated reproduction synthesized from the issue
+    # (kept only if it fails on the clean tree) is the one gate that directly
+    # targets the judged behavior. Advisory (non-blocking) so a stray repro can't
+    # burn the per-instance budget, but it still directs the edit as the concrete
+    # objective. The repo's own suite stays the authoritative regression gate.
     cfg = (
         f'name: "{instance.instance_id}"\n'
         f'language: "{instance.language}"\n'
         f'test_command: "{instance.test_command}"\n'
+        "orchestrator:\n"
+        "  spec_as_tests: true\n"
     )
     (repo / "project.yaml").write_text(cfg, encoding="utf-8")
 

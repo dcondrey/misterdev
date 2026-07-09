@@ -44,10 +44,15 @@ def write_container_project_yaml(
 ) -> None:
     """Write a project.yaml that routes misterdev's gates through the instance
     image, mounted at /testbed so the image's editable install sees the edits."""
+    # spec_as_tests engages reproduce-then-fix (see runner._write_project_yaml):
+    # the judged FAIL_TO_PASS tests are hidden, so a validated reproduction from
+    # the issue is the one gate targeting the graded behavior. Advisory.
     cfg = (
         f'name: "{instance.instance_id}"\n'
         f'language: "{instance.language}"\n'
         f'test_command: "{instance.test_command}"\n'
+        "orchestrator:\n"
+        "  spec_as_tests: true\n"
         "environment:\n"
         "  type: docker\n"
         f'  image: "{instance_image(instance, arch)}"\n'

@@ -129,3 +129,7 @@ def test_docker_runner_image_and_project_yaml(tmp_path):
     assert "type: docker" in y
     assert "sweb.eval.x86_64.astropy__astropy-12907:latest" in y
     assert "/testbed" in y
+    # Reproduce-then-fix must engage on the containerized run: the judged
+    # FAIL_TO_PASS tests are hidden, so a validated reproduction from the issue is
+    # the one gate targeting the graded behavior. Guard against silent regression.
+    assert "spec_as_tests: true" in y
