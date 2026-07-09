@@ -154,10 +154,107 @@ def _parse_cargo(output: str) -> List[Failure]:
     return out
 
 
+# --- swift XCTest -----------------------------------------------------------
+
+# `<file>:<line>: error: -[Suite testName] : XCTAssertEqual failed: ("2") is not
+# equal to ("3")` — the one line carrying test, location, and the assertion.
+_XCTEST = re.compile(
+    r"^(?P<file>.+?):(?P<line>\d+): error: -\[\S+ (?P<test>\w+)\] : (?P<detail>.+)$"
+)
+_XCTEST_EQ = re.compile(r'\("(?P<actual>.*)"\) is not equal to \("(?P<expected>.*)"\)')
+
+
+def _parse_xctest(output: str) -> List[Failure]:
+    out: List[Failure] = []
+    for line in output.splitlines():
+        m = _XCTEST.match(line)
+        if not m:
+            continue
+        f = Failure(
+            test=m.group("test"), location=f"{m.group('file')}:{m.group('line')}"
+        )
+        detail = m.group("detail").strip()
+        eq = _XCTEST_EQ.search(detail)
+        if eq:
+            f.actual = eq.group("actual")
+            f.expected = eq.group("expected")
+        else:
+            f.message = detail
+        out.append(f)
+    return out
+
+
+# --- dotnet test / xUnit ----------------------------------------------------
+
+_DOTNET_FAILED = re.compile(r"^\s*Failed\s+(?P<test>[\w.+]+)\s+\[")
+_DOTNET_EXPECTED = re.compile(r"^\s*Expected:\s*(?P<v>.+?)\s*$")
+_DOTNET_ACTUAL = re.compile(r"^\s*Actual:\s*(?P<v>.+?)\s*$")
+_DOTNET_AT = re.compile(r"\bat .+ in (?P<loc>.+:line \d+)")
+
+
+def _parse_dotnet(output: str) -> List[Failure]:
+    out: List[Failure] = []
+    lines = output.splitlines()
+    for i, line in enumerate(lines):
+        m = _DOTNET_FAILED.match(line)
+        if not m:
+            continue
+        f = Failure(test=m.group("test").split(".")[-1])
+        for w in lines[i + 1 : i + 12]:
+            if _DOTNET_FAILED.match(w):
+                break
+            e = _DOTNET_EXPECTED.match(w)
+            if e and f.expected is None:
+                f.expected = e.group("v")
+            a = _DOTNET_ACTUAL.match(w)
+            if a and f.actual is None:
+                f.actual = a.group("v")
+            loc = _DOTNET_AT.search(w)
+            if loc and f.location is None:
+                f.location = loc.group("loc")
+        out.append(f)
+    return out
+
+
+# --- vitest -----------------------------------------------------------------
+
+_VITEST_FAIL = re.compile(r"^\s*FAIL\s+(?P<file>\S+)\s+>\s+(?P<test>.+?)\s*$")
+_VITEST_TOBE = re.compile(
+    r"expected (?P<actual>.+?) to (?:be|equal|deeply equal) (?P<expected>.+?)(?: //|$)"
+)
+_VITEST_AT = re.compile(r"❯\s+(?P<loc>\S+:\d+:\d+)")
+
+
+def _parse_vitest(output: str) -> List[Failure]:
+    out: List[Failure] = []
+    cur: Optional[Failure] = None
+    for line in output.splitlines():
+        h = _VITEST_FAIL.match(line)
+        if h:
+            cur = Failure(test=h.group("test"))
+            out.append(cur)
+            continue
+        if cur is None:
+            continue
+        tb = _VITEST_TOBE.search(line)
+        if tb and cur.expected is None:
+            cur.actual = tb.group("actual")
+            cur.expected = tb.group("expected")
+        at = _VITEST_AT.search(line)
+        if at and cur.location is None:
+            loc = at.group("loc")
+            if ".test." in loc or ".spec." in loc:
+                cur.location = loc
+    return out
+
+
 _RUNNERS = {
     "pytest": _parse_pytest,
     "jest": _parse_jest,
     "cargo": _parse_cargo,
+    "xctest": _parse_xctest,
+    "dotnet": _parse_dotnet,
+    "vitest": _parse_vitest,
 }
 
 
@@ -166,6 +263,12 @@ def _detect_runner(output: str) -> Optional[str]:
         r"^test result: (?:ok|FAILED)", output, re.M
     ):
         return "cargo"
+    if "XCTAssert" in output or "Test Case '-[" in output:
+        return "xctest"
+    if re.search(r"^\s*Failed\s+[\w.]+\s+\[", output, re.M) and "Actual:" in output:
+        return "dotnet"
+    if "❯" in output and re.search(r"^\s*FAIL\s+\S+\s+>", output, re.M):
+        return "vitest"
     if "●" in output or ("Expected:" in output and "Received:" in output):
         return "jest"
     if re.search(r"^FAILED \S+::", output, re.M) or "\nE   " in output:
@@ -182,6 +285,8 @@ def extract_failures(output: str, language: Optional[str] = None) -> List[Failur
         "javascript": "jest",
         "typescript": "jest",
         "rust": "cargo",
+        "swift": "xctest",
+        "csharp": "dotnet",
     }.get((language or "").lower())
     if runner is None or runner not in _RUNNERS or not _RUNNERS[runner](output):
         runner = _detect_runner(output)

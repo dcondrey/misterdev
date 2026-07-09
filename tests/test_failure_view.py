@@ -92,6 +92,61 @@ def test_render_is_exact_and_bounded():
     assert "tests/bowling.rs:275:5" in view
 
 
+XCTEST = """\
+Test Case '-[DemoTests.DemoTests testAdd]' started.
+/tmp/fv_swift/Tests/DemoTests/DemoTests.swift:4: error: -[DemoTests.DemoTests testAdd] : XCTAssertEqual failed: ("2") is not equal to ("3")
+Test Case '-[DemoTests.DemoTests testAdd]' failed (0.918 seconds).
+Executed 2 tests, with 1 failure (0 unexpected) in 0.918 seconds
+"""
+
+DOTNET = """\
+[xUnit.net 00:00:00.09]     UnitTest1.AddIsWrong [FAIL]
+  Failed UnitTest1.AddIsWrong [4 ms]
+  Error Message:
+   Assert.Equal() Failure: Values differ
+Expected: 3
+Actual:   2
+  Stack Trace:
+     at UnitTest1.AddIsWrong() in /tmp/fv_dotnet/UnitTest1.cs:line 5
+Failed!  - Failed:     1, Passed:     1, Skipped:     0, Total:     2
+"""
+
+VITEST = """\
+ FAIL  sum.test.js > adds numbers
+AssertionError: expected 2 to be 3 // Object.is equality
+ ❯ sum.test.js:2:44
+      Tests  1 failed | 1 passed (2)
+"""
+
+
+def test_xctest_extraction():
+    fs = extract_failures(XCTEST, language="swift")
+    assert len(fs) == 1
+    f = fs[0]
+    assert f.test == "testAdd"
+    assert f.actual == "2" and f.expected == "3"
+    assert f.location == "/tmp/fv_swift/Tests/DemoTests/DemoTests.swift:4"
+
+
+def test_dotnet_extraction():
+    fs = extract_failures(DOTNET, language="csharp")
+    assert len(fs) == 1
+    f = fs[0]
+    assert f.test == "AddIsWrong"
+    assert f.expected == "3" and f.actual == "2"
+    assert f.location == "/tmp/fv_dotnet/UnitTest1.cs:line 5"
+
+
+def test_vitest_extraction_autodetected():
+    # vitest output must not be mis-parsed by the jest parser; detection catches it.
+    fs = extract_failures(VITEST, language="javascript")
+    assert len(fs) == 1
+    f = fs[0]
+    assert f.test == "adds numbers"
+    assert f.actual == "2" and f.expected == "3"
+    assert f.location == "sum.test.js:2:44"
+
+
 def test_render_caps_and_counts_overflow():
     fs = extract_failures(PYTEST, language="python")
     # Force overflow with a tiny cap; the tail count must be reported.
