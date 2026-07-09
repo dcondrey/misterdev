@@ -1,0 +1,7 @@
+{
+  "instructions": "Implement TwoFer.twoFer(name:) so it returns \"One for X, one for me.\" where X is the given name. When no name is given it defaults to \"you\".",
+  "files": {
+    "solution": ["Sources/TwoFer/TwoFer.swift"],
+    "test": ["Tests/TwoFerTests/TwoFerTests.swift"]
+  }
+}
