@@ -41,7 +41,23 @@ class LLMSettings:
     # models maps tier name -> model id (or a list of candidate ids). Empty =
     # use the default model.
     routing: Dict[str, Any] = field(default_factory=dict)
-    models: Dict[str, Any] = field(default_factory=dict)
+    # Default capability ladder (grounded in the live OpenRouter catalog). The
+    # cheapest rung also receives auto-harvested free models (use_free_models);
+    # the strongest rung is reached ONLY on the final attempt (see ModelSelector),
+    # so frontier spend is the rare safety net, not the default. Each rung lists
+    # candidates cheapest-strong first so a quality-per-dollar tie breaks toward
+    # the cheaper option and the ledger learns which model wins each cell.
+    models: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "cheap": ["deepseek/deepseek-r1-0528"],
+            "mid": ["anthropic/claude-sonnet-4.6"],
+            "frontier": [
+                "openai/gpt-5.1-codex",
+                "google/gemini-3.1-pro-preview",
+                "anthropic/claude-opus-4.8",
+            ],
+        }
+    )
     # Ledger-driven dynamic model selection. False = off (default), True = on
     # using selection_posture, "auto" = self-activating: explore cheap/free
     # models on easy tasks while a (category, complexity) cell is immature, then
@@ -51,7 +67,7 @@ class LLMSettings:
     # resolves through `models`. The policy uses a cheaper model on early
     # attempts and climbs to the strongest tier by the final attempt.
     dynamic_selection: Any = "auto"
-    escalation: List[str] = field(default_factory=list)
+    escalation: List[str] = field(default_factory=lambda: ["cheap", "mid", "frontier"])
     # A cheaper model is trusted for a first attempt only once it has at least
     # min_observations recorded first-try attempts and a first-try success rate
     # at or above first_try_floor.

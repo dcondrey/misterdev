@@ -223,8 +223,13 @@ class ModelSelector:
 
         if attempt == 0 and not self._explore_on_first(category, complexity):
             # Conservative first attempt: cheapest rung with a proven model, else
-            # the strongest tier. Never gamble the first impression on an
-            # unproven cheap model.
+            # the strongest NORMAL-work tier. Never gamble the first impression on
+            # an unproven cheap model — but don't spend the final-attempt safety
+            # net on a first try either. When the ladder has a dedicated top rung
+            # (>= 3 rungs, e.g. cheap -> mid -> frontier), that top rung is
+            # reserved for the actual final attempt, so cold-start falls back to
+            # the second-strongest (the mid ceiling). With <= 2 rungs the top rung
+            # IS the normal default, so cold-start uses it (unchanged behavior).
             for tier in rungs:
                 proven = [
                     m
@@ -235,8 +240,9 @@ class ModelSelector:
                     chosen = self._pick(proven, category, complexity, False)
                     self._announce_graduation(category, complexity, chosen)
                     return chosen
+            cold = last if len(rungs) <= 2 else last - 1
             return self._pick(
-                self._tier_models(rungs[last]), category, complexity, True
+                self._tier_models(rungs[cold]), category, complexity, True
             )
 
         # Climbing path: one rung up per attempt, capped at the strongest tier.

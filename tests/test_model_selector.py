@@ -48,6 +48,20 @@ def test_conservative_first_attempt_falls_back_to_strong_when_unproven(ledger):
     assert sel.select("feature", "medium", 0, 3) == "anthropic/big"
 
 
+def test_three_rung_cold_start_uses_mid_not_frontier(ledger):
+    # A cheap -> mid -> frontier ladder reserves the top rung as the final-attempt
+    # safety net. On a cold cell (nothing proven), the conservative first attempt
+    # falls back to the MID rung, not the frontier one; the frontier tier is only
+    # reached on the actual final attempt.
+    cfg = _config(
+        escalation=["cheap", "mid", "frontier"],
+        models={"cheap": "free/x", "mid": "vendor/mid", "frontier": "vendor/top"},
+    )
+    sel = ModelSelector(cfg, ledger)
+    assert sel.select("feature", "large", 0, 3) == "vendor/mid"
+    assert sel.select("feature", "large", 2, 3) == "vendor/top"
+
+
 def test_conservative_first_attempt_uses_proven_cheap(ledger):
     # Make the cheap model proven for first-try on this context.
     for _ in range(3):
@@ -254,12 +268,16 @@ def test_auto_uses_proven_cheap_after_maturing(ledger):
 
 
 def test_auto_self_assembles_ladder_from_free_models(ledger):
-    # No escalation/models configured at all: just a default model + free list.
+    # Ladder explicitly emptied: fall back to a self-assembled free -> default
+    # ladder. (Absence of the keys inherits the default ladder instead, so the
+    # self-assembly contract is expressed with an explicit empty escalation.)
     config = {
         "llm": {
             "dynamic_selection": "auto",
             "model": "anthropic/default",
             "maturity_threshold": 10,
+            "escalation": [],
+            "models": {},
         }
     }
     sel = ModelSelector(config, ledger, free_models=["vendor/free:free"])
