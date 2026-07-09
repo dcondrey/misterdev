@@ -24,6 +24,7 @@ from .prior import KindWeight, MutationPrior
 from .proposer import LLMProposer, build_instruction, parse_paths, parse_tag
 from .sandbox import SandboxEvaluator
 from .screen import MicroEvaluator, ScreenVerdict
+from .tool_library import ToolCandidate, ToolLibrary
 
 __all__ = [
     "MicroEvaluator",
@@ -44,6 +45,8 @@ __all__ = [
     "MutationPrior",
     "KindWeight",
     "SandboxEvaluator",
+    "ToolLibrary",
+    "ToolCandidate",
     "LLMProposer",
     "build_instruction",
     "parse_paths",
