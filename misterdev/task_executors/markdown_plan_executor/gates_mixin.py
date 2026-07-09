@@ -10,6 +10,10 @@ from misterdev.core.execution.failure_view import (
     extract_failures,
     render_failure_view,
 )
+from misterdev.core.execution.compile_view import (
+    extract_compile_errors,
+    render_compile_view,
+)
 from misterdev.config import get_setting
 
 from .helpers import logger, _extract_acceptance_command, JUDGE_MIN_BUDGET_FRACTION
@@ -147,6 +151,11 @@ class GatesMixin:
         # classified/attributed view below is preserved as the fallback.
         failures = extract_failures(output)
         view = render_failure_view(failures)
+        if not view:
+            # A build/typecheck failure has no test assertions; lead with the
+            # exact compiler diagnostics (code + message + expected/found) so the
+            # model fixes the type error precisely instead of re-reading a log.
+            view = render_compile_view(extract_compile_errors(output, language))
         lead = f"{view}\n\n" if view else ""
         probe = self._failure_probe(project, test_command, language, cwd, failures)
         return f"{escalation}{history}{lead}{probe}{classified}\n\n{attributed_error}"
