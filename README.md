@@ -91,6 +91,10 @@ misterdev keeps a per-model **performance ledger** and pairs it with a **cost-aw
 
 Disjoint tasks run concurrently, each in its own **isolated git worktree**, so independent work doesn't contend for the tree. An **integration gate** re-checks each wave against the full suite and reverts any task that regresses it — parallelism without cross-contamination.
 
+### Self-improving
+
+misterdev keeps a durable, fingerprinted stream of its own real failures and runs an **AlphaEvolve-style keep-if-better loop** over its own source: it attributes what breaks, classifies *why* (harness artifact vs observation gap vs capability), proposes a targeted structural self-edit, and promotes it only when it beats the champion on a **held-out task set it never optimized against** — with zero regressions. A reward-hacking guardrail walls off the tests and benchmark. The result is a loop that removes whole failure classes over time **without overfitting** to any one benchmark. See [docs/path-to-100.md](docs/path-to-100.md).
+
 ### Extensibility
 
 Tools, gates, and targets **self-register through Python entry points**. `pip install misterdev-plugin-x` adds a capability with **zero edits to the core** — misterdev discovers the entry point at runtime and wires it in. A working example lives at [`examples/misterdev-plugin-hello`](examples/misterdev-plugin-hello). See [Extending misterdev](#extending-misterdev).
@@ -98,6 +102,18 @@ Tools, gates, and targets **self-register through Python entry points**. `pip in
 ### Agentic MCP
 
 misterdev can connect to **Model Context Protocol** servers and let the model call their discovered tools mid-build — bounded, opt-in, and constrained by a tool allowlist. Transports include stdio and **remote streamable-http with auth**, so you can point it at a hosted MCP gateway like **Glama** and give the build access to a whole catalog of tools without running any of them locally.
+
+## Benchmarks
+
+Gate-verified pass@1 on [Aider's polyglot benchmark](https://github.com/Aider-AI/polyglot-benchmark) (Exercism exercises with hidden test suites), `anthropic/claude-sonnet-4-6`:
+
+| Language | Solved | Rate |
+| --- | --- | --- |
+| JavaScript | 9 / 10 | **90%** |
+| Python | 8 / 10 | **80%** |
+| Rust | 7 / 10 | **70%** |
+
+A continuous stress run has solved **20/20** across the three languages with zero failures — including the exercises usually cited as hard (bowling, forth, arbitrary-precision decimal). Every solve is judged by the exercise's own hidden tests, not the model's say-so. Full numbers, methodology, and how to reproduce: **[docs/benchmark-results.md](docs/benchmark-results.md)**. Test suite: **1,880 passing** — **[docs/TESTING.md](docs/TESTING.md)**.
 
 ## CLI reference
 
