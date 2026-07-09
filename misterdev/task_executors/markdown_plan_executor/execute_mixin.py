@@ -240,8 +240,21 @@ class ExecuteMixin:
         # context; off → "" and the path below is byte-identical to today.
         mcp_gathered = self._mcp_gather(project, task)
 
-        for attempt in range(max_retries):
-            logger.info(f"Attempt {attempt + 1}/{max_retries} for task {task.id}")
+        # A no-usable-edit response (not code, an anchor miss, or no edit at all)
+        # changed nothing on disk — it is a formatting failure, not a solve
+        # attempt — so it must not consume the solve budget. Grant a bounded
+        # number of EXTRA iterations for such no-output responses (the model still
+        # escalates a tier each iteration); the cap keeps the empty-response spin
+        # the escalation prompt already guards from ever becoming unbounded.
+        attempt = -1
+        attempt_cap = max_retries
+        no_output_forgiven = 0
+        forgiveness_cap = 2
+        while True:
+            attempt += 1
+            if attempt >= attempt_cap:
+                break
+            logger.info(f"Attempt {attempt + 1}/{attempt_cap} for task {task.id}")
             # Diagnostic: sizes of the context that ACCUMULATES across attempts,
             # so growth (or a runaway component) is visible per retry.
             logger.info(
@@ -423,7 +436,7 @@ class ExecuteMixin:
                     prompt += EDIT_FORMAT_INSTRUCTIONS
 
             routed_model = self._select_model(
-                project, task, strategy, attempt, max_retries
+                project, task, strategy, attempt, attempt_cap
             )
             try:
                 with project.llm_client.track_task(task.id):
@@ -462,6 +475,9 @@ class ExecuteMixin:
                     f"LLM stream aborted for {task.id}; retrying with stricter instruction."
                 )
                 error_logs = "ERROR: response was not code. Output ONLY file edits as code blocks with file paths."
+                if no_output_forgiven < forgiveness_cap:
+                    no_output_forgiven += 1
+                    attempt_cap += 1
                 continue
 
             certainty = CertaintyScorer.compute_score(llm_response)
@@ -488,6 +504,9 @@ class ExecuteMixin:
                         f"{resolve_error} Re-read the file and emit a corrected "
                         "SEARCH block that matches the current content verbatim."
                     )
+                if no_output_forgiven < forgiveness_cap:
+                    no_output_forgiven += 1
+                    attempt_cap += 1
                 continue
             edits = self._validate_edit_paths(project, task, edits)
             no_gate = not (task_build_command or typecheck_command or test_command)
@@ -518,6 +537,9 @@ class ExecuteMixin:
                         "change as an anchored SEARCH/REPLACE hunk (or the complete "
                         "file) in a code block whose fence carries the file path."
                     )
+                if no_output_forgiven < forgiveness_cap:
+                    no_output_forgiven += 1
+                    attempt_cap += 1
                 continue
             if not edits:
                 # Legitimately editless (guarded above): skip the edits-present
