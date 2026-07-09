@@ -94,6 +94,42 @@ def isolate_command(
     return None
 
 
+def should_auto_probe(base_test_command: str, language: str) -> bool:
+    """Return ``True`` when a single-test re-run is cheap enough to fire without
+    an explicit opt-in flag.
+
+    Fast interpreted runners (pytest, jest, vitest, npm test) re-run one test in
+    a fraction of a second, so the caller can auto-enable the probe for them. Slow
+    compiled runners (cargo, swift, dotnet) pay a full compile on every re-run, so
+    they stay opt-in and this returns ``False``. The runner is inferred from
+    ``language`` first, then the command text, mirroring ``isolate_command``.
+    Unrecognized runners return ``False`` (conservative: never probe by default).
+    """
+    lang = (language or "").lower()
+    lowered = (base_test_command or "").lower()
+
+    # Slow compiled runners first: a language that names a compiled toolchain
+    # stays opt-in even if the command text also mentions a fast runner.
+    if lang in ("rust", "swift", "csharp"):
+        return False
+    if lang in ("python", "javascript", "typescript"):
+        return True
+
+    # No decisive language: infer from the command text. Check compiled runners
+    # before interpreted ones so a mixed command errs toward opt-in.
+    if "cargo" in lowered or "swift" in lowered or "dotnet" in lowered:
+        return False
+    if (
+        "pytest" in lowered
+        or "jest" in lowered
+        or "vitest" in lowered
+        or "npm" in lowered
+    ):
+        return True
+
+    return False
+
+
 def run_probe(cwd: str, command: str, timeout: int = 120) -> Optional[str]:
     """Run ``command`` in ``cwd``, bounded by ``timeout``; return combined
     stdout+stderr, or ``None`` on any error or timeout. Never raises.

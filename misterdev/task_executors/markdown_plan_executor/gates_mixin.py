@@ -161,10 +161,20 @@ class GatesMixin:
         if not (project is not None and test_command and failures):
             return ""
         try:
-            if not get_setting(project.config, "orchestrator", "failure_probe"):
-                return ""
-            from misterdev.core.execution.probe import isolate_command, run_probe
+            from misterdev.core.execution.probe import (
+                isolate_command,
+                run_probe,
+                should_auto_probe,
+            )
 
+            # Fire when explicitly enabled, OR auto-fire for fast interpreted
+            # runners (pytest/jest/vitest) where a single-test re-run is cheap;
+            # compiled runners (cargo/swift/dotnet) stay opt-in behind the flag.
+            enabled = get_setting(
+                project.config, "orchestrator", "failure_probe"
+            ) or should_auto_probe(test_command, language or "")
+            if not enabled:
+                return ""
             iso = isolate_command(test_command, failures[0].test, language or "")
             if not iso:
                 return ""

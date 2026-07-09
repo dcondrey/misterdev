@@ -248,6 +248,101 @@ def _parse_vitest(output: str) -> List[Failure]:
     return out
 
 
+# --- go test ----------------------------------------------------------------
+
+# `--- FAIL: TestName (0.00s)` marks a failed test; the name follows.
+_GO_FAIL = re.compile(r"^--- FAIL: (?P<test>\S+) \(")
+# A boundary between tests: `=== RUN`, `--- FAIL:`, `--- PASS:`, or the summary.
+_GO_BOUNDARY = re.compile(
+    r"^(?:=== RUN|=== PAUSE|=== CONT|--- (?:FAIL|PASS|SKIP)|PASS|FAIL|ok|---)"
+)
+# A `file_test.go:12: got 5, want 3` detail line: location plus a want/got pair.
+_GO_DETAIL = re.compile(r"^\s+(?P<loc>\w+_test\.go:\d+):\s*(?P<detail>.+?)\s*$")
+_GO_WANTGOT = re.compile(r"got (?P<actual>.+?),\s*want (?P<expected>.+?)\s*$")
+# testify renders `Error:  Not equal:  expected: 3  actual: 5`.
+_GO_TESTIFY = re.compile(
+    r"expected:\s*(?P<expected>.+?)\s+actual:\s*(?P<actual>.+?)\s*$"
+)
+
+
+def _parse_gotest(output: str) -> List[Failure]:
+    out: List[Failure] = []
+    lines = output.splitlines()
+    for i, line in enumerate(lines):
+        m = _GO_FAIL.match(line)
+        if not m:
+            continue
+        f = Failure(test=m.group("test"))
+        # go prints `t.Errorf` details indented, split around the FAIL header:
+        # some before it (back to this test's `=== RUN`), some after (testify).
+        window: List[str] = []
+        for w in reversed(lines[:i]):
+            if _GO_BOUNDARY.match(w):
+                break
+            window.append(w)
+        for w in lines[i + 1 :]:
+            if _GO_BOUNDARY.match(w) or not w.startswith((" ", "\t")):
+                break
+            window.append(w)
+        for w in window:
+            d = _GO_DETAIL.match(w)
+            if d and f.location is None:
+                f.location = d.group("loc")
+            detail = d.group("detail") if d else w
+            wg = _GO_WANTGOT.search(detail)
+            if wg and f.expected is None:
+                f.actual = wg.group("actual").strip()  # go convention: `got <actual>`
+                f.expected = wg.group("expected").strip()  # `want <expected>`
+                continue
+            ta = _GO_TESTIFY.search(detail)
+            if ta and f.expected is None:
+                f.expected = ta.group("expected").strip()
+                f.actual = ta.group("actual").strip()
+        if f.expected is None and f.actual is None and f.location is not None:
+            # Located but no want/got pair: carry the raw detail as the message.
+            first = next(
+                (_GO_DETAIL.match(w) for w in window if _GO_DETAIL.match(w)), None
+            )
+            f.message = first.group("detail").strip() if first else None
+        out.append(f)
+    return out
+
+
+# --- junit / gradle (Java + Kotlin) -----------------------------------------
+
+# gradle prints `TestClass > testMethod() FAILED` as the failed-test header.
+_JUNIT_FAILED = re.compile(r"^\s*(?:\S+ > )?(?P<test>\S+?)(?:\(\))? FAILED\s*$")
+# `expected: <3> but was: <5>` (JUnit5) / `expected:<3> but was:<5>` (JUnit4);
+# angle brackets optional.
+_JUNIT_EXPECTED = re.compile(
+    r"expected:\s*<?(?P<expected>.+?)>? but was:\s*<?(?P<actual>.+?)>?\s*$"
+)
+# `at TestClass.testMethod(TestClass.java:12)` — the stack frame with location.
+_JUNIT_AT = re.compile(r"\bat .+\((?P<loc>[\w./]+\.(?:java|kt):\d+)\)")
+
+
+def _parse_junit(output: str) -> List[Failure]:
+    out: List[Failure] = []
+    lines = output.splitlines()
+    for i, line in enumerate(lines):
+        m = _JUNIT_FAILED.match(line)
+        if not m:
+            continue
+        f = Failure(test=m.group("test").split(".")[-1])
+        for w in lines[i + 1 :]:
+            if _JUNIT_FAILED.match(w):
+                break
+            e = _JUNIT_EXPECTED.search(w)
+            if e and f.expected is None:
+                f.expected = e.group("expected").strip()
+                f.actual = e.group("actual").strip()
+            loc = _JUNIT_AT.search(w)
+            if loc and f.location is None:
+                f.location = loc.group("loc")
+        out.append(f)
+    return out
+
+
 _RUNNERS = {
     "pytest": _parse_pytest,
     "jest": _parse_jest,
@@ -255,6 +350,8 @@ _RUNNERS = {
     "xctest": _parse_xctest,
     "dotnet": _parse_dotnet,
     "vitest": _parse_vitest,
+    "gotest": _parse_gotest,
+    "junit": _parse_junit,
 }
 
 
@@ -271,6 +368,12 @@ def _detect_runner(output: str) -> Optional[str]:
         return "vitest"
     if "●" in output or ("Expected:" in output and "Received:" in output):
         return "jest"
+    if re.search(r"^--- FAIL: ", output, re.M):
+        return "gotest"
+    if "but was:" in output or (
+        re.search(r"\bFAILED\b", output, re.M) and "at " in output
+    ):
+        return "junit"
     if re.search(r"^FAILED \S+::", output, re.M) or "\nE   " in output:
         return "pytest"
     return None
@@ -287,6 +390,9 @@ def extract_failures(output: str, language: Optional[str] = None) -> List[Failur
         "rust": "cargo",
         "swift": "xctest",
         "csharp": "dotnet",
+        "go": "gotest",
+        "java": "junit",
+        "kotlin": "junit",
     }.get((language or "").lower())
     if runner is None or runner not in _RUNNERS or not _RUNNERS[runner](output):
         runner = _detect_runner(output)

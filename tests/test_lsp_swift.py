@@ -8,6 +8,8 @@ import shutil
 
 from misterdev.core.context import lsp_swift
 from misterdev.core.context.lsp_swift import (
+    SourceKitSession,
+    diagnostics_for,
     frame_message,
     parse_frames,
     swift_diagnostics,
@@ -95,3 +97,59 @@ def test_swift_diagnostics_returns_none_for_missing_file(monkeypatch, tmp_path):
     )
     missing = tmp_path / "does_not_exist.swift"
     assert swift_diagnostics(str(tmp_path), str(missing)) is None
+
+
+def test_session_diagnostics_returns_none_when_binary_absent(monkeypatch, tmp_path):
+    # No server means an inactive session: every file is "no opinion", no raise,
+    # and no subprocess is ever spawned.
+    monkeypatch.setattr(lsp_swift.shutil, "which", lambda name: None)
+    src = tmp_path / "main.swift"
+    src.write_text("let x = 1\n")
+    with SourceKitSession(str(tmp_path)) as session:
+        assert session._active is False
+        assert session.diagnostics(str(src)) is None
+
+
+def test_diagnostics_for_returns_none_per_file_when_binary_absent(
+    monkeypatch, tmp_path
+):
+    # Batch path with no server: one entry per input file, all None, never raises.
+    monkeypatch.setattr(lsp_swift.shutil, "which", lambda name: None)
+    a = tmp_path / "a.swift"
+    b = tmp_path / "b.swift"
+    a.write_text("let a = 1\n")
+    b.write_text("let b = 2\n")
+    result = diagnostics_for(str(tmp_path), [str(a), str(b)])
+    assert result == {str(a): None, str(b): None}
+
+
+def test_diagnostics_for_empty_list_is_empty_dict():
+    # No files to open is an empty result, not an attempt to spawn a server.
+    assert diagnostics_for("/tmp", []) == {}
+
+
+def test_initialize_then_didopen_sequence_round_trips():
+    # The session writes an initialize request followed by a didOpen notification
+    # back-to-back; the reader must decode both from one concatenated buffer.
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {"rootUri": "file:///proj"},
+    }
+    did_open = {
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": "file:///proj/main.swift",
+                "languageId": "swift",
+                "version": 1,
+                "text": "let x = 1\n",
+            }
+        },
+    }
+    stream = frame_message(initialize) + frame_message(did_open)
+    msgs, remainder = parse_frames(stream)
+    assert msgs == [initialize, did_open]
+    assert remainder == b""

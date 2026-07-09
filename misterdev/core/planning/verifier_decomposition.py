@@ -116,6 +116,30 @@ def _symbol_kind(symbol) -> str:
     return (kind or "").strip().lower()
 
 
+def _edge_keys(symbol, field: str) -> frozenset[str]:
+    """Read a call-graph edge set (`incoming_calls`/`outgoing_calls`) off a symbol.
+
+    Duck-typed: accepts attribute objects or {field: ...} mappings, and any
+    iterable of caller/callee keys (set, list, tuple). Every key is coerced to a
+    stripped string so heterogeneous edge payloads still layer deterministically.
+    Never raises: a missing field, a non-iterable value, or an un-stringable
+    element yields the empty set, which the caller treats as "no edge info".
+    """
+    if isinstance(symbol, dict):
+        raw = symbol.get(field)
+    else:
+        raw = getattr(symbol, field, None)
+    if not raw or isinstance(raw, (str, bytes)):
+        # A bare string is a scalar, not an edge set; reject it rather than
+        # iterating it character by character.
+        return frozenset()
+    try:
+        keys = {str(k).strip() for k in raw}
+    except TypeError:
+        return frozenset()
+    return frozenset(k for k in keys if k)
+
+
 def _classify(name: str, kind: str) -> int:
     """Map a symbol to its stage (1 construction, 2 mutation, 3 query).
 
@@ -165,14 +189,64 @@ def _stage_rationale(stage: int) -> str:
     )
 
 
+def _dependency_rationale() -> str:
+    """The justification injected into a stage ordered by call-graph depth."""
+    return (
+        "Call-graph depth orders this stage: a symbol called by others is a "
+        "dependency and is built first, so its callers have a verified "
+        "foundation to lean on before their own smoke-check runs."
+    )
+
+
+def _edge_layers(
+    ordered_names: list[str], edges: dict[str, tuple[frozenset, frozenset]]
+):
+    """Layer symbols by call-graph depth: dependencies (called-by-others) first.
+
+    Each symbol's depth is (# outgoing edges to other in-contract symbols) minus
+    (# incoming edges from them); a foundational symbol that many callers depend
+    on and that calls few others scores lowest and lands in an earlier stage.
+    Only intra-contract edges count so an external callee never skews a layer.
+    Ties keep contract order, so the result is fully deterministic.
+
+    Returns a list of (depth, name) buckets grouped into contiguous stages, or
+    None when the resulting layering is degenerate (a single layer), in which
+    case the caller keeps the name-verb heuristic.
+    """
+    in_contract = set(ordered_names)
+    scored: list[tuple[int, int, str]] = []
+    for index, name in enumerate(ordered_names):
+        incoming, outgoing = edges.get(name, (frozenset(), frozenset()))
+        depth = len(outgoing & in_contract) - len(incoming & in_contract)
+        scored.append((depth, index, name))
+
+    distinct_depths = sorted({depth for depth, _, _ in scored})
+    if len(distinct_depths) < 2:
+        return None
+
+    depth_to_stage = {
+        depth: stage for stage, depth in enumerate(distinct_depths, start=1)
+    }
+    ordered = sorted(scored, key=lambda item: (depth_to_stage[item[0]], item[1]))
+    return [(depth_to_stage[depth], name) for depth, _, name in ordered]
+
+
 def synthesize_stages(symbols, instructions: str = "") -> list[StagedCheck]:
     """Turn a contract's public symbols into an ordered staged plan.
 
-    Ordering heuristic (pure, no LLM): construction (stage 1) -> mutators
-    (stage 2) -> queries/derivations (stage 3). Within a stage, symbols keep
-    their contract order so the output is fully deterministic. Empty stages are
-    dropped and the surviving stages are renumbered to be contiguous (a
-    query-only contract yields a single stage numbered 1).
+    When the symbols carry call-graph edges (`incoming_calls`/`outgoing_calls`,
+    duck-typed) the plan is ordered by dependency depth: a symbol called by
+    others is foundational and is staged before its callers, giving a truer
+    build order than name shape alone. When NO symbol exposes edge info (or the
+    edges collapse to a single layer) the plan falls back to the name-verb
+    heuristic below: construction (stage 1) -> mutators (stage 2) ->
+    queries/derivations (stage 3). Malformed edge payloads never raise; they are
+    read as "no edge info" and trigger the same fallback.
+
+    Within a stage, symbols keep their contract order so the output is fully
+    deterministic. Empty stages are dropped and the surviving stages are
+    renumbered to be contiguous (a query-only contract yields a single stage
+    numbered 1).
 
     `instructions` is accepted for interface parity with the decomposer (it may
     later bias classification) but does not affect ordering today, keeping this
@@ -185,19 +259,52 @@ def synthesize_stages(symbols, instructions: str = "") -> list[StagedCheck]:
 
     del instructions  # reserved; ordering is a pure function of the contract
 
-    # Bucket by stage while preserving contract order within each bucket.
-    buckets: dict[int, list[str]] = {
-        _STAGE_CONSTRUCTOR: [],
-        _STAGE_MUTATOR: [],
-        _STAGE_QUERY: [],
-    }
+    # First pass: dedup, preserve contract order, capture kind, and collect any
+    # edge payloads so both ordering paths read the contract exactly once.
+    ordered_names: list[str] = []
+    kinds: dict[str, str] = {}
+    edges: dict[str, tuple[frozenset, frozenset]] = {}
+    has_edges = False
     seen: set[str] = set()
     for symbol in symbols:
         name = _symbol_name(symbol)
         if not name or name in seen:
             continue
         seen.add(name)
-        buckets[_classify(name, _symbol_kind(symbol))].append(name)
+        ordered_names.append(name)
+        kinds[name] = _symbol_kind(symbol)
+        incoming = _edge_keys(symbol, "incoming_calls")
+        outgoing = _edge_keys(symbol, "outgoing_calls")
+        edges[name] = (incoming, outgoing)
+        if incoming or outgoing:
+            has_edges = True
+
+    if not ordered_names:
+        return []
+
+    # Edge-driven ordering when the contract carries a usable call graph.
+    if has_edges:
+        layered = _edge_layers(ordered_names, edges)
+        if layered is not None:
+            rationale = _dependency_rationale()
+            return [
+                StagedCheck(
+                    stage=stage,
+                    symbol=name,
+                    description=f"implement + smoke-check {name}",
+                    rationale=rationale,
+                )
+                for stage, name in layered
+            ]
+
+    # Fallback: name-verb heuristic. Bucket by stage, preserving contract order.
+    buckets: dict[int, list[str]] = {
+        _STAGE_CONSTRUCTOR: [],
+        _STAGE_MUTATOR: [],
+        _STAGE_QUERY: [],
+    }
+    for name in ordered_names:
+        buckets[_classify(name, kinds[name])].append(name)
 
     # Renumber non-empty buckets to contiguous 1..N so a mutator-only or
     # query-only contract still starts at stage 1.

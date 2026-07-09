@@ -10,7 +10,11 @@ import sys
 
 import pytest
 
-from misterdev.core.execution.probe import isolate_command, run_probe
+from misterdev.core.execution.probe import (
+    isolate_command,
+    run_probe,
+    should_auto_probe,
+)
 
 
 # --- isolate_command: per-runner isolate flags ------------------------------
@@ -83,6 +87,42 @@ def test_test_name_is_shell_safe():
     assert cmd is not None
     # The double-quote is escaped, so the argument stays a single quoted string.
     assert '\\"' in cmd
+
+
+# --- should_auto_probe: fast runners auto-on, compiled stay opt-in -----------
+
+
+def test_auto_probe_true_for_pytest():
+    assert should_auto_probe("python -m pytest -q", "python") is True
+
+
+def test_auto_probe_true_for_jest():
+    assert should_auto_probe("npm test", "javascript") is True
+
+
+def test_auto_probe_true_for_vitest():
+    assert should_auto_probe("npm test", "typescript") is True
+
+
+def test_auto_probe_false_for_cargo():
+    assert should_auto_probe("cargo test", "rust") is False
+
+
+def test_auto_probe_false_for_swift():
+    assert should_auto_probe("swift test", "swift") is False
+
+
+def test_auto_probe_false_for_dotnet():
+    assert should_auto_probe("dotnet test", "csharp") is False
+
+
+def test_auto_probe_false_for_unknown_runner():
+    assert should_auto_probe("make check", "cobol") is False
+
+
+def test_auto_probe_inferred_from_command_when_language_blank():
+    assert should_auto_probe("cargo test --workspace", "") is False
+    assert should_auto_probe("pytest -q", "") is True
 
 
 # --- run_probe: bounded external execution, never raising --------------------

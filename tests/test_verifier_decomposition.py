@@ -151,3 +151,73 @@ def test_instructions_arg_does_not_change_ordering():
     assert [(c.stage, c.symbol) for c in without] == [
         (c.stage, c.symbol) for c in with_instr
     ]
+
+
+def _edge_sym(name, incoming=(), outgoing=(), kind=""):
+    return SimpleNamespace(
+        name=name,
+        kind=kind,
+        incoming_calls=set(incoming),
+        outgoing_calls=set(outgoing),
+    )
+
+
+def test_call_graph_orders_dependency_before_its_callers():
+    # `helper` is called by both `render` and `report`; by name shape it would
+    # land late (a query-ish free helper), but the edges make it foundational.
+    contract = [
+        _edge_sym("render", outgoing=("helper",)),
+        _edge_sym("report", outgoing=("helper",)),
+        _edge_sym("helper", incoming=("render", "report")),
+    ]
+
+    stages = synthesize_stages(contract)
+    by_symbol = {c.symbol: c.stage for c in stages}
+
+    assert by_symbol["helper"] < by_symbol["render"]
+    assert by_symbol["helper"] < by_symbol["report"]
+
+
+def test_call_graph_ordering_is_deterministic_and_ties_keep_contract_order():
+    contract = [
+        _edge_sym("caller_b", outgoing=("base",)),
+        _edge_sym("caller_a", outgoing=("base",)),
+        _edge_sym("base", incoming=("caller_a", "caller_b")),
+    ]
+
+    first = [(c.stage, c.symbol) for c in synthesize_stages(contract)]
+    second = [(c.stage, c.symbol) for c in synthesize_stages(contract)]
+
+    assert first == second
+    # base is foundational (stage 1); the two callers tie and keep input order.
+    assert first[0] == (1, "base")
+    assert [name for _, name in first[1:]] == ["caller_b", "caller_a"]
+
+
+def test_malformed_edges_do_not_raise_and_fall_back_to_name_heuristic():
+    # A non-iterable and a bare-string edge payload must be ignored, not crash;
+    # with no usable graph the name-verb heuristic orders the plan.
+    contract = [
+        SimpleNamespace(name="new", kind="constructor", incoming_calls=None),
+        SimpleNamespace(name="roll", kind="method", outgoing_calls=42),
+        SimpleNamespace(name="score", kind="method", incoming_calls="oops"),
+    ]
+
+    stages = synthesize_stages(contract)
+
+    assert [c.symbol for c in stages] == ["new", "roll", "score"]
+    assert [c.stage for c in stages] == [1, 2, 3]
+
+
+def test_no_edges_preserves_name_heuristic_order():
+    # Regression: symbols without any edge info keep the exact name-verb staging.
+    contract = [
+        _sym("score", kind="method"),
+        _sym("roll", kind="method"),
+        _sym("new", kind="constructor"),
+    ]
+
+    stages = synthesize_stages(contract)
+
+    assert [c.symbol for c in stages] == ["new", "roll", "score"]
+    assert [c.stage for c in stages] == [1, 2, 3]

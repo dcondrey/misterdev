@@ -103,13 +103,14 @@ def collect_diagnostics(
     # Swift has no multilspy server (see _LANG_MAP), so route it to the direct
     # sourcekit-lsp adapter, which returns the same {file,line,message} shape.
     if (language or "").lower() == "swift" and rel_files:
-        from misterdev.core.context.lsp_swift import swift_diagnostics
+        from misterdev.core.context.lsp_swift import diagnostics_for
 
-        per_file = max(timeout / max(len(rel_files), 1), 1.0)
-        out: List[dict] = []
-        for rel in rel_files:
-            for d in swift_diagnostics(str(project_root), rel, timeout=per_file) or []:
-                out.append({"file": rel, "line": d["line"], "message": d["message"]})
+        by_file = diagnostics_for(str(project_root), rel_files, timeout)
+        out = [
+            {"file": rel, "line": d["line"], "message": d["message"]}
+            for rel, diags in by_file.items()
+            for d in (diags or [])
+        ]
         return out or None
 
     code_lang = _LANG_MAP.get((language or "").lower())

@@ -152,3 +152,84 @@ def test_render_caps_and_counts_overflow():
     # Force overflow with a tiny cap; the tail count must be reported.
     view = render_failure_view(fs * 3, max_failures=2)
     assert "more failing the same way" in view
+
+
+GOTEST = """\
+=== RUN   TestAdd
+    add_test.go:12: got 5, want 3
+--- FAIL: TestAdd (0.00s)
+=== RUN   TestSub
+--- FAIL: TestSub (0.00s)
+    sub_test.go:20: unexpected result
+FAIL
+exit status 1
+FAIL	example/mathutil	0.003s
+"""
+
+GOTEST_TESTIFY = """\
+=== RUN   TestEqual
+    equal_test.go:9: Error:  Not equal:  expected: 3  actual: 5
+--- FAIL: TestEqual (0.00s)
+FAIL
+"""
+
+JUNIT = """\
+DemoTest > testAdd() FAILED
+    org.opentest4j.AssertionFailedError: expected: <3> but was: <5>
+        at DemoTest.testAdd(DemoTest.java:12)
+
+1 test completed, 1 failed
+"""
+
+JUNIT_KOTLIN = """\
+CalcTest > testAdd() FAILED
+    java.lang.AssertionError: expected:<3> but was:<5>
+        at CalcTest.testAdd(CalcTest.kt:8)
+"""
+
+
+def test_gotest_extraction():
+    fs = extract_failures(GOTEST, language="go")
+    names = {f.test for f in fs}
+    assert names == {"TestAdd", "TestSub"}
+    add = next(f for f in fs if f.test == "TestAdd")
+    assert add.actual == "5" and add.expected == "3"
+    assert add.location == "add_test.go:12"
+    sub = next(f for f in fs if f.test == "TestSub")
+    assert sub.location == "sub_test.go:20"
+    assert sub.message == "unexpected result"
+
+
+def test_gotest_testify_extraction():
+    fs = extract_failures(GOTEST_TESTIFY, language="go")
+    assert len(fs) == 1
+    f = fs[0]
+    assert f.test == "TestEqual"
+    assert f.expected == "3" and f.actual == "5"
+
+
+def test_gotest_autodetected():
+    fs = extract_failures(GOTEST)
+    assert next(f for f in fs if f.test == "TestAdd").expected == "3"
+
+
+def test_junit_extraction():
+    fs = extract_failures(JUNIT, language="java")
+    assert len(fs) == 1
+    f = fs[0]
+    assert f.test == "testAdd"
+    assert f.expected == "3" and f.actual == "5"
+    assert f.location == "DemoTest.java:12"
+
+
+def test_junit_kotlin_extraction():
+    fs = extract_failures(JUNIT_KOTLIN, language="kotlin")
+    assert len(fs) == 1
+    f = fs[0]
+    assert f.test == "testAdd"
+    assert f.expected == "3" and f.actual == "5"
+    assert f.location == "CalcTest.kt:8"
+
+
+def test_junit_autodetected():
+    assert extract_failures(JUNIT)[0].expected == "3"

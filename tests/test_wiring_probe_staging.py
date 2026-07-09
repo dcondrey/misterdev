@@ -52,6 +52,36 @@ def test_probe_on_appends_fresh_isolated_rerun(monkeypatch):
     assert "cargo test scores_a_strike" in out  # isolate_command built the re-run
 
 
+def test_probe_auto_fires_for_fast_runner_without_flag(monkeypatch):
+    # pytest is a fast interpreted runner: the probe auto-enables even with the
+    # config flag OFF (compiled runners like cargo stay opt-in — see the off test).
+    import misterdev.core.execution.probe as probe
+
+    monkeypatch.setattr(
+        probe, "run_probe", lambda cwd, cmd, timeout=120: "PYTEST-TRACE"
+    )
+    pytest_fail = (
+        "=================================== FAILURES ===================================\n"
+        "____ test_add ____\n"
+        "E       AssertionError: 2 != 3\n"
+        "FAILED t.py::test_add - AssertionError: 2 != 3\n"
+    )
+    project = SimpleNamespace(config={}, path=Path("/tmp"))  # flag OFF
+    ex = MarkdownPlanExecutor()
+    out = ex._build_error_context(
+        [],
+        0,
+        pytest_fail,
+        "c",
+        "a",
+        project=project,
+        test_command="python -m pytest",
+        language="python",
+        cwd="/tmp",
+    )
+    assert "Fresh isolated re-run" in out and "PYTEST-TRACE" in out
+
+
 def test_probe_no_project_is_noop(monkeypatch):
     # No project/test_command -> no probe, no crash (build/typecheck-failure path).
     ex = MarkdownPlanExecutor()
