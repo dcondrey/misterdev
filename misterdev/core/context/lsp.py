@@ -100,6 +100,18 @@ def collect_diagnostics(
     no-op, never a pass/fail signal. A list (possibly empty) means the server
     ran: each item is ``{"file", "line", "message"}`` for an error diagnostic.
     """
+    # Swift has no multilspy server (see _LANG_MAP), so route it to the direct
+    # sourcekit-lsp adapter, which returns the same {file,line,message} shape.
+    if (language or "").lower() == "swift" and rel_files:
+        from misterdev.core.context.lsp_swift import swift_diagnostics
+
+        per_file = max(timeout / max(len(rel_files), 1), 1.0)
+        out: List[dict] = []
+        for rel in rel_files:
+            for d in swift_diagnostics(str(project_root), rel, timeout=per_file) or []:
+                out.append({"file": rel, "line": d["line"], "message": d["message"]})
+        return out or None
+
     code_lang = _LANG_MAP.get((language or "").lower())
     if code_lang is None or not rel_files:
         return None
