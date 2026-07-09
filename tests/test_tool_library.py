@@ -5,8 +5,6 @@ its capability niche's incumbent. Promoted tools seed future runs — the memory
 live-SWE-agent lacks. All pure/offline, no benchmark, no code execution.
 """
 
-from pathlib import Path
-
 from misterdev.core.evolution.fitness import FitnessScore
 from misterdev.core.evolution.tool_library import ToolCandidate, ToolLibrary
 

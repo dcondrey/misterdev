@@ -8,7 +8,6 @@ contend with a build/benchmark run.
 
 import sys
 
-import pytest
 
 from misterdev.core.execution.probe import (
     isolate_command,
