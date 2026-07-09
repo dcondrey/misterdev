@@ -9,8 +9,36 @@ type.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-09
+
 ### Added
 
+- **Full-breadth model routing with a frontier escalation ladder** — the selector
+  was on by default but its capability ladder was empty, so it could only route
+  *down* to free/cheap models and never *up*. It now ships a default ladder
+  grounded in the live OpenRouter catalog (harvested-free / cheap → mid → frontier)
+  and routes each task by quality-per-dollar across the full breadth of models. The
+  strongest tier is reserved for the **final attempt only**, so on a cold cell a
+  hard task starts at the mid tier and escalates to a frontier model as the safety
+  net — not on the first try. Verified live: a task cheaper tiers stalled on was
+  resolved by the frontier tier on the final attempt, for pennies. The gate quality
+  floor is unchanged, so routing only ever moves cost/latency, never shipped
+  quality.
+- **Reproduction-first with pre-patch validation** — the spec-as-tests workflow now
+  runs its generated reproduction test on the **clean tree first** and keeps it only
+  if it actually fails there; a test that reproduces nothing is a false gate (a
+  wrong edit would also pass it) and is discarded rather than trusted as the target.
+  Engaged automatically on both SWE-bench execution paths (host and containerized),
+  where the judged tests are hidden and a validated reproduction is the one gate
+  that targets the graded behavior.
+- **Two-timescale evolution — self-authored tool library (consolidation layer)** — a
+  new `ToolLibrary` over the existing MAP-Elites + held-out promotion machinery: a
+  runtime-invented tool is admitted to a persistent, best-per-capability library
+  **only if it passes the same held-out generalization gate** that guards scaffold
+  self-edits, and promoted tools seed future runs. This is the memory a memoryless
+  runtime agent lacks — capability compounds across runs instead of being reinvented
+  each task. Pure and unit-tested; the runtime-invention surface is a follow-up.
+  Design: `docs/two-timescale-evolution.md`.
 - **Reproduction corpus + micro-eval screen (dense evolution fitness)** — the code
   evolver was starved by its fitness signal: one whole-suite benchmark run per
   candidate (minutes, dollars), where a single-edit mutation usually moves the

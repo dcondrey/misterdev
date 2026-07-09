@@ -85,7 +85,7 @@ Every change runs through an ordered gate sequence: **build → lint → tests �
 
 ### Dynamic model selection
 
-misterdev keeps a per-model **performance ledger** and pairs it with a **cost-aware selector** that picks for quality-per-dollar, **harvests free models** where they hold up, and caches responses to avoid paying twice. It runs against **OpenRouter or Anthropic** with automatic failover, and token budgeting keeps spend inside the ceiling you set.
+misterdev keeps a per-model **performance ledger** and pairs it with a **cost-aware selector** that picks for quality-per-dollar across the **full breadth of OpenRouter** — routing each task up a **capability ladder** (harvested free / cheap → a strong mid-tier → a frontier tier) and **escalating to a stronger model only when a cheaper one can't clear the gates**. The strongest tier is reserved for the final attempt, so frontier spend is the rare safety net, not the default; a hard task that a mid model stalls on is finished by a frontier model, while easy tasks resolve on free/cheap ones. Quality never drops because a weak model that writes bad code fails the gate and the policy climbs. It runs against **OpenRouter or Anthropic** with automatic failover, caches responses to avoid paying twice, and token budgeting keeps spend inside the ceiling you set.
 
 ### Parallel worktrees
 
@@ -94,6 +94,10 @@ Disjoint tasks run concurrently, each in its own **isolated git worktree**, so i
 ### Self-improving
 
 misterdev keeps a durable, fingerprinted stream of its own real failures and runs an **AlphaEvolve-style keep-if-better loop** over its own source: it attributes what breaks, classifies *why* (harness artifact vs observation gap vs capability), proposes a targeted structural self-edit, and promotes it only when it beats the champion on a **held-out task set it never optimized against** — with zero regressions. A reward-hacking guardrail walls off the tests and benchmark. The result is a loop that removes whole failure classes over time **without overfitting** to any one benchmark. See [docs/path-to-100.md](docs/path-to-100.md).
+
+On the correctness side, misterdev works **reproduction-first**: for an issue-driven task it synthesizes a failing test from the acceptance criteria, **validates that the test actually fails on the clean tree** (a test that reproduces nothing is discarded rather than trusted), then drives the fix to turn it green — so the model edits toward a concrete, verified target instead of a description.
+
+**Two-timescale evolution** *(design; see [docs/two-timescale-evolution.md](docs/two-timescale-evolution.md))* takes the self-improvement further than a memoryless runtime agent can: the agent invents task-specific tools at runtime, and the ones that **prove they generalize** are consolidated — through the same held-out promotion gate — into a **persistent, best-per-capability tool library that future runs start from**. Fast loop explores; slow loop keeps the winners; the held-out gate keeps the library general rather than benchmark-overfit. Capability compounds across runs instead of being reinvented each task.
 
 ### Extensibility
 
@@ -113,7 +117,7 @@ Gate-verified pass@1 on [Aider's polyglot benchmark](https://github.com/Aider-AI
 | Python | 8 / 10 | **80%** |
 | Rust | 7 / 10 | **70%** |
 
-A continuous stress run has solved **20/20** across the three languages with zero failures — including the exercises usually cited as hard (bowling, forth, arbitrary-precision decimal). Every solve is judged by the exercise's own hidden tests, not the model's say-so. Full numbers, methodology, and how to reproduce: **[docs/benchmark-results.md](docs/benchmark-results.md)**. Test suite: **1,880 passing** — **[docs/TESTING.md](docs/TESTING.md)**.
+A continuous stress run has solved **20/20** across the three languages with zero failures — including the exercises usually cited as hard (bowling, forth, arbitrary-precision decimal). Every solve is judged by the exercise's own hidden tests, not the model's say-so. Full numbers, methodology, and how to reproduce: **[docs/benchmark-results.md](docs/benchmark-results.md)**. Test suite: **1,897 passing** — **[docs/TESTING.md](docs/TESTING.md)**.
 
 ## CLI reference
 
