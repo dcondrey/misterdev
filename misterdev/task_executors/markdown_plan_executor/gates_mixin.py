@@ -120,11 +120,18 @@ class GatesMixin:
         output: str,
         classified: str,
         attributed_error: str,
+        *,
+        project: Optional[Project] = None,
+        test_command: Optional[str] = None,
+        language: Optional[str] = None,
+        cwd: Optional[str] = None,
     ) -> str:
         """Combine the current error with a summary of prior failed attempts.
 
         Surfacing what already failed (and how it was classified) stops the LLM
-        from re-submitting the same broken fix across retries.
+        from re-submitting the same broken fix across retries. When
+        ``orchestrator.failure_probe`` is on and the gate command is known, also
+        re-run the first failing test in isolation for a fresh trace.
         """
         prior_errors.append(
             _AttemptFailure(
@@ -138,9 +145,39 @@ class GatesMixin:
         # parsed straight from the runner output — the model fixes what it can
         # precisely see. Empty for unrecognized output, so the compressed
         # classified/attributed view below is preserved as the fallback.
-        view = render_failure_view(extract_failures(output))
+        failures = extract_failures(output)
+        view = render_failure_view(failures)
         lead = f"{view}\n\n" if view else ""
-        return f"{escalation}{history}{lead}{classified}\n\n{attributed_error}"
+        probe = self._failure_probe(project, test_command, language, cwd, failures)
+        return f"{escalation}{history}{lead}{probe}{classified}\n\n{attributed_error}"
+
+    def _failure_probe(self, project, test_command, language, cwd, failures) -> str:
+        """Fresh isolated re-run of the FIRST failing test (D4), when enabled.
+
+        Off unless ``orchestrator.failure_probe`` is set; a no-op (empty string)
+        with no failures, no gate command, an unrecognized runner, or a failed
+        re-run — so it can only add signal, never break the context. Never raises.
+        """
+        if not (project is not None and test_command and failures):
+            return ""
+        try:
+            if not get_setting(project.config, "orchestrator", "failure_probe"):
+                return ""
+            from misterdev.core.execution.probe import isolate_command, run_probe
+
+            iso = isolate_command(test_command, failures[0].test, language or "")
+            if not iso:
+                return ""
+            fresh = run_probe(cwd or str(project.path), iso)
+            if not fresh:
+                return ""
+            return (
+                "### Fresh isolated re-run of the first failing test\n"
+                f"$ {iso}\n{fresh.strip()}\n\n"
+            )
+        except Exception as e:  # a probe must never break the retry context
+            logger.debug(f"Failure probe skipped (non-fatal): {e}")
+            return ""
 
     @staticmethod
     def _gate_accepts(

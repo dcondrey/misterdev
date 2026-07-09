@@ -325,6 +325,11 @@ class OrchestratorSettings:
     # claim's judgment.
     verify_claims: bool = True
     verify_claims_timeout: int = 45
+    # Failure-triggered probe: on a red test gate, re-run ONLY the first failing
+    # test in isolation and append its fresh, uncluttered trace to the retry
+    # context. Off by default — the re-run costs a test invocation (cheap for
+    # pytest/jest, a full compile for cargo/swift/dotnet), so it is opt-in.
+    failure_probe: bool = False
 
 
 PROMPT_TEMPLATES = {

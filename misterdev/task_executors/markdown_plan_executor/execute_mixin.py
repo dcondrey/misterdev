@@ -605,7 +605,15 @@ class ExecuteMixin:
                     attributed_error = resolver.format_for_llm(locations)
                     classified = format_classified_error(output)
                     error_logs = self._build_error_context(
-                        prior_errors, attempt, output, classified, attributed_error
+                        prior_errors,
+                        attempt,
+                        output,
+                        classified,
+                        attributed_error,
+                        project=project,
+                        test_command=test_command,
+                        language=project.config.get("language"),
+                        cwd=task_cwd,
                     )
                     continue
                 gate_verified = True
@@ -620,7 +628,15 @@ class ExecuteMixin:
                     attributed_error = resolver.format_for_llm(locations)
                     classified = format_classified_error(output)
                     error_logs = self._build_error_context(
-                        prior_errors, attempt, output, classified, attributed_error
+                        prior_errors,
+                        attempt,
+                        output,
+                        classified,
+                        attributed_error,
+                        project=project,
+                        test_command=test_command,
+                        language=project.config.get("language"),
+                        cwd=task_cwd,
                     )
                     continue
                 gate_verified = True
@@ -718,7 +734,15 @@ class ExecuteMixin:
                     attributed_error = resolver.format_for_llm(locations)
                     classified = format_classified_error(output)
                     error_logs = self._build_error_context(
-                        prior_errors, attempt, output, classified, attributed_error
+                        prior_errors,
+                        attempt,
+                        output,
+                        classified,
+                        attributed_error,
+                        project=project,
+                        test_command=test_command,
+                        language=project.config.get("language"),
+                        cwd=task_cwd,
                     )
             elif certainty < certainty_threshold and not gate_verified:
                 # No test gate AND no compile/type gate ran, so completion rests

@@ -73,7 +73,7 @@ session (1-20 files) and have a concrete "done" condition.
 {targets_section}
 ## Spec
 {spec}
-
+{staging_hint}
 ## Mode
 {mode}
 
@@ -150,8 +150,14 @@ def decompose_spec(
     max_tasks: int = MAX_TASKS,
     file_map: str = "",
     targets: list[dict] | None = None,
+    staging_hint: str = "",
 ) -> list[Task]:
-    """Use LLM to decompose a spec into ordered tasks with dependencies."""
+    """Use LLM to decompose a spec into ordered tasks with dependencies.
+
+    ``staging_hint`` (optional) is a dense-reward staging suggestion for a
+    complex single file (see verifier_decomposition); empty leaves the prompt
+    unchanged.
+    """
     s = assessment.structure
     h = assessment.health
     f = assessment.features
@@ -177,6 +183,7 @@ def decompose_spec(
         targets_section=targets_section,
         targets_rule=targets_rule,
         file_map=file_map.strip() or "(file map unavailable — infer paths cautiously)",
+        staging_hint=staging_hint,
         project_type=s.project_type,
         languages=", ".join(s.languages) if s.languages else "unknown",
         frameworks=", ".join(s.frameworks) if s.frameworks else "none",
