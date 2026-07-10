@@ -9,6 +9,40 @@ type.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-09
+
+### Added
+
+- **Two-timescale evolution — a self-improving loop that compounds across runs.**
+  The capability the current #1 open-source scaffolds lack: they invent
+  task-specific tools at runtime and discard them every task; misterdev keeps the
+  ones that generalize.
+  - **Runtime tool-invention** (opt-in, `orchestrator.runtime_tooling`): mid-task
+    the model may author a small Python helper tool; it runs **sandboxed** — a
+    hardened, network-less container (`ToolRunner` over `ContainerEngine`: all
+    Linux capabilities dropped, `no-new-privileges`, memory/CPU/PID caps, an
+    isolated non-repo workdir, `--rm`). Untrusted model code never touches the
+    host or the repo, and with no container engine the capability degrades to a
+    no-op. The tool's output feeds the edit context.
+  - **Held-out consolidation**: every invented tool is captured with its task's
+    outcome into a persistent **tool corpus** (a free byproduct of normal runs); a
+    deliberate promotion pass
+    (`python -m misterdev.core.evolution.tool_promotion`) admits the tools whose
+    with-tool success **generalizes** on a held-out task split — baseline drawn
+    per-niche from the reproduction corpus — into a best-per-capability
+    **`ToolLibrary`**, through the same anti-overfit gate scaffold evolution uses.
+    Promoted tools then **seed future runs**, so capability compounds instead of
+    being reinvented. Design: `docs/two-timescale-evolution.md`.
+
+### Fixed
+
+- **A no-usable-edit response no longer burns a solve attempt.** A response that
+  is not code, whose anchored edit does not apply, or that contains no edit at all
+  changed nothing on disk — it is a formatting failure, not a solve attempt — so
+  it now grants a bounded extra iteration (the model still escalates a tier each
+  pass; frontier stays reserved for the true final attempt) instead of consuming
+  one of the retry budget's real attempts.
+
 ## [0.3.1] - 2026-07-09
 
 ### Added
