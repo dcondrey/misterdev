@@ -141,7 +141,7 @@ def promote_from_corpus(
     corpus: ToolCorpus,
     library,
     *,
-    baseline_rate: float,
+    baseline_rate,
     min_observations: int = 5,
     holdout_fraction: float = 0.3,
     noise_band: float = 0.0,
@@ -151,18 +151,25 @@ def promote_from_corpus(
     For each tool with at least ``min_observations`` task outcomes, split its tasks
     into disjoint DERIVE/HOLDOUT pools (stable per-task hash), score the tool's
     with-tool resolve-rate on each, and admit it through the library's held-out
-    gate against the supplied without-tool ``baseline_rate``. A tool is promoted
-    only if its association with success holds on the tasks it was NOT selected on
-    — the same anti-overfit ratchet scaffold evolution uses. Pure: no I/O beyond
-    the corpus/library the caller passes.
+    gate against the WITHOUT-tool baseline. A tool is promoted only if its
+    association with success holds on the tasks it was NOT selected on — the same
+    anti-overfit ratchet scaffold evolution uses.
+
+    ``baseline_rate`` is the without-tool resolve-rate: a float applied to every
+    tool, or a callable ``baseline(niche) -> float`` so the baseline can come
+    per-niche from the reproduction corpus (see ``tool_promotion``). Pure: no I/O
+    beyond the corpus/library the caller passes.
     """
     from .fitness import FitnessScore
     from .holdout import split_tasks
     from .tool_library import ToolCandidate
 
-    base = max(0.0, min(1.0, baseline_rate))
+    baseline_of = (
+        baseline_rate if callable(baseline_rate) else (lambda _n: baseline_rate)
+    )
     promoted: List[str] = []
     for rec in corpus.records():
+        base = max(0.0, min(1.0, float(baseline_of(rec.niche))))
         task_ids = sorted(rec.outcomes)
         if len(task_ids) < min_observations:
             continue

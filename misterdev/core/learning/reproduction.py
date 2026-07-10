@@ -211,3 +211,24 @@ class ReproductionCorpus:
         cases = list(self._load().values())
         failing = sum(1 for c in cases if not c.resolved)
         return {"total": len(cases), "failing": failing}
+
+    def resolve_rate(self, niche: Optional[str] = None) -> Optional[float]:
+        """The WITHOUT-tool baseline: the fraction of cases currently resolved,
+        optionally scoped to a niche (a language, or ``language/category``).
+
+        Returns None when no case matches, so a caller falls back to a prior
+        rather than trusting an empty baseline. This is exactly the counterfactual
+        a tool's with-tool resolve-rate must beat to be promoted (see
+        ``core.evolution.tool_corpus.promote_from_corpus``)."""
+        cases = list(self._load().values())
+        if niche:
+            cases = [
+                c
+                for c in cases
+                if c.language == niche
+                or c.niche == niche
+                or c.niche.startswith(niche + "/")
+            ]
+        if not cases:
+            return None
+        return sum(1 for c in cases if c.resolved) / len(cases)
