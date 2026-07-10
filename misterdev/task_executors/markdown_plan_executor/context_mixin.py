@@ -38,6 +38,22 @@ class ContextMixin:
         def _ask(prompt: str) -> Optional[str]:
             return project.llm_client.generate_code(prompt, "")
 
+        # Captured tools are folded into the tool corpus with this task's outcome
+        # at the terminal seam (see ResultsMixin._record_invented_tools).
+        sink = task.processor_data.setdefault("invented_tools", [])
+        # Seed with tools promoted from past runs (held-out-gated), so capability
+        # compounds instead of being reinvented — the two-timescale payoff. Empty
+        # until a promotion pass has admitted tools; best-effort.
+        seeds: list = []
+        try:
+            from misterdev.core.evolution.tool_library import ToolLibrary
+
+            lib = ToolLibrary(
+                project.path / ".orchestrator" / "evolution" / "tool_library.json"
+            )
+            seeds = [t.source for t in lib.seed(limit=5)]
+        except Exception as e:  # seeding is best-effort
+            logger.debug(f"Tool-library seed skipped: {e}")
         try:
             return invent_tool(
                 ToolRunner(),
@@ -45,6 +61,8 @@ class ContextMixin:
                 task_description=task.description,
                 error_context=error_context,
                 max_rounds=max_rounds,
+                sink=sink,
+                seeds=seeds,
             )
         except Exception as e:  # invention is best-effort; never sink the build
             logger.warning(f"Runtime tool-invention skipped (error: {e}).")

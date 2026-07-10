@@ -62,6 +62,8 @@ def invent_tool(
     task_description: str = "",
     error_context: str = "",
     max_rounds: int = 2,
+    sink: Optional[List[str]] = None,
+    seeds: Optional[List[str]] = None,
 ) -> str:
     """Run the bounded tool-invention loop; return the invented-tools context block.
 
@@ -76,6 +78,12 @@ def invent_tool(
     invented: List[str] = []
     for round_idx in range(max_rounds):
         prompt = _INSTRUCTION
+        if seeds:
+            prompt += (
+                "\n## Proven tools from past runs — reuse or adapt one if it fits\n"
+                + "\n\n".join(f"```python\n{s}\n```" for s in seeds)
+                + "\n"
+            )
         if task_description:
             prompt += f"\n## Task\n{task_description}\n"
         if error_context:
@@ -111,6 +119,8 @@ def invent_tool(
         if result.status == "skip":
             logger.info("tool-invention: no sandbox available; tool not run.")
             break
+        if sink is not None:
+            sink.append(source)  # captured for the tool corpus (P2c)
         logger.info(
             f"tool-invention round {round_idx + 1}/{max_rounds}: ran a tool "
             f"({len(source)}B source) -> {result.status}"

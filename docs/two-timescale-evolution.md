@@ -44,22 +44,33 @@ resolve rate on tasks the invention never saw. That is exactly the guard that
 stops the tool library becoming a benchmark-overfit grab-bag — the failure mode
 every SWE-bench system is criticized for.
 
-## Phased plan
-- **P1 — Consolidation substrate (offline, pure, $0 to test).** A `ToolLibrary`
-  over the archive's MAP-Elites semantics: a tool candidate (id, source,
-  capability-niche, provenance, fitness), best-per-niche promotion via
-  `decide_promotion`, JSON persistence that degrades to empty, and a `seed()` that
-  loads promoted elites for a run. Bootstrap with 1-2 hand-authored seed tools so
-  the pipeline is exercised before runtime invention exists. Fully unit-testable.
-- **P2 — Runtime invention surface.** Give the executor's model a sandboxed
-  scratch space to author + run task-specific Python tools mid-task, with the
-  per-step reflection nudge. Sandboxed via the existing `evolution/sandbox.py` +
-  `core/execution/container.py` (model-authored code is untrusted and must not
-  touch the host). Each tool that contributes to a gate-passing task is captured
-  as a P1 candidate.
-- **P3 — Close the loop.** Captured runtime tools flow into the offline loop as
-  candidates; promoted tools seed subsequent runs; measure compounding (does run N
-  start stronger than run 1 on held-out tasks?).
+## Phased plan (status)
+- **P1 — Consolidation substrate — BUILT (v0.3.1).** `evolution/tool_library.py`:
+  a tool candidate over the archive's MAP-Elites semantics, best-per-niche
+  admission gated by `decide_promotion`, JSON persistence that degrades to empty,
+  and `seed()` that loads promoted elites for a run. Fully unit-tested.
+- **P2a — Sandboxed execution primitive — BUILT.** `evolution/tool_runner.py`:
+  runs untrusted model-authored Python at maximum hardening of the existing
+  `ContainerEngine` (no network, all caps dropped, `no-new-privileges`,
+  memory/CPU/PID caps, isolated non-repo workdir, `--rm`). No host fallback — with
+  no engine it degrades OFF (skip). Verified live: exec works, network is blocked.
+- **P2b — Runtime invention surface — BUILT.** `evolution/tool_invention.py` +
+  the `_runtime_tool` executor seam (mirrors `_mcp_gather`, off-by-default behind
+  `orchestrator.runtime_tooling`): the model authors a `tool` block, it runs in
+  the sandbox, and the output feeds the edit context. Demonstrated live: the agent
+  invented a helper tool and solved affine-cipher with it.
+- **P2c — Loop closure — BUILT.** `evolution/tool_corpus.py`: invented tools are
+  captured with each task's outcome (passive accumulation — a free byproduct of
+  normal runs) at the terminal seams; `promote_from_corpus` admits the tools whose
+  success-association holds on a held-out task split (same anti-overfit gate) into
+  the `ToolLibrary`; `seed()` feeds promoted tools back into future runs so
+  capability compounds. Capture is automatic; promotion is a deliberate pass (a
+  chosen without-tool baseline), like the scaffold-evolution run.
+- **Remaining — activation, not code.** The mechanisms are complete and tested; the
+  loop *closes as data accumulates*: promotion needs enough real-run corpus
+  observations to be meaningful, and the compounding is then measured (does run N
+  start stronger than run 1 on held-out tasks?). That measurement is the honest
+  open item — it needs accumulated data, not more scaffold code.
 
 ## Security (P2, non-negotiable)
 Runtime tools are model-authored code = untrusted. They execute only inside the

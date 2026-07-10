@@ -94,6 +94,25 @@ def test_model_error_degrades():
     assert invent_tool(_FakeRunner(), boom) == ""
 
 
+def test_seeds_from_past_runs_are_offered_to_the_model():
+    # Promoted tools from prior runs appear in the prompt so the model can reuse
+    # or adapt them — the compounding payoff.
+    seen = {}
+
+    def ask(prompt):
+        seen["prompt"] = prompt
+        return "NO_TOOL"
+
+    invent_tool(
+        _FakeRunner(),
+        ask,
+        seeds=["def modinv(a, m): return pow(a, -1, m)"],
+        max_rounds=1,
+    )
+    assert "Proven tools from past runs" in seen["prompt"]
+    assert "modinv" in seen["prompt"]
+
+
 def test_max_rounds_zero_disables():
     runner = _FakeRunner(ToolRunResult("ok", "x", ""))
     assert invent_tool(runner, _asker("```tool\nprint(1)\n```"), max_rounds=0) == ""
