@@ -97,7 +97,7 @@ misterdev keeps a durable, fingerprinted stream of its own real failures and run
 
 On the correctness side, misterdev works **reproduction-first**: for an issue-driven task it synthesizes a failing test from the acceptance criteria, **validates that the test actually fails on the clean tree** (a test that reproduces nothing is discarded rather than trusted), then drives the fix to turn it green — so the model edits toward a concrete, verified target instead of a description.
 
-**Two-timescale evolution** *(design; see [docs/two-timescale-evolution.md](docs/two-timescale-evolution.md))* takes the self-improvement further than a memoryless runtime agent can: the agent invents task-specific tools at runtime, and the ones that **prove they generalize** are consolidated — through the same held-out promotion gate — into a **persistent, best-per-capability tool library that future runs start from**. Fast loop explores; slow loop keeps the winners; the held-out gate keeps the library general rather than benchmark-overfit. Capability compounds across runs instead of being reinvented each task.
+**Two-timescale evolution** *(built; opt-in via `orchestrator.runtime_tooling`; see [docs/two-timescale-evolution.md](docs/two-timescale-evolution.md))* takes the self-improvement further than a memoryless runtime agent can. At **runtime**, the model may author a small task-specific helper tool that runs **sandboxed** (a hardened, network-less container — untrusted code never touches the host or the repo, and with no container engine the capability degrades off); its output feeds the edit. Every invented tool is then captured with the task's outcome into a **tool corpus** — a free byproduct of normal runs — and a deliberate promotion pass admits the tools whose success **generalizes** on a held-out task split (baseline drawn from the reproduction corpus) into a **persistent, best-per-capability tool library that future runs start from**. Fast loop invents; slow loop keeps only the winners; the same held-out gate that guards scaffold self-edits keeps the library general rather than benchmark-overfit. Capability **compounds across runs** instead of being reinvented each task — the memory the current top open-source scaffolds lack. Run the promotion pass with `python -m misterdev.core.evolution.tool_promotion <project>`.
 
 ### Extensibility
 
@@ -117,7 +117,7 @@ Gate-verified pass@1 on [Aider's polyglot benchmark](https://github.com/Aider-AI
 | Python | 8 / 10 | **80%** |
 | Rust | 7 / 10 | **70%** |
 
-A continuous stress run has solved **20/20** across the three languages with zero failures — including the exercises usually cited as hard (bowling, forth, arbitrary-precision decimal). Every solve is judged by the exercise's own hidden tests, not the model's say-so. Full numbers, methodology, and how to reproduce: **[docs/benchmark-results.md](docs/benchmark-results.md)**. Test suite: **1,897 passing** — **[docs/TESTING.md](docs/TESTING.md)**.
+A continuous stress run has solved **20/20** across the three languages with zero failures — including the exercises usually cited as hard (bowling, forth, arbitrary-precision decimal). Every solve is judged by the exercise's own hidden tests, not the model's say-so. Full numbers, methodology, and how to reproduce: **[docs/benchmark-results.md](docs/benchmark-results.md)**. Test suite: **1,941 passing** — **[docs/TESTING.md](docs/TESTING.md)**.
 
 ## CLI reference
 
