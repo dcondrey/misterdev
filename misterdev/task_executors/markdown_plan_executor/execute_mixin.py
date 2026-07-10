@@ -239,6 +239,10 @@ class ExecuteMixin:
         # tool calls to gather information. The result is prepended to the task
         # context; off → "" and the path below is byte-identical to today.
         mcp_gathered = self._mcp_gather(project, task)
+        # Optional, off-by-default runtime tool-invention (two-timescale P2): the
+        # model may author a small helper tool that runs sandboxed, its output fed
+        # into the edit context. Off → "" and the path below is byte-identical.
+        runtime_tool_ctx = self._runtime_tool(project, task)
 
         # A no-usable-edit response (not code, an anchor miss, or no edit at all)
         # changed nothing on disk — it is a formatting failure, not a solve
@@ -370,6 +374,8 @@ class ExecuteMixin:
                 )
             if mcp_gathered:
                 full_code_context += mcp_gathered
+            if runtime_tool_ctx:
+                full_code_context += runtime_tool_ctx
             full_code_context += self._mcp_awareness(project)
 
             guidance_context = " ".join(

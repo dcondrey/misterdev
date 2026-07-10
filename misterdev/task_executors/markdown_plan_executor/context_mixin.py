@@ -12,6 +12,44 @@ from .helpers import logger, _relevant_line_ranges, _window_lines
 
 
 class ContextMixin:
+    def _runtime_tool(
+        self, project: Project, task: Task, error_context: str = ""
+    ) -> str:
+        """Let the model author + run a sandboxed helper tool, or "" when off.
+
+        Additive and behind ``orchestrator.runtime_tooling`` (off by default):
+        when the flag is off, or no container sandbox is available, this returns
+        "" so the edit path is byte-for-byte unchanged. When on, the model may
+        author a small Python tool that runs in the hardened, network-less
+        :class:`ToolRunner` (untrusted code never touches the host or repo); its
+        output is prepended to the edit context. ``error_context`` (a prior
+        failure) lets the model write a tool to diagnose it. Never raises into the
+        build; any failure degrades to whatever was produced (usually nothing).
+        """
+        if not get_setting(project.config, "orchestrator", "runtime_tooling"):
+            return ""
+        from misterdev.core.evolution.tool_invention import invent_tool
+        from misterdev.core.evolution.tool_runner import ToolRunner
+
+        max_rounds = get_setting(
+            project.config, "orchestrator", "runtime_tooling_rounds"
+        )
+
+        def _ask(prompt: str) -> Optional[str]:
+            return project.llm_client.generate_code(prompt, "")
+
+        try:
+            return invent_tool(
+                ToolRunner(),
+                _ask,
+                task_description=task.description,
+                error_context=error_context,
+                max_rounds=max_rounds,
+            )
+        except Exception as e:  # invention is best-effort; never sink the build
+            logger.warning(f"Runtime tool-invention skipped (error: {e}).")
+            return ""
+
     def _mcp_gather(self, project: Project, task: Task) -> str:
         """Run the bounded agentic MCP gathering loop, or "" when off.
 

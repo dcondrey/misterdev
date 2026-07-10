@@ -25,6 +25,7 @@ from .proposer import LLMProposer, build_instruction, parse_paths, parse_tag
 from .sandbox import SandboxEvaluator
 from .screen import MicroEvaluator, ScreenVerdict
 from .tool_library import ToolCandidate, ToolLibrary
+from .tool_invention import invent_tool
 from .tool_runner import ToolRunner, ToolRunResult
 
 __all__ = [
@@ -50,6 +51,7 @@ __all__ = [
     "ToolCandidate",
     "ToolRunner",
     "ToolRunResult",
+    "invent_tool",
     "LLMProposer",
     "build_instruction",
     "parse_paths",

@@ -277,6 +277,16 @@ class OrchestratorSettings:
     # Each round is at most one model turn plus one tool call; the loop always
     # stops at this count even if the model keeps requesting tools.
     mcp_max_tool_rounds: int = 3
+    # Runtime tool-invention (two-timescale evolution P2): when on, the model may
+    # author a small task-specific helper tool that runs SANDBOXED (hardened,
+    # network-less container via ToolRunner; untrusted code never touches the host
+    # or the repo), and its output is fed into the edit context. Off by default —
+    # it is an untrusted-code-execution surface and requires a container engine;
+    # with no engine the invention degrades to a no-op (skip). Additive: off ->
+    # the edit path is byte-identical to today. Hard-capped by
+    # ``runtime_tooling_rounds``.
+    runtime_tooling: bool = False
+    runtime_tooling_rounds: int = 2
     # Optional governance layer: when on, a risk classifier gates risky commands
     # (destructive/irreversible/paid) at the command seam and an append-only
     # audit trail is written. Off by default and additive — when off the command
