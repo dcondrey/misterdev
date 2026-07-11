@@ -22,6 +22,13 @@ from .guardrail import (
 from .loop import EvolutionLoop, Mutation, StepResult
 from .prior import KindWeight, MutationPrior
 from .proposer import LLMProposer, build_instruction, parse_paths, parse_tag
+from .paired import (
+    PairedVerdict,
+    decide_paired,
+    decide_promotion_paired,
+    discordant,
+    paired_promote,
+)
 from .sandbox import SandboxEvaluator
 from .screen import MicroEvaluator, ScreenVerdict
 from .tool_library import ToolCandidate, ToolLibrary

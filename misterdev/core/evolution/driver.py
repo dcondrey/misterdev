@@ -217,6 +217,7 @@ def run_evolution(
     # when there is no holdout signal (too few tasks). The split is on RESULTS, not
     # runs, so this adds no benchmark cost.
     from .holdout import decide_promotion, split_tasks
+    from .paired import decide_promotion_paired
 
     def _pool_score(pool_results, base_passed) -> FitnessScore:
         passed_now = {r.name for r in pool_results if getattr(r, "resolved", False)}
@@ -260,7 +261,22 @@ def run_evolution(
                 holdout_base,
                 noise_band,
             )
-            return decision.promote, decision.reason
+
+            # Advisory: the paired (McNemar) verdict alongside the aggregate gate.
+            # It collapses the shared-variance term, so it exposes when an aggregate
+            # gain rests on too few discordant pairs to be distinguishable from
+            # noise. Logged in the reason, not yet gating (the aggregate gate still
+            # decides), so a real gain is never lost while the signal accrues.
+            def _pmap(res):
+                return {
+                    getattr(r, "name", ""): bool(getattr(r, "resolved", False))
+                    for r in res
+                }
+
+            paired = decide_promotion_paired(
+                _pmap(base_d), _pmap(mut_d), _pmap(base_h), _pmap(mut_h)
+            )
+            return decision.promote, f"{decision.reason} | paired: {paired.reason}"
 
         logger.info(
             f"Evolution: held-out gate armed "
