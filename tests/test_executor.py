@@ -949,6 +949,121 @@ def test_detect_dangling_references_qualified_method_not_false_flagged():
         assert flagged and "tests/bowling.rs:1" in flagged
 
 
+def _destructive_project(root, graph, enabled=True):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        path=root,
+        topography=SimpleNamespace(graph=graph),
+        config={"orchestrator": {"destructive_edit_guard": enabled}},
+    )
+
+
+def test_detect_destructive_rewrite_flags_collapsing_stub():
+    # The reward-hack: replace a real module with a tiny stub that passes the test
+    # by stripping functionality. Removes definitions AND collapses the file.
+    from types import SimpleNamespace
+    from misterdev.core.context.topography.nodes import SymbolNode
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "rate-limit.js").write_text(
+            "export function rateLimit(key, limit, windowMs) {\n"
+            "  const now = Date.now();\n"
+            "  // ... real token-bucket implementation ...\n"
+            "  return { ok: true, remaining: limit - 1 };\n"
+            "}\n\n"
+            "export function cleanup() {\n"
+            "  // periodic eviction so the map cannot grow unbounded\n"
+            "  return true;\n"
+            "}\n"
+        )
+        rl = SymbolNode("rateLimit", "rate-limit.js", "function", 1, 5, "")
+        cl = SymbolNode("cleanup", "rate-limit.js", "function", 7, 10, "")
+        graph = SimpleNamespace(
+            symbols={"rate-limit.js:rateLimit": rl, "rate-limit.js:cleanup": cl}
+        )
+        ex = MarkdownPlanExecutor()
+        # `createRateLimiter` contains "RateLimiter" (capital R, mid-word), so the
+        # word-boundary check still treats `rateLimit` as removed.
+        stub = (
+            "export function createRateLimiter() {\n"
+            "  return { check: () => true };\n}\n"
+        )
+        flagged = ex._detect_destructive_rewrite(
+            _destructive_project(root, graph), {"rate-limit.js": stub}
+        )
+        assert flagged and "rateLimit" in flagged and "cleanup" in flagged
+
+
+def test_detect_destructive_rewrite_allows_api_preserving_rewrite():
+    # A rewrite that KEEPS the public definitions is never flagged, even if it
+    # shrinks the file.
+    from types import SimpleNamespace
+    from misterdev.core.context.topography.nodes import SymbolNode
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "m.js").write_text(
+            "export function foo() { return slowPath(); }\n\n"
+            "export function bar() { return foo() + 1; }\n\n"
+            "function slowPath() { return 0; }\n"
+        )
+        foo = SymbolNode("foo", "m.js", "function", 1, 1, "")
+        bar = SymbolNode("bar", "m.js", "function", 3, 3, "")
+        graph = SimpleNamespace(symbols={"m.js:foo": foo, "m.js:bar": bar})
+        ex = MarkdownPlanExecutor()
+        rewrite = (
+            "export function foo() { return 1; }\nexport function bar() { return 2; }\n"
+        )
+        assert (
+            ex._detect_destructive_rewrite(
+                _destructive_project(root, graph), {"m.js": rewrite}
+            )
+            is None
+        )
+
+
+def test_detect_destructive_rewrite_single_def_and_disabled():
+    from types import SimpleNamespace
+    from misterdev.core.context.topography.nodes import SymbolNode
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "one.js").write_text(
+            "export function only() { return bigHelper(); }\n" * 3
+        )
+        only = SymbolNode("only", "one.js", "function", 1, 1, "")
+        (root / "two.js").write_text(
+            "export function a() { return realA(); }\n" * 4
+            + "export function b() { return realB(); }\n" * 4
+        )
+        a = SymbolNode("a", "two.js", "function", 1, 1, "")
+        b = SymbolNode("b", "two.js", "function", 5, 5, "")
+        graph = SimpleNamespace(
+            symbols={"one.js:only": only, "two.js:a": a, "two.js:b": b}
+        )
+        ex = MarkdownPlanExecutor()
+        stub = "export function z() { return 1; }\n"
+        # single-definition file collapse -> not flagged.
+        assert (
+            ex._detect_destructive_rewrite(
+                _destructive_project(root, graph), {"one.js": stub}
+            )
+            is None
+        )
+        # two-definition collapse -> flagged (sanity), but not when disabled.
+        assert ex._detect_destructive_rewrite(
+            _destructive_project(root, graph), {"two.js": stub}
+        )
+        assert (
+            ex._detect_destructive_rewrite(
+                _destructive_project(root, graph, enabled=False), {"two.js": stub}
+            )
+            is None
+        )
+
+
 def test_acceptance_manifest_error_passes_through(monkeypatch):
     # A manifest error from the acceptance command means the command is
     # malformed (build/test already passed, so the manifest exists) — it must

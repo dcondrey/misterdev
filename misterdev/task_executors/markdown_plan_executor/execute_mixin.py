@@ -178,6 +178,12 @@ class ExecuteMixin:
         # exactly these (plus declared targets) so an out-of-scope-but-valid
         # edit isn't applied-then-orphaned by staging only the declared files.
         edited_files: set = set()
+        # Original content of every file the task touches, captured the FIRST time
+        # each is about to be edited (before any attempt mutates it). The optional
+        # post-pass changed-region mutation check diffs this task-level baseline
+        # against the final committed file — NOT the last attempt's pre-edit, which
+        # would miss a fix that landed on an earlier attempt. A new file maps to "".
+        task_pre_edit: dict = {}
 
         # Optional adversarial critic (independent second component): reviews each
         # candidate edit before it is applied and can force a regeneration with
@@ -595,6 +601,19 @@ class ExecuteMixin:
                     )
                     continue
 
+                destructive = self._detect_destructive_rewrite(project, edits)
+                if destructive:
+                    logger.warning(f"Destructive rewrite rejected: {destructive}")
+                    error_logs = (
+                        "ERROR: this edit deletes real functionality — it removes "
+                        "definitions and collapses the file, which passes the "
+                        "immediate test only by stripping behavior other code relies "
+                        "on. Make the SMALLEST change that fixes the problem: keep "
+                        "every existing public definition and its implementation, and "
+                        f"add or adjust only what is needed. Detected: {destructive}"
+                    )
+                    continue
+
                 # Independent adversarial critique BEFORE applying. A rejection
                 # feeds concrete objections back as the next attempt's context
                 # (regenerate), bounded by critic_max_rejections so an
@@ -615,6 +634,15 @@ class ExecuteMixin:
                         )
                         continue
 
+                # Record each touched file's ORIGINAL content once — first touch
+                # wins so the baseline survives across attempts (see task_pre_edit
+                # above). Used by the optional post-pass suite-strength check.
+                for p in edits:
+                    if p not in task_pre_edit:
+                        fp = project.path / p
+                        task_pre_edit[p] = (
+                            fp.read_text(encoding="utf-8") if fp.exists() else ""
+                        )
                 self._apply_edits(project, edits)
                 self._run_formatters(project, edits.keys())
                 edited_files.update(edits.keys())
@@ -744,6 +772,12 @@ class ExecuteMixin:
                     )
                     pending_attempt = None
                     self._record_success(task, target_files)
+                    # Optional suite-strength check: with the tests green, mutate the
+                    # fix's changed region and confirm the suite actually kills the
+                    # mutants (advisory unless a floor is configured).
+                    self._changed_region_mutation_check(
+                        project, task_pre_edit, test_command, task_cwd
+                    )
                     # Persist status BEFORE committing so the source markdown's
                     # status:completed is part of the task commit and survives the
                     # merge; otherwise the next task's checkout discards it.
@@ -819,6 +853,12 @@ class ExecuteMixin:
                 )
                 pending_attempt = None
                 self._record_success(task, target_files)
+                # A task can merge on certainty/acceptance WITHOUT any test gate —
+                # exactly where a weak suite most needs surfacing. Score the fix
+                # against the project suite (the seam falls back to it).
+                self._changed_region_mutation_check(
+                    project, task_pre_edit, test_command, task_cwd
+                )
                 # Persist status BEFORE committing so status:completed rides into
                 # the task commit and survives the merge (see the tests-passed
                 # path above).

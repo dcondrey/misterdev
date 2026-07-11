@@ -23,6 +23,13 @@ from .helpers import (
 )
 
 
+def _nonblank_len(text: str) -> int:
+    """Characters of a file ignoring blank lines and per-line indentation, so a
+    reformat (whitespace churn) doesn't register as a size change — only real
+    content does."""
+    return sum(len(line.strip()) for line in text.splitlines() if line.strip())
+
+
 class EditsMixin:
     def _validate_edit_paths(
         self, project: Project, task: Task, edits: Dict[str, str]
@@ -157,6 +164,157 @@ class EditsMixin:
         if dangling:
             return "; ".join(sorted(set(dangling))[:40])
         return None
+
+    def _detect_destructive_rewrite(
+        self, project: Project, edits: Dict[str, str]
+    ) -> Optional[str]:
+        """Reject a likely destructive stub: an edit that COLLAPSES a source file
+        AND removes definitions it used to declare.
+
+        The observed reward-hack: told to make a failing test pass, a weak model
+        deletes the real implementation (e.g. a 171-line module) and leaves an
+        11-line stub that satisfies the test but strips functionality other code
+        relied on. ``_detect_dangling_references`` catches this only when the graph
+        recorded the removed symbol's callers, but cross-file call edges are often
+        unresolved (JS especially), so the stub slips through to the late, expensive
+        integration gate. This is the graph-edge-INDEPENDENT complement: flag an
+        edit that BOTH (a) removes >=1 definition the file used to declare and (b)
+        shrinks the file below half its non-blank size. Two conditions together, so
+        a legitimate small fix, or a large rewrite that PRESERVES the public API, is
+        never caught. Off via ``orchestrator.destructive_edit_guard: false``. Must
+        run BEFORE edits are applied, so on-disk content is still the pre-edit
+        original.
+        """
+        if not get_setting(project.config, "orchestrator", "destructive_edit_guard"):
+            return None
+        graph = getattr(getattr(project, "topography", None), "graph", None)
+        symbols = getattr(graph, "symbols", None)
+        if not symbols:
+            return None
+        defs_by_file: Dict[str, set] = {}
+        for sym in symbols.values():
+            defs_by_file.setdefault(sym.file_path, set()).add(sym.name)
+
+        destructive: list[str] = []
+        for path, new_content in edits.items():
+            if _is_test_file(path) or path not in defs_by_file:
+                continue  # tests are handled by the tamper guard; skip new files
+            orig_defs = defs_by_file[path]
+            if len(orig_defs) < 2:
+                continue  # a single-definition file is small; rewriting it is normal
+            # A method is defined as `def name`/`fn name`, never the qualified
+            # `Type::name` (that form appears only at call sites), so match on the
+            # unqualified token — same rule the dangling-ref guard uses.
+            removed = sorted(
+                name
+                for name in orig_defs
+                if not re.search(
+                    rf"\b{re.escape(name.rsplit('::', 1)[-1])}\b", new_content or ""
+                )
+            )
+            if not removed:
+                continue  # every prior definition still present -> API preserved
+            try:
+                original = (project.path / path).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            orig_size = _nonblank_len(original)
+            new_size = _nonblank_len(new_content or "")
+            if orig_size and new_size / orig_size < 0.5:
+                pct = int(new_size / orig_size * 100)
+                destructive.append(
+                    f"{path} collapses to {pct}% of its size and removes "
+                    f"definition(s): {', '.join(removed[:5])}"
+                )
+        return "; ".join(destructive) if destructive else None
+
+    def _changed_region_mutation_check(
+        self, project: Project, pre_edit: Dict[str, str], test_command: str, cwd
+    ) -> None:
+        """Advisory suite-strength check on a task that just completed.
+
+        When ``orchestrator.changed_region_mutation`` is on, mutate the changed
+        region of the largest edited SOURCE file and re-run the test command; log
+        how many mutants the suite kills. A low score means the passing test does
+        not actually verify the fix — the evasion-resistant complement to the
+        shape-based ``_detect_destructive_rewrite``. Best-effort and bounded: never
+        raises, never fails the task; set ``mutation.changed_region_min_score`` > 0
+        to surface a weak suite as a warning.
+
+        Falls back to the project-level ``test_command`` when the task carried no
+        per-task test gate (the common no-test completion path): the project suite
+        is what the integration gate runs, so it is the right thing to mutate
+        against — and a task that merged WITHOUT a test gate is exactly where a
+        weak suite most needs surfacing.
+        """
+        cmd = test_command or project.config.get("test_command")
+        if not (
+            cmd
+            and pre_edit
+            and get_setting(project.config, "orchestrator", "changed_region_mutation")
+        ):
+            return
+        try:
+            import subprocess
+
+            from misterdev.core.execution.outcomes import RED, SKIP
+            from misterdev.core.verification.changed_region_mutation import (
+                run_changed_region_mutation,
+            )
+
+            mcfg = project.config.get("mutation") or {}
+            floor = float(mcfg.get("changed_region_min_score", 0.0))
+            cap = int(mcfg.get("changed_region_max_mutants", 12))
+            run_dir = cwd or project.path
+
+            def _runner(cmd, timeout):
+                try:
+                    p = subprocess.run(
+                        cmd,
+                        shell=True,
+                        cwd=str(run_dir),
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    return False, ""
+                return p.returncode == 0, (p.stdout or "") + (p.stderr or "")
+
+            # Score the largest edited non-test source file with a mutable changed
+            # region (the fix's main target). A SKIP (no mutable change, e.g. a
+            # whitespace-only or comment edit) falls through to the next candidate
+            # rather than aborting — the real fix may be in a smaller file.
+            for path in sorted(pre_edit, key=lambda p: len(pre_edit[p]), reverse=True):
+                if _is_test_file(path) or not (project.path / path).exists():
+                    continue
+                new = (project.path / path).read_text(encoding="utf-8")
+                res = run_changed_region_mutation(
+                    project.path,
+                    path,
+                    pre_edit[path],
+                    new,
+                    cmd,
+                    runner=_runner,
+                    min_score=floor,
+                    max_mutants=cap,
+                )
+                if res.status == SKIP:
+                    continue
+                logger.info(f"Changed-region mutation [{path}]: {res.reason}")
+                if res.status == RED:
+                    logger.warning(
+                        f"Weak suite for {path}: the passing test barely constrains "
+                        f"the fix — {res.reason}"
+                    )
+                return
+            # Enabled but nothing scorable: keep the seam observable, never silent.
+            logger.info(
+                "Changed-region mutation: no mutable source change to score "
+                f"(files: {sorted(pre_edit)})"
+            )
+        except Exception as e:  # advisory only — never fail a completed task
+            logger.debug(f"Changed-region mutation check skipped: {e}")
 
     def _resolve_edits(
         self, project: Project, llm_response: str

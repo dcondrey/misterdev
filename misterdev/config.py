@@ -180,6 +180,22 @@ class OrchestratorSettings:
     certainty_threshold: float = 0.5
     max_cost_per_task: Any = "auto"
     allow_test_edits: bool = False
+    # Reject an edit that collapses a source file AND removes definitions it used
+    # to declare — the NAIVE destructive stub (delete the real code, leave a tiny
+    # stub that passes the test). Measured: near-zero false positives on real
+    # history (its trigger is rare), but it is a cheap TRIPWIRE, not a general
+    # reward-hack defense — a padded stub or a gutted-body-same-name edit evades
+    # the shape heuristic. The robust, evasion-resistant check is suite-strength
+    # (mutation on the changed region); this guard just catches the obvious case
+    # early. Set false to disable.
+    destructive_edit_guard: bool = True
+    # Optional built-in suite-strength check: after a task's tests pass, mutate the
+    # fix's CHANGED lines and re-run the tests; surviving mutants mean the suite
+    # did not actually verify the fix (the evasion-resistant complement to the
+    # destructive_edit_guard shape heuristic). Off by default because it re-runs the
+    # test command once per mutant (bounded by mutation.changed_region_max_mutants);
+    # advisory (logs the score) unless mutation.changed_region_min_score > 0.
+    changed_region_mutation: bool = False
     # Optional LSP semantic gate: when on, a language server checks edited files
     # for errors a syntax check misses (undefined names, type errors). Off by
     # default and timeout-bounded so it can never block a build; lsp_timeout
