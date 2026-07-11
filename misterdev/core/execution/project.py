@@ -140,7 +140,27 @@ class Project:
         if not self._mcp_built:
             self._mcp_built = True
             mcp_cfg = self.config.get("mcp") or {}
-            servers = mcp_cfg.get("servers") or []
+            servers = list(mcp_cfg.get("servers") or [])
+            # On-the-fly discovery: search the free official registry for servers
+            # matching each capability query and append the trusted, locally-
+            # runnable ones (npx/uvx stdio). Best-effort; never blocks the build.
+            discover = mcp_cfg.get("discover")
+            if discover:
+                from misterdev.core.integration.mcp_registry import (
+                    DEFAULT_TRUSTED_NAMESPACES,
+                    discover_servers,
+                )
+
+                trusted = (
+                    mcp_cfg.get("trusted_namespaces") or DEFAULT_TRUSTED_NAMESPACES
+                )
+                servers.extend(
+                    discover_servers(
+                        list(discover),
+                        trusted_namespaces=trusted,
+                        max_servers=int(mcp_cfg.get("discover_max_servers", 3)),
+                    )
+                )
             if servers:
                 from misterdev.core.integration.mcp import MCPManager
 

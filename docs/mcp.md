@@ -74,6 +74,25 @@ mcp:
 
 For a remote gateway, the auth token is read from the environment variable named by `api_key_env` and sent as `Authorization: Bearer <token>` — the token stays out of config on disk. Extra static `headers` can be added alongside.
 
+### Discover servers on the fly (free — no hosted gateway)
+
+The whole MCP ecosystem is usable for free: nearly every server ships as an npm/PyPI package that runs locally as a stdio subprocess. `mcp.discover` takes a list of capability queries, searches the public [official registry](https://registry.modelcontextprotocol.io) (no auth, no payment), and appends the matching, locally-runnable servers — spawned via `npx`/`uvx` — to `mcp.servers` at build start.
+
+```yaml
+mcp:
+  discover: ["fetch web pages", "query sqlite"]   # capability queries
+  discover_max_servers: 3                          # cap per build (default 3)
+  trusted_namespaces:                              # who may auto-install (see below)
+    - "io.github.modelcontextprotocol"
+    # - "*"                                        # trust ALL — arbitrary code execution
+```
+
+**This runs code from the internet locally.** A discovered server is a package installed and executed with the build's file access and network. So provisioning is trust-gated and conservative by default:
+
+- Only servers whose reverse-DNS name starts with a `trusted_namespaces` prefix auto-install. The default set is the official publishers — which matches little of the (largely third-party) registry on purpose. Reaching the **full ecosystem** is a deliberate opt-in: add the specific publishers you vet, or set `["*"]` to trust everything (logged loudly; this is remote code execution).
+- Paid *remotes* (a hosted gateway needing an API key) and any package that **requires** a secret/env var to start are skipped — they could not run for free anyway.
+- Discovered servers spawn with a **minimal environment**, never the build's secrets, and are still bounded by the same discovery/call timeouts and the `allow_tools` allowlist.
+
 ### The allowlist
 
 `mcp.allow_tools` is an allowlist of tool names. An entry matches either the qualified `server.tool` form or a bare `tool` name. Omit it to allow every discovered tool. A tool not on the list is refused at both discovery and call time — a hosted gateway may expose a large catalog, so the allowlist is how you scope what a build can actually reach.
