@@ -9,7 +9,20 @@ type.
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-07-09
+### Changed
+
+- **Integration gate: identity-based regression detection on a red baseline.** The
+  post-wave gate previously ran in COUNT mode when the suite started red —
+  reverting a wave only if the failure *count* rose. That is blind to an
+  offsetting change that fixes test A but breaks test B (net-zero count), which
+  slips through as a real regression; it also can't tell a genuine fix from a
+  no-op that merely kept the count. The gate now prefers IDENTITY mode when the
+  baseline's failing-test set is parseable (via the existing FailureView
+  parsers): it reverts a wave that introduces any test not failing at baseline,
+  regardless of count, and surfaces a "no progress" signal when a wave resolves
+  none of the baseline failures. Falls back to COUNT mode when the output can't be
+  parsed, so behavior is unchanged where identities are unavailable. Surfaced by a
+  dogfooding run where the count-mode gate had to catch a destructive stub.
 
 ### Added
 
