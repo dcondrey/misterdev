@@ -37,6 +37,118 @@ def test_suite_failures_green_red_unparseable():
     assert orch._suite_failures(None, _FakeExec([1], unparseable=True), "t", 1) is None
 
 
+# --- Identity-mode integration gate ----------------------------------------
+
+
+class _Proj:
+    config = {"language": "python"}
+
+
+def _pytest_body(names):
+    if not names:
+        return "1 passed"
+    return "\n".join(f"FAILED tests/t.py::{n} - AssertionError: x" for n in names)
+
+
+def _ids(names):
+    return ProjectOrchestrator()._failing_ids_from_output(_pytest_body(names), _Proj())
+
+
+class _IdExec:
+    """Drives failing-test-ID SETS from a queue; reverts recorded."""
+
+    def __init__(self, id_sets, unparseable=False):
+        self._q = list(id_sets)
+        self._unparseable = unparseable
+        self.reverted = []
+
+    def _run_command(self, project, cmd, timeout=0, cwd=None):
+        names = self._q.pop(0) if self._q else []
+        if not names:
+            return True, "1 passed"
+        if self._unparseable:
+            return False, "totally unparseable failure blob"
+        return False, _pytest_body(names)
+
+    def find_task_commit(self, project, tid):
+        return f"sha-{tid}"
+
+    def revert_task_commit(self, project, sha):
+        self.reverted.append(sha)
+        return True
+
+
+def test_failing_ids_from_output_parses_pytest():
+    ids = _ids(["test_alpha", "test_beta"])
+    assert ids and len(ids) == 2
+    # A green / unparseable output yields None (caller falls back to count).
+    assert ProjectOrchestrator()._failing_ids_from_output("1 passed", _Proj()) is None
+
+
+def test_identity_gate_reverts_offsetting_fix_break():
+    # The case COUNT mode misses: baseline {alpha}; the wave fixed alpha but broke
+    # beta — net count unchanged (1 -> 1) yet beta is a real new regression.
+    orch = ProjectOrchestrator()
+    baseline = _ids(["test_alpha"])
+    ex = _IdExec([["test_beta"], ["test_alpha"]])  # post-wave, then after-revert
+    reverted = orch._integration_gate_ids(_Proj(), ex, "t", [_task("T-1")], 1, baseline)
+    assert reverted == ["T-1"]
+    assert ex.reverted == ["sha-T-1"]
+
+
+def test_identity_gate_accepts_genuine_fix():
+    orch = ProjectOrchestrator()
+    baseline = _ids(["test_alpha", "test_beta"])
+    ex = _IdExec([["test_alpha"]])  # fixed beta, introduced nothing new
+    assert (
+        orch._integration_gate_ids(_Proj(), ex, "t", [_task("T-1")], 1, baseline) == []
+    )
+    assert ex.reverted == []
+
+
+def test_identity_gate_no_progress_does_not_revert():
+    # A no-op "fix" that resolved nothing but broke nothing: not reverted (can't
+    # tell it from a legitimate feature wave), but surfaced as no-progress.
+    orch = ProjectOrchestrator()
+    baseline = _ids(["test_alpha"])
+    ex = _IdExec([["test_alpha"]])
+    assert (
+        orch._integration_gate_ids(_Proj(), ex, "t", [_task("T-1")], 1, baseline) == []
+    )
+    assert ex.reverted == []
+
+
+def test_identity_gate_reverts_new_failure():
+    orch = ProjectOrchestrator()
+    baseline = _ids(["test_alpha"])
+    ex = _IdExec([["test_alpha", "test_beta"], ["test_alpha"]])
+    reverted = orch._integration_gate_ids(_Proj(), ex, "t", [_task("T-1")], 1, baseline)
+    assert reverted == ["T-1"]
+
+
+def test_identity_gate_unparseable_after_does_not_revert():
+    orch = ProjectOrchestrator()
+    baseline = _ids(["test_alpha"])
+    ex = _IdExec([["x"]], unparseable=True)
+    assert (
+        orch._integration_gate_ids(_Proj(), ex, "t", [_task("T-1")], 1, baseline) == []
+    )
+    assert ex.reverted == []
+
+
+def test_integration_gate_prefers_identity_when_ids_present():
+    # With a parsed baseline id-set on the project, the dispatcher uses identity
+    # mode (revert on a new failure) even though the count is unchanged.
+    orch = ProjectOrchestrator()
+    proj = _Proj()
+    proj.baseline_test_failing_ids = _ids(["test_alpha"])
+    ex = _IdExec([["test_beta"], ["test_alpha"]])
+    reverted = orch._integration_gate(
+        proj, ex, "t", [_task("T-1")], 1, baseline_failures=1
+    )
+    assert reverted == ["T-1"]
+
+
 def test_count_gate_reverts_when_failures_rise():
     # Baseline 6; wave pushed it to 8 -> revert the wave task; recheck restores 6.
     orch = ProjectOrchestrator()
@@ -115,14 +227,14 @@ def _wtask(tid, files):
 
 def test_target_regressed_helper():
     r = ProjectOrchestrator._target_regressed
-    assert r(0, 0) is False           # green now
-    assert r(0, 5) is False           # green now (was red)
-    assert r(None, None) is False     # no countable baseline
-    assert r(5, None) is False        # no countable baseline
-    assert r(None, 0) is True         # binary fail from a green baseline
-    assert r(None, 3) is False        # binary fail, but baseline was red -> can't compare
-    assert r(7, 5) is True            # count rose
-    assert r(5, 5) is False           # not worse
+    assert r(0, 0) is False  # green now
+    assert r(0, 5) is False  # green now (was red)
+    assert r(None, None) is False  # no countable baseline
+    assert r(5, None) is False  # no countable baseline
+    assert r(None, 0) is True  # binary fail from a green baseline
+    assert r(None, 3) is False  # binary fail, but baseline was red -> can't compare
+    assert r(7, 5) is True  # count rose
+    assert r(5, 5) is False  # not worse
 
 
 def test_integration_gate_targets_reverts_regressed_target_only():
@@ -134,9 +246,15 @@ def test_integration_gate_targets_reverts_regressed_target_only():
     # web regressed 0 -> green-fail handled via counts here: baseline 6, after 8.
     ex = _FakeExec([8, 6])  # web after=8 (>6) -> revert web task -> recheck=6
     web_task = _wtask("T-web", ["clients/web/src/a.ts"])
-    core_task = _wtask("T-core", ["rust/src/x.rs"])  # core not exercised (no counts queued for it)
+    core_task = _wtask(
+        "T-core", ["rust/src/x.rs"]
+    )  # core not exercised (no counts queued for it)
     reverted = orch._integration_gate_targets(
-        _P(), ex, targets, [web_task, core_task], 1,
+        _P(),
+        ex,
+        targets,
+        [web_task, core_task],
+        1,
         {"web": 6, "core": 0},
     )
     assert reverted == ["T-web"]
@@ -178,7 +296,13 @@ def test_validate_targets_ignores_pre_broken_target():
     class _Proj:
         path = Path("/tmp")
         config = {
-            "targets": [{"name": "apple", "path": "clients/apple", "build_command": "swift build"}],
+            "targets": [
+                {
+                    "name": "apple",
+                    "path": "clients/apple",
+                    "build_command": "swift build",
+                }
+            ],
             "build": {},
         }
         target_baselines = {"apple": None}  # was unparseable-broken at baseline
@@ -251,7 +375,12 @@ def test_validate_targets_web_gate_green_passes(monkeypatch):
         path = Path("/tmp")
         config = {
             "targets": [
-                {"name": "web", "path": "clients/web", "build_command": "tsc", "web": {"url": "x"}}
+                {
+                    "name": "web",
+                    "path": "clients/web",
+                    "build_command": "tsc",
+                    "web": {"url": "x"},
+                }
             ],
             "build": {},
         }

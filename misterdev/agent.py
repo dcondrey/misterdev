@@ -1133,6 +1133,44 @@ class ProjectOrchestrator:
         total, failures = _parse_test_counts(output)
         return failures if total > 0 else None
 
+    @staticmethod
+    def _failing_ids_from_output(output: str, project: Project) -> Optional[set]:
+        """The SET of failing test identifiers parsed from runner output, or None
+        when none can be parsed (caller falls back to the count).
+
+        Identity beats a bare count: it lets the integration gate revert a wave
+        that offsets a genuine fix against a NEW break (net-zero count, which
+        count mode waves through) and stays correct if a fix renames/reorders
+        tests. Reuses the FailureView parsers already validated per runner."""
+        from misterdev.core.execution.failure_view import extract_failures
+
+        lang = (
+            (project.config.get("language") or "")
+            if getattr(project, "config", None)
+            else ""
+        )
+        ids = {
+            f.test
+            for f in extract_failures(output, language=lang)
+            if getattr(f, "test", "")
+        }
+        return ids or None
+
+    def _suite_failing_ids(
+        self,
+        project: Project,
+        executor: MarkdownPlanExecutor,
+        test_cmd: str,
+        timeout: int,
+        cwd=None,
+    ) -> Optional[set]:
+        """Full-suite failing-test id SET: empty when green, the parsed ids when
+        red, or None when unparseable (caller falls back to the count)."""
+        ok, output = executor._run_command(project, test_cmd, timeout=timeout, cwd=cwd)
+        if ok:
+            return set()
+        return self._failing_ids_from_output(output, project)
+
     def _integration_gate_count(
         self,
         project: Project,
@@ -1164,6 +1202,55 @@ class ProjectOrchestrator:
                 reverted.append(tid)
             now = self._suite_failures(project, executor, test_cmd, timeout)
             if now is not None and now <= baseline_failures:
+                break
+        return reverted
+
+    def _integration_gate_ids(
+        self,
+        project: Project,
+        executor: MarkdownPlanExecutor,
+        test_cmd: str,
+        wave_tasks: list[Task],
+        timeout: int,
+        baseline_ids: set,
+    ) -> list[str]:
+        """Identity-mode gate for a RED baseline: revert the wave iff it introduced
+        a NEW failing test (one not failing at baseline), regardless of the failure
+        COUNT.
+
+        Stricter and more correct than count mode: a wave that fixes test A but
+        breaks test B nets zero on the count and slips past ``_integration_gate_count``,
+        yet it introduced a real regression (B) — identity mode reverts it. A wave
+        that resolves none of the baseline failures and adds none (a no-op "fix"
+        that still merged) is surfaced as no-progress rather than silently blessed.
+        """
+        after = self._suite_failing_ids(project, executor, test_cmd, timeout)
+        if after is None:
+            return []  # unparseable post-wave count of ids; don't revert blind
+        new_failures = after - baseline_ids
+        if not new_failures:
+            if baseline_ids - after:
+                logger.info(
+                    "Integration gate (identity): resolved "
+                    f"{len(baseline_ids - after)} baseline failure(s), no regressions."
+                )
+            else:
+                logger.info(
+                    "Integration gate (identity): wave added no new failures but "
+                    "resolved none either — no progress on the failing suite."
+                )
+            return []
+        logger.warning(
+            f"Integration gate (identity): {len(new_failures)} new failing test(s) "
+            f"(e.g. {sorted(new_failures)[:2]}); reverting wave commits until restored."
+        )
+        commits = self._wave_commits(executor, project, wave_tasks)
+        reverted: list[str] = []
+        for tid, sha in reversed(commits):
+            if executor.revert_task_commit(project, sha):
+                reverted.append(tid)
+            now = self._suite_failing_ids(project, executor, test_cmd, timeout)
+            if now is not None and not (now - baseline_ids):
                 break
         return reverted
 
@@ -1259,10 +1346,21 @@ class ProjectOrchestrator:
         Returns the task_ids whose commits were reverted (empty if the suite
         still passes). Bisects to the single culprit when possible; if that
         can't isolate it or the tree is still red afterward, reverts the
-        remaining wave commits (newest first) to restore a green baseline. When
-        ``baseline_failures`` > 0 (a red baseline that could still be counted),
-        runs in count mode instead — reverting only a wave that raises the count.
+        remaining wave commits (newest first) to restore a green baseline. On a
+        RED baseline it prefers IDENTITY mode (revert a wave that adds any new
+        failing test, so an offsetting fix/break can't slip through) when the
+        baseline's failing set was parseable, falling back to COUNT mode (revert
+        only a wave that raises the failure count) otherwise.
         """
+        # Prefer identity mode (revert on any NEW failing test) over count mode
+        # (revert only when the count rises) whenever the baseline's failing set
+        # was parseable: it also catches an offsetting fix/break that count mode
+        # nets to zero. Count mode remains the fallback for unparseable output.
+        baseline_ids = getattr(project, "baseline_test_failing_ids", None)
+        if baseline_ids:
+            return self._integration_gate_ids(
+                project, executor, test_cmd, wave_tasks, timeout, baseline_ids
+            )
         if baseline_failures > 0:
             return self._integration_gate_count(
                 project, executor, test_cmd, wave_tasks, timeout, baseline_failures
@@ -1380,6 +1478,7 @@ class ProjectOrchestrator:
                 k: int(v or 0) for k, v in target_baselines.items()
             }
         baseline_failures = 0
+        project.baseline_test_failing_ids = None
         if gate_active and test_cmd:
             baseline_ok, baseline_out = executor._run_command(
                 project, test_cmd, timeout=test_timeout
@@ -1397,9 +1496,21 @@ class ProjectOrchestrator:
                 total, fails = _parse_test_counts(baseline_out)
                 if total > 0 and fails > 0:
                     baseline_failures = fails
+                    # Capture the failing-test IDENTITIES from the same baseline
+                    # output so the post-wave gate can prefer identity mode (revert
+                    # on any NEW failure) over count mode (revert only on a count
+                    # rise); None when unparseable -> count-mode fallback.
+                    project.baseline_test_failing_ids = self._failing_ids_from_output(
+                        baseline_out, project
+                    )
+                    mode = (
+                        "IDENTITY mode: revert a wave that adds any new failing test"
+                        if project.baseline_test_failing_ids
+                        else "COUNT mode: revert a wave that raises the count"
+                    )
                     logger.info(
-                        f"Integration gate in COUNT mode: baseline has {fails} "
-                        "failing test(s); a wave that raises the count is reverted."
+                        f"Integration gate in {mode}; baseline has {fails} "
+                        "failing test(s)."
                     )
                 else:
                     logger.info(
@@ -1927,7 +2038,7 @@ class ProjectOrchestrator:
                 return spec_path.read_text(encoding="utf-8")
             return f"Spec file not found: {prompt}"
 
-        if mode in (BuildMode.CREATE, BuildMode.SMART):
+        if mode == BuildMode.CREATE:
             expand_prompt = (
                 f"Expand the following into a comprehensive project spec.\n"
                 f"Include: features with acceptance criteria, error handling, "
@@ -1943,6 +2054,44 @@ class ProjectOrchestrator:
             return project.llm_client.generate_code(
                 expand_prompt,
                 "You are a software architect writing a project specification.",
+            )
+
+        if mode == BuildMode.SMART:
+            # SMART is a SPECIFIC instruction on an EXISTING project — not a
+            # from-scratch build. The goal is the scope boundary: implement
+            # exactly what it asks plus only what is strictly necessary to make
+            # THAT correct and tested. Never expand into a whole-project spec
+            # (that is CREATE's job) — doing so makes the decomposer invent
+            # unrelated tasks and rewrite pre-existing files it was only meant
+            # to read (observed: a "create region.py" goal ballooned into
+            # rewriting the harness and inventing conftest/config tasks).
+            scoped_prompt = (
+                f"Write a tightly-scoped implementation spec for EXACTLY this "
+                f"goal — nothing more.\n"
+                f"Rules:\n"
+                f"- Implement only what the goal asks. Add only what is strictly "
+                f"necessary to make the goal correct, tested, and safe (its own "
+                f"error handling, input validation, and tests).\n"
+                f"- Do NOT expand scope: no unrelated features, no 'completing' "
+                f"or 'improving' the project, no refactors the goal did not "
+                f"request.\n"
+                f"- Existing files are CONTEXT, not work items. Do not modify or "
+                f"rewrite them unless the goal explicitly requires it.\n"
+                f"- Prefer the smallest change set that fully satisfies the "
+                f"goal.\n\n"
+                f"Project context: {assessment.context.purpose}\n"
+                f"Conventions: {assessment.context.conventions}\n"
+                f"Languages: {assessment.structure.languages}\n"
+                f"Existing files (context only — do not modify unless the goal "
+                f"requires it): {[f.name for f in assessment.features.existing]}\n"
+                f"Verified facts: {facts}\n\n"
+                f"Goal: {prompt}\n\nReturn the spec as markdown."
+            )
+            return project.llm_client.generate_code(
+                scoped_prompt,
+                "You are a software engineer writing a tightly-scoped "
+                "implementation spec. You implement exactly what is asked and "
+                "resist scope creep.",
             )
 
         if mode == BuildMode.REVIEW:
