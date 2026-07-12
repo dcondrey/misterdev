@@ -303,6 +303,18 @@ class ExecuteMixin:
                     if lsp_ctx:
                         error_logs = f"{error_logs}\n\n{lsp_ctx}"
 
+                # Query-on-failure: on the FIRST failure, let the model consult
+                # MCP tools about the actual error (look up a doc / API / the
+                # error's meaning) and fold the result into the gather context for
+                # every subsequent attempt. Bounded to once per task; "" when MCP
+                # tool use is off, so the path is unchanged for non-MCP builds.
+                if attempt == 1:
+                    failure_ctx = self._mcp_gather(
+                        project, task, error_context=error_logs
+                    )
+                    if failure_ctx:
+                        mcp_gathered = f"{mcp_gathered}{failure_ctx}"
+
             code_context = self._get_code_context(
                 project, target_files, context_files, task=task
             )

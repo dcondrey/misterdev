@@ -137,7 +137,7 @@ CATALOG: List[Dict[str, Any]] = [
         "quality",
         "core",
         _npx("@socketsecurity/mcp"),
-        [],
+        ["SOCKET_API_TOKEN"],
         "https://github.com/SocketDev/socket-mcp",
         "Supply-chain: malicious/typosquat dep checks",
     ),

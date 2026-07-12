@@ -527,3 +527,50 @@ def test_executor_gather_no_manager_is_empty():
     proj = _GatherProject(tool_use=True, mcp=None, llm_replies=["CALL x.y"])
     assert ex._mcp_gather(proj, _gather_task()) == ""
     assert proj.llm_client.ask.calls == 0
+
+
+def test_query_on_failure_frames_gather_around_the_error(monkeypatch):
+    # _mcp_gather with error_context must pass the failure into the gather
+    # prompt so the model looks up what it needs to FIX it (query-on-failure).
+    from types import SimpleNamespace
+    import misterdev.task_executors.markdown_plan_executor.context_mixin as cm
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+
+    captured = {}
+
+    def fake_gather(manager, ask, *, task_description="", **kw):
+        captured["desc"] = task_description
+        return ""
+
+    monkeypatch.setattr(cm, "gather_context", fake_gather)
+    project = SimpleNamespace(
+        config={"orchestrator": {"mcp_tool_use": True}, "mcp": {}},
+        mcp=object(),  # non-None so the gather path runs
+        llm_client=SimpleNamespace(generate_code=lambda p, s: "NO_TOOL"),
+    )
+    task = SimpleNamespace(description="implement foo()")
+    MarkdownPlanExecutor()._mcp_gather(
+        project, task, error_context="BOOM: undefined symbol bar"
+    )
+    assert "BOOM: undefined symbol bar" in captured["desc"]
+    assert "FAILED a gate" in captured["desc"]
+    assert "implement foo()" in captured["desc"]
+
+
+def test_gather_no_error_context_is_plain_description(monkeypatch):
+    from types import SimpleNamespace
+    import misterdev.task_executors.markdown_plan_executor.context_mixin as cm
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+
+    captured = {}
+    monkeypatch.setattr(
+        cm, "gather_context",
+        lambda m, a, *, task_description="", **k: captured.update(desc=task_description) or "",
+    )
+    project = SimpleNamespace(
+        config={"orchestrator": {"mcp_tool_use": True}, "mcp": {}},
+        mcp=object(),
+        llm_client=SimpleNamespace(generate_code=lambda p, s: "NO_TOOL"),
+    )
+    MarkdownPlanExecutor()._mcp_gather(project, SimpleNamespace(description="do X"))
+    assert captured["desc"] == "do X"  # no failure framing on the first pass

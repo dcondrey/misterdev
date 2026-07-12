@@ -119,7 +119,9 @@
         "-y",
         "@socketsecurity/mcp@0.0.20"
       ],
-      "requires": [],
+      "requires": [
+        "SOCKET_API_TOKEN"
+      ],
       "repository": "https://github.com/SocketDev/socket-mcp",
       "why": "Supply-chain: malicious/typosquat dep checks"
     },

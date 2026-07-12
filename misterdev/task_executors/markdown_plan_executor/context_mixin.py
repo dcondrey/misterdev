@@ -68,7 +68,7 @@ class ContextMixin:
             logger.warning(f"Runtime tool-invention skipped (error: {e}).")
             return ""
 
-    def _mcp_gather(self, project: Project, task: Task) -> str:
+    def _mcp_gather(self, project: Project, task: Task, error_context: str = "") -> str:
         """Run the bounded agentic MCP gathering loop, or "" when off.
 
         Additive and behind ``orchestrator.mcp_tool_use`` (off by default): when
@@ -110,11 +110,23 @@ class ContextMixin:
 
             provide = _provide
 
+        # Query-on-failure: on a retry, frame the gather around the actual gate
+        # error so the model looks up what it needs to FIX the failure (a doc, an
+        # API signature, the meaning of an error) — the moment a tool is most
+        # useful — rather than only speculatively before the first attempt.
+        description = task.description
+        if error_context:
+            description = (
+                f"{task.description}\n\nThe previous attempt FAILED a gate with:\n"
+                f"{error_context[:1500]}\n\nGather information that helps fix this "
+                "specific failure before the next attempt."
+            )
+
         try:
             return gather_context(
                 mcp,
                 _ask,
-                task_description=task.description,
+                task_description=description,
                 max_rounds=max_rounds,
                 local_tools=local_tools,
                 provide=provide,
