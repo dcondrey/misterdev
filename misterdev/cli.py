@@ -95,7 +95,17 @@ def main():
     # through to the flag-based parser below, so power users are unaffected.
     import sys
 
-    _known = {"scan", "list", "status", "report", "run", "plan", "build"}
+    _known = {
+        "scan",
+        "list",
+        "status",
+        "report",
+        "run",
+        "plan",
+        "build",
+        "interactive",
+        "i",
+    }
     argv = sys.argv[1:]
     if argv and not argv[0].startswith("-") and argv[0] not in _known:
         from misterdev.nl_cli import route
@@ -168,6 +178,13 @@ def main():
         "--status",
         action="store_true",
         help="Show which tasks would run vs skip, then exit",
+    )
+
+    # 'interactive' / 'i' — guided menu (also the no-argument default)
+    subparsers.add_parser(
+        "interactive",
+        aliases=["i"],
+        help="Guided menu — pick an action, answer a couple of prompts (no flags)",
     )
 
     # 'plan' command (interactive: analyze -> recommend -> compose -> confirm)
@@ -349,8 +366,12 @@ def main():
                 )
             )
             sys.exit(1)
-    elif args.command == "plan" or args.command is None:
-        # Plain `misterdev` (no subcommand) launches interactive planning.
+    elif args.command in ("interactive", "i") or args.command is None:
+        # Plain `misterdev` (no subcommand) launches the guided menu.
+        from misterdev.interactive import run_interactive
+
+        sys.exit(run_interactive(orchestrator))
+    elif args.command == "plan":
         path = getattr(args, "project_path", ".")
         plan_args = []
         if getattr(args, "budget", 100.0) != 100.0:

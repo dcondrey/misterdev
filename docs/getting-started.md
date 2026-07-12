@@ -55,7 +55,21 @@ The commands are the truth misterdev trusts: a gate is only as good as the comma
 
 ## Run your first build
 
-Two equivalent ways to drive it.
+Three equivalent ways to drive it.
+
+### Interactive form (nothing to remember)
+
+Just run `misterdev` with no arguments (or `misterdev i`) for a guided menu — pick Build / Run a task list / Debug / Complete / Status / Report, answer a couple of prompts (with sensible defaults), confirm, and it runs:
+
+```console
+$ misterdev
+  What do you want to do?
+    1. Build — describe a goal; misterdev writes/fixes/completes the code
+    2. Run a task list — execute a plan file (any format) or the devplan/ dir
+    3. Debug — find and fix everything that's broken
+    …
+  ? Choose (1)
+```
 
 ### Flag form (scripts, power users)
 
@@ -102,12 +116,13 @@ Each gate reports GREEN (passed), RED (failed, blocks the change), or SKIP (noth
 
 | Command | What it does |
 | --- | --- |
+| `misterdev` / `misterdev i` | Guided interactive menu (the no-argument default) — no flags to remember. |
 | `misterdev scan <dir>` | Discover and register projects under a directory. |
 | `misterdev list` | List registered projects. |
 | `misterdev status [path]` | Show a project's tasks and their state. |
 | `misterdev report [path]` | Summarize the latest build's cost, per-model ledger, and audit trail (read-only). |
 | `misterdev plan [path]` | Analyze, recommend, and compose a plan interactively. |
-| `misterdev run [path]` | Run already-planned pending tasks (`--task`, `--dry-run`, `--force`, `--status`). |
+| `misterdev run [path]` | Run already-planned pending tasks (`--tasks <file>` for an external list in any format, `--task`, `--dry-run`, `--force`, `--status`). |
 | `misterdev build [path] [prompt]` | The autonomous build/debug/complete workflow. |
 
 Plain `misterdev` with no subcommand launches interactive planning.
