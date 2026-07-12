@@ -50,6 +50,23 @@ class TopographyEngine:
         self.initialize()
         return self.graph.project_outline()
 
+    def localize(self, query: str, top_k: int = 10, ranker=None):
+        """Rank symbols by relevance to ``query`` to FIND edit targets when they
+        are not given (see :mod:`misterdev.core.context.localizer`). Returns a
+        list of ``LocalizationHit`` best-first; lazy-inits the graph."""
+        from misterdev.core.context.localizer import localize as _localize
+
+        self.initialize()
+        return _localize(query, self.graph.symbols, top_k=top_k, ranker=ranker)
+
+    def localize_files(self, query: str, top_k: int = 5, ranker=None):
+        """File-level edit targets for ``query`` (relevance summed per file),
+        best-first — the shape decomposition scopes a task to."""
+        from misterdev.core.context.localizer import localize_files as _lf
+
+        self.initialize()
+        return _lf(query, self.graph.symbols, top_k=top_k, ranker=ranker)
+
     def get_context_for_task(
         self,
         query: str,
