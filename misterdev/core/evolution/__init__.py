@@ -69,4 +69,9 @@ __all__ = [
     "build_instruction",
     "parse_paths",
     "parse_tag",
+    "PairedVerdict",
+    "decide_paired",
+    "decide_promotion_paired",
+    "discordant",
+    "paired_promote",
 ]

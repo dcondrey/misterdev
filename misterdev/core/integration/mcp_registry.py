@@ -2,32 +2,41 @@
 
 Given a capability query (e.g. ``"fetch web pages"``), search the **official MCP
 Registry** (``registry.modelcontextprotocol.io`` — public, no auth, no payment)
-and map a locally-runnable, TRUSTED entry to a stdio server config the existing
+and map a locally-runnable entry to a stdio server config the existing
 :class:`~misterdev.core.integration.mcp.MCPManager` can spawn via ``npx``/``uvx``.
 The whole MCP ecosystem is free this way: servers ship as npm/PyPI packages that
 run as a local subprocess — the paid hosted gateways are only a convenience.
 
-Discipline mirrors the rest of the MCP substrate: read-only HTTP, hard-bounded,
-and it NEVER raises (any failure degrades to "discovered nothing"). Provisioning
-is deliberately conservative because auto-installing and running a package from
-the internet is arbitrary code execution with the build's privileges:
+Because auto-installing and running a package from the internet is arbitrary
+code execution with the build's privileges, admission goes through a **trust
+ladder** rather than a single on/off gate:
 
-- **Trust gate.** Only entries whose reverse-DNS name starts with a namespace in
-  ``trusted_namespaces`` are auto-mapped. The default set is the official
-  publishers; widen it in config to reach more of the ecosystem, or pass a
-  permissive marker (``"*"``) to trust all — loudly, and never the default.
-- **Free/self-contained only.** Paid *remotes* (Smithery et al. needing an API
-  key) are skipped, as is any package that REQUIRES an env var / secret we can't
-  supply — it could not run anyway, and we will not prompt a server for secrets.
-- **Minimal env.** The mapped config carries no ``env``; the MCP SDK then spawns
-  the subprocess with a minimal default environment, never the build's secrets.
-- **Bounded count.** ``discover_servers`` caps how many servers a build admits.
+1. **Curated tier.** A shipped, version-pinned allowlist (``curated_servers.json``,
+   produced by the reproducible audit in ``scripts/audit_mcp_servers.py``) that
+   auto-passes with no network call — the safest, fastest path and a usable
+   default. Pinning ``pkg@version`` matters: allowlisting a bare name would not
+   stop a malicious *future* release.
+2. **Trust-signal scoring.** Anything not curated is scored on real signals —
+   npm monthly downloads, GitHub stars, recency, and archived/inactive status —
+   and admitted only above ``min_trust``. This reaches the long tail without a
+   hand-maintained list. A named ``trusted_namespaces`` prefix is a strong boost.
+3. **Permissive.** ``trusted_namespaces=["*"]`` trusts everything (logged
+   loudly); still structurally gated but no quality bar. Never the default.
+
+Across all tiers: only free, self-contained stdio packages provision (paid
+remotes and secret-requiring packages are skipped — they could not run for
+free anyway); the config carries no ``env`` so the subprocess gets a minimal
+environment, never the build's secrets; and every network read is bounded and
+never raises (any failure degrades to "discovered nothing" / "no signal").
 """
 
 import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from misterdev.core.execution.bounded import run_bounded
@@ -38,11 +47,13 @@ logger = setup_logger(__name__)
 _REGISTRY_URL = "https://registry.modelcontextprotocol.io/v0/servers"
 _DEFAULT_TIMEOUT = 10.0
 _DEFAULT_MAX_SERVERS = 3
+_DEFAULT_MIN_TRUST = 0.5
+# Cap network scoring per build so a wide search cannot hammer the GitHub API
+# (unauth: 60 req/hr) or stall the build on the long tail.
+_DEFAULT_MAX_EVALUATIONS = 12
 
-# Conservative default: only the official publisher namespaces auto-provision.
-# Reaching the *full* ecosystem is a deliberate, config-level opt-in (widen this
-# list, or set it to ["*"]) — never the silent default, because each admitted
-# server is code we run locally.
+# A named prefix is a strong signal (the publisher is one we recognise), but no
+# longer the ONLY key — signals can admit an unlisted server on their own.
 DEFAULT_TRUSTED_NAMESPACES = (
     "io.github.modelcontextprotocol",
     "io.modelcontextprotocol",
@@ -50,13 +61,24 @@ DEFAULT_TRUSTED_NAMESPACES = (
 )
 
 # npm -> npx, PyPI -> uvx. Anything else is not auto-runnable here.
-_RUNTIME_BY_REGISTRY = {"npm": "npx", "pypi": "uvx", "pyp/pip": "uvx"}
+_RUNTIME_BY_REGISTRY = {"npm": "npx", "pypi": "uvx"}
+
+_CURATED_PATH = Path(__file__).with_name("curated_servers.json")
+
+# --- trust-score weights (transparent + tunable) --------------------------------
+_NAMESPACE_BOOST = 0.5
+_DOWNLOAD_TIERS = ((10000, 0.5), (1000, 0.35), (100, 0.2))
+_STAR_TIERS = ((1000, 0.4), (200, 0.3), (50, 0.15))
+_RECENCY_TIERS = ((180, 0.15), (365, 0.1))  # days since last push
 
 
-def _http_get_json(url: str, timeout: float) -> Optional[Dict[str, Any]]:
+# ==============================================================================
+# Registry search
+# ==============================================================================
+def _http_get_json(url: str, timeout: float) -> Optional[Any]:
     """GET ``url`` and parse JSON, or return None. Never raises."""
 
-    def _work() -> Optional[Dict[str, Any]]:
+    def _work() -> Optional[Any]:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
@@ -86,23 +108,22 @@ def search_registry(
     for entry in payload.get("servers") or []:
         server = entry.get("server") if isinstance(entry, dict) else None
         if isinstance(server, dict) and server.get("name"):
-            # Carry the registry status forward so mapping can require "active".
             meta = (entry.get("_meta") or {}).get(
                 "io.modelcontextprotocol.registry/official"
             ) or {}
-            server = {**server, "_status": meta.get("status")}
+            server = {
+                **server,
+                "_status": meta.get("status"),
+                "_is_latest": meta.get("isLatest", True),
+            }
             out.append(server)
     return out
 
 
-def _is_trusted(name: str, trusted_namespaces) -> bool:
-    if "*" in trusted_namespaces:  # explicit permissive opt-in
-        return True
-    return any(name == ns or name.startswith(ns + "/") for ns in trusted_namespaces)
-
-
+# ==============================================================================
+# Structural runnability (a hard prerequisite for every tier)
+# ==============================================================================
 def _package_needs_secret(pkg: Dict[str, Any]) -> bool:
-    """True if the package REQUIRES an env var / secret we cannot supply."""
     for ev in pkg.get("environmentVariables") or []:
         if ev.get("isRequired") or ev.get("isSecret"):
             return True
@@ -110,10 +131,8 @@ def _package_needs_secret(pkg: Dict[str, Any]) -> bool:
 
 
 def _positional_values(items) -> List[str]:
-    """Extract literal positional argument values, skipping variable inputs."""
     vals: List[str] = []
     for it in items or []:
-        # Only concrete literals with no user/variable substitution.
         if (
             it.get("type") in (None, "positional")
             and it.get("value")
@@ -123,74 +142,286 @@ def _positional_values(items) -> List[str]:
     return vals
 
 
-def to_stdio_config(
-    server: Dict[str, Any], trusted_namespaces=DEFAULT_TRUSTED_NAMESPACES
-) -> Optional[Dict[str, Any]]:
-    """Map a registry ``server`` to a stdio MCPManager config, or None.
-
-    Returns None (skip) unless the server is trusted, active, and exposes a
-    locally-runnable npm/PyPI stdio package that needs no secret to start.
-    """
-    name = server.get("name") or ""
-    if not _is_trusted(name, trusted_namespaces):
-        return None
-    if server.get("_status") not in (None, "active"):
-        return None
+def _runnable_package(server: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """First npm/PyPI stdio package that needs no secret to start, or None."""
     for pkg in server.get("packages") or []:
         registry_type = (pkg.get("registryType") or "").lower()
-        runtime = _RUNTIME_BY_REGISTRY.get(registry_type)
-        transport = (pkg.get("transport") or {}).get("type")
-        identifier = pkg.get("identifier")
-        if not runtime or transport != "stdio" or not identifier:
+        if registry_type not in _RUNTIME_BY_REGISTRY:
             continue
-        if _package_needs_secret(pkg):
+        if (pkg.get("transport") or {}).get("type") != "stdio":
             continue
-        runtime_hint = pkg.get("runtimeHint") or runtime
-        args = _positional_values(pkg.get("runtimeArguments"))
-        # npx needs -y to run without an install prompt; add it if the registry
-        # entry did not already carry it.
-        if runtime_hint == "npx" and "-y" not in args:
-            args = ["-y", *args]
-        args = [*args, identifier, *_positional_values(pkg.get("packageArguments"))]
-        return {
-            "name": name.replace("/", "."),
-            "transport": "stdio",
-            "command": runtime_hint,
-            "args": args,
-            "_discovered": True,
-        }
+        if not pkg.get("identifier") or _package_needs_secret(pkg):
+            continue
+        return pkg
     return None
+
+
+def _pinned_identifier(pkg: Dict[str, Any], runtime_hint: str) -> str:
+    """``pkg@version`` (npx) / ``pkg==version`` (uvx) when a version is known."""
+    identifier = pkg["identifier"]
+    version = pkg.get("version")
+    if not version:
+        return identifier
+    return (
+        f"{identifier}=={version}"
+        if runtime_hint == "uvx"
+        else f"{identifier}@{version}"
+    )
+
+
+def _to_config(server: Dict[str, Any], pkg: Dict[str, Any]) -> Dict[str, Any]:
+    runtime = _RUNTIME_BY_REGISTRY[(pkg.get("registryType") or "").lower()]
+    runtime_hint = pkg.get("runtimeHint") or runtime
+    args = _positional_values(pkg.get("runtimeArguments"))
+    if runtime_hint == "npx" and "-y" not in args:
+        args = ["-y", *args]
+    args = [
+        *args,
+        _pinned_identifier(pkg, runtime_hint),
+        *_positional_values(pkg.get("packageArguments")),
+    ]
+    return {
+        "name": server["name"].replace("/", "."),
+        "transport": "stdio",
+        "command": runtime_hint,
+        "args": args,
+        "_discovered": True,
+    }
+
+
+# ==============================================================================
+# Trust signals + scoring
+# ==============================================================================
+@dataclass
+class TrustSignals:
+    npm_downloads_month: Optional[int] = None
+    github_stars: Optional[int] = None
+    github_pushed_days: Optional[int] = None
+    archived: bool = False
+
+
+def _parse_github(url: str) -> Optional[str]:
+    if not url or "github.com" not in url:
+        return None
+    tail = url.split("github.com/", 1)[1].strip("/")
+    parts = tail.split("/")
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        return None
+    return f"{parts[0]}/{parts[1].removesuffix('.git')}"
+
+
+def _github_signals(repo_url: str, timeout: float) -> Dict[str, Any]:
+    slug = _parse_github(repo_url or "")
+    if not slug:
+        return {}
+    data = _http_get_json(f"https://api.github.com/repos/{slug}", timeout)
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, Any] = {
+        "stars": data.get("stargazers_count"),
+        "archived": bool(data.get("archived")),
+    }
+    pushed = data.get("pushed_at")
+    if isinstance(pushed, str):
+        try:
+            dt = datetime.fromisoformat(pushed.replace("Z", "+00:00"))
+            out["pushed_days"] = (datetime.now(timezone.utc) - dt).days
+        except ValueError:
+            pass
+    return out
+
+
+def _npm_downloads(pkg_id: str, timeout: float) -> Optional[int]:
+    quoted = urllib.parse.quote(pkg_id, safe="@")
+    data = _http_get_json(
+        f"https://api.npmjs.org/downloads/point/last-month/{quoted}", timeout
+    )
+    if isinstance(data, dict) and isinstance(data.get("downloads"), int):
+        return data["downloads"]
+    return None
+
+
+def gather_signals(
+    server: Dict[str, Any], pkg: Dict[str, Any], timeout: float = _DEFAULT_TIMEOUT
+) -> TrustSignals:
+    """Best-effort live trust signals for a candidate. Never raises."""
+    sig = TrustSignals()
+    gh = _github_signals((server.get("repository") or {}).get("url", ""), timeout)
+    sig.github_stars = gh.get("stars")
+    sig.github_pushed_days = gh.get("pushed_days")
+    sig.archived = bool(gh.get("archived"))
+    if (pkg.get("registryType") or "").lower() == "npm":
+        sig.npm_downloads_month = _npm_downloads(pkg["identifier"], timeout)
+    return sig
+
+
+def _tier_score(value: Optional[int], tiers) -> float:
+    if value is None:
+        return 0.0
+    for threshold, points in tiers:
+        if value >= threshold:
+            return points
+    return 0.0
+
+
+def _in_namespace(name: str, trusted_namespaces) -> bool:
+    return any(
+        name == ns or name.startswith(ns + "/") for ns in trusted_namespaces or ()
+    )
+
+
+def score_server(
+    server: Dict[str, Any], signals: TrustSignals, trusted_namespaces=()
+) -> float:
+    """Trust score in ``0..1``. Hard-zero on inactive/superseded/archived."""
+    if server.get("_status") not in (None, "active"):
+        return 0.0
+    if server.get("_is_latest") is False or signals.archived:
+        return 0.0
+    score = 0.0
+    if _in_namespace(server.get("name") or "", trusted_namespaces):
+        score += _NAMESPACE_BOOST
+    score += _tier_score(signals.npm_downloads_month, _DOWNLOAD_TIERS)
+    score += _tier_score(signals.github_stars, _STAR_TIERS)
+    score += _tier_score(signals.github_pushed_days, _RECENCY_TIERS)
+    return min(score, 1.0)
+
+
+# ==============================================================================
+# Curated tier (the vetted, tiered core — see mcp_catalog)
+# ==============================================================================
+def load_catalog(path: Path = _CURATED_PATH) -> List[Dict[str, Any]]:
+    """The curated catalog: the version-pinned ``curated_servers.json`` produced
+    by the audit if present, else the in-repo :data:`mcp_catalog.CATALOG`."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        servers = raw.get("servers")
+        if isinstance(servers, list) and servers:
+            return servers
+    except (OSError, ValueError):
+        pass
+    from misterdev.core.integration.mcp_catalog import CATALOG
+
+    return CATALOG
+
+
+def select_curated(
+    tiers=("core",),
+    env: Optional[Dict[str, str]] = None,
+    catalog: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Curated stdio configs for the requested tiers.
+
+    Admits only entries that are locally runnable (a ``command`` is set — not a
+    manual Go/Docker/OAuth entry) AND whose ``requires`` env vars are all
+    present, so a keyed server (e.g. Postgres needing ``DATABASE_URI``) mounts
+    only when it can actually run. ``tiers`` accepts ``"all"`` for every tier.
+    """
+    if env is None:
+        import os
+
+        env = dict(os.environ)
+    if catalog is None:
+        catalog = load_catalog()
+    want = None if "all" in tiers else set(tiers)
+    out: List[Dict[str, Any]] = []
+    for entry in catalog:
+        if want is not None and entry.get("tier") not in want:
+            continue
+        command = entry.get("command")
+        if not command or not isinstance(entry.get("args"), list):
+            continue  # manual/remote entry — recorded, not auto-mounted
+        missing = [v for v in entry.get("requires") or [] if not env.get(v)]
+        if missing:
+            logger.info(f"MCP curated: '{entry['name']}' needs {missing}; not mounting")
+            continue
+        out.append(
+            {
+                "name": entry["name"],
+                "transport": "stdio",
+                "command": command,
+                "args": entry["args"],
+                "_curated": True,
+            }
+        )
+    return out
+
+
+# ==============================================================================
+# Discovery (the trust ladder)
+# ==============================================================================
+def to_stdio_config(
+    server: Dict[str, Any],
+    trusted_namespaces=DEFAULT_TRUSTED_NAMESPACES,
+    min_trust: float = _DEFAULT_MIN_TRUST,
+    signals: Optional[TrustSignals] = None,
+    timeout: float = _DEFAULT_TIMEOUT,
+) -> Optional[Dict[str, Any]]:
+    """Map a registry ``server`` to a stdio config if runnable AND trusted enough.
+
+    Trust is signal-scored (``min_trust``), with ``["*"]`` bypassing the quality
+    bar. ``signals`` may be injected (tests / pre-gathered); otherwise gathered
+    live for the runnable candidate only.
+    """
+    pkg = _runnable_package(server)
+    if not pkg:
+        return None
+    permissive = "*" in (trusted_namespaces or ())
+    if not permissive:
+        if signals is None:
+            signals = gather_signals(server, pkg, timeout)
+        score = score_server(server, signals, trusted_namespaces)
+        if score < min_trust:
+            logger.info(
+                f"MCP discovery: '{server['name']}' scored {score:.2f} < "
+                f"{min_trust:.2f}; skipping (downloads="
+                f"{signals.npm_downloads_month}, stars={signals.github_stars})"
+            )
+            return None
+    elif server.get("_status") not in (None, "active"):
+        return None
+    return _to_config(server, pkg)
 
 
 def discover_servers(
     queries: List[str],
     trusted_namespaces=DEFAULT_TRUSTED_NAMESPACES,
     max_servers: int = _DEFAULT_MAX_SERVERS,
+    min_trust: float = _DEFAULT_MIN_TRUST,
     per_query_limit: int = 10,
+    max_evaluations: int = _DEFAULT_MAX_EVALUATIONS,
     timeout: float = _DEFAULT_TIMEOUT,
 ) -> List[Dict[str, Any]]:
-    """Search each query, trust-map the hits, dedup by name, cap the total.
+    """Search each query and admit the long-tail servers by trust score.
 
-    Returns stdio server configs ready to hand to :class:`MCPManager`. Loud about
-    what it admitted and (when permissive) about the risk it is taking.
+    Signal-scored up to ``max_evaluations`` network checks; deduped by name;
+    capped at ``max_servers``. (The vetted core mounts separately and by name
+    via :func:`select_curated`, so discovery is purely the signal tier.)
     """
     if not queries:
         return []
-    if "*" in trusted_namespaces:
+    if "*" in (trusted_namespaces or ()):
         logger.warning(
             "MCP discovery is in PERMISSIVE trust mode: any registry server may "
             "be installed and run locally. This is arbitrary code execution."
         )
     seen: set = set()
     out: List[Dict[str, Any]] = []
+    evaluations = 0
     for q in queries:
         if len(out) >= max_servers:
             break
         for server in search_registry(q, limit=per_query_limit, timeout=timeout):
-            cfg = to_stdio_config(server, trusted_namespaces)
-            if not cfg or cfg["name"] in seen:
+            name = server.get("name") or ""
+            if name in seen or evaluations >= max_evaluations:
                 continue
-            seen.add(cfg["name"])
+            evaluations += 1
+            cfg = to_stdio_config(
+                server, trusted_namespaces, min_trust, timeout=timeout
+            )
+            if not cfg:
+                continue
+            seen.add(name)
             out.append(cfg)
             logger.info(
                 f"MCP discovery: provisioning '{cfg['name']}' "
@@ -199,5 +430,5 @@ def discover_servers(
             if len(out) >= max_servers:
                 break
     if not out:
-        logger.info(f"MCP discovery: no trusted runnable server for {queries!r}")
+        logger.info(f"MCP discovery: no admissible server for {queries!r}")
     return out

@@ -74,24 +74,38 @@ mcp:
 
 For a remote gateway, the auth token is read from the environment variable named by `api_key_env` and sent as `Authorization: Bearer <token>` — the token stays out of config on disk. Extra static `headers` can be added alongside.
 
-### Discover servers on the fly (free — no hosted gateway)
+### The three-layer server model (free — no hosted gateway)
 
-The whole MCP ecosystem is usable for free: nearly every server ships as an npm/PyPI package that runs locally as a stdio subprocess. `mcp.discover` takes a list of capability queries, searches the public [official registry](https://registry.modelcontextprotocol.io) (no auth, no payment), and appends the matching, locally-runnable servers — spawned via `npx`/`uvx` — to `mcp.servers` at build start.
+The whole MCP ecosystem is usable for free: nearly every server ships as an npm/PyPI package that runs locally as a stdio subprocess. Reach it through three layers, smallest and most-trusted first:
+
+1. **Curated tier** — a vetted, version-pinned catalog (`mcp_catalog.py`), organised by load tier so a build mounts a *small* high-signal stack and augments on demand. This is the default and the safest path.
+2. **Discovery tier** — the long tail, searched on demand from the [official registry](https://registry.modelcontextprotocol.io) and admitted by trust score.
+3. **The shell** — every *CLI tool* (`ruff`, `mypy`, `eslint`, `clippy`, `ripgrep`, `jq`, `git`, …) runs through Desktop Commander / the shell, **not** a per-tool MCP. Adding an MCP whose only job duplicates a shell command inflates context and confuses tool selection; don't.
+
+#### Curated tier (`mcp.curated`)
+
+```yaml
+mcp:
+  curated: "core"        # true | "core" | "project" | "task" | "all" | [list of tiers]
+```
+
+Mounts the catalog entries for the requested tier(s). Each is version-pinned (`pkg@1.2.3`, so a malicious *future* release cannot silently apply) and **config-gated**: a keyed server (e.g. Postgres needs `DATABASE_URI`, E2B needs `E2B_API_KEY`) mounts only when its env vars are present; otherwise it is skipped with a log line. Tiers: `core` (default-on: workspace, git, docs, quality), `project` (per-project: deploy target, database, observability), `task` (heavy, only when needed: browser, design, workflow). Entries that need a Go binary / Docker / OAuth are recorded in the catalog as *manual* and are not auto-mounted. Refresh + re-pin with `python scripts/audit_mcp_servers.py`.
+
+#### Discovery tier (`mcp.discover`)
 
 ```yaml
 mcp:
   discover: ["fetch web pages", "query sqlite"]   # capability queries
   discover_max_servers: 3                          # cap per build (default 3)
-  trusted_namespaces:                              # who may auto-install (see below)
-    - "io.github.modelcontextprotocol"
-    # - "*"                                        # trust ALL — arbitrary code execution
+  min_trust: 0.5                                   # quality bar (0..1)
+  trusted_namespaces: ["io.github.modelcontextprotocol"]  # namespace boost; ["*"] = trust all
 ```
 
-**This runs code from the internet locally.** A discovered server is a package installed and executed with the build's file access and network. So provisioning is trust-gated and conservative by default:
+**This runs code from the internet locally.** A discovered server is a package installed and executed with the build's file access and network, so admission goes through a trust score, not a bare on/off gate:
 
-- Only servers whose reverse-DNS name starts with a `trusted_namespaces` prefix auto-install. The default set is the official publishers — which matches little of the (largely third-party) registry on purpose. Reaching the **full ecosystem** is a deliberate opt-in: add the specific publishers you vet, or set `["*"]` to trust everything (logged loudly; this is remote code execution).
-- Paid *remotes* (a hosted gateway needing an API key) and any package that **requires** a secret/env var to start are skipped — they could not run for free anyway.
-- Discovered servers spawn with a **minimal environment**, never the build's secrets, and are still bounded by the same discovery/call timeouts and the `allow_tools` allowlist.
+- Each candidate is scored on real signals — npm monthly downloads, GitHub stars, recency, and archived/inactive status — and admitted only at/above `min_trust`. A `trusted_namespaces` match is a strong *boost*, not the only key. `["*"]` trusts everything (logged loudly; remote code execution) and skips the quality bar.
+- Paid *remotes* (a hosted gateway needing an API key) and any package that **requires** a secret to start are skipped — they could not run for free anyway.
+- Discovered servers spawn with a **minimal environment**, never the build's secrets, and are bounded by the discovery/call timeouts, `discover_max_servers`, and the `allow_tools` allowlist.
 
 ### The allowlist
 

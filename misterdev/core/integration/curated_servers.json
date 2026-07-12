@@ -1,0 +1,441 @@
+{
+  "generated_by": "scripts/audit_mcp_servers.py",
+  "servers": [
+    {
+      "name": "desktop-commander",
+      "category": "workspace",
+      "tier": "core",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@wonderwhy-er/desktop-commander@0.2.45"
+      ],
+      "requires": [],
+      "repository": "https://github.com/wonderwhy-er/DesktopCommanderMCP",
+      "why": "Shell + file ops in one surface"
+    },
+    {
+      "name": "serena",
+      "category": "workspace",
+      "tier": "core",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/oraios/serena",
+      "why": "LSP-backed symbol navigation (manual: uvx-from-git)"
+    },
+    {
+      "name": "e2b",
+      "category": "workspace",
+      "tier": "core",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@e2b/mcp-server@0.2.3"
+      ],
+      "requires": [
+        "E2B_API_KEY"
+      ],
+      "repository": "https://github.com/e2b-dev/mcp-server",
+      "why": "Sandboxed Linux VMs for code execution"
+    },
+    {
+      "name": "git",
+      "category": "vcs",
+      "tier": "core",
+      "command": "uvx",
+      "args": [
+        "mcp-server-git==2026.7.10"
+      ],
+      "requires": [],
+      "repository": "https://github.com/modelcontextprotocol/servers",
+      "why": "Native git operations"
+    },
+    {
+      "name": "github",
+      "category": "vcs",
+      "tier": "core",
+      "command": null,
+      "args": [],
+      "requires": [
+        "GITHUB_PERSONAL_ACCESS_TOKEN"
+      ],
+      "repository": "https://github.com/github/github-mcp-server",
+      "why": "Official GitHub: PRs/issues/Actions/code search (Go/Docker)"
+    },
+    {
+      "name": "context7",
+      "category": "docs",
+      "tier": "core",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp@3.2.3"
+      ],
+      "requires": [],
+      "repository": "https://github.com/upstash/context7",
+      "why": "Version-pinned library docs; anti-hallucination"
+    },
+    {
+      "name": "fetch",
+      "category": "docs",
+      "tier": "core",
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch==2026.7.10"
+      ],
+      "requires": [],
+      "repository": "https://github.com/modelcontextprotocol/servers",
+      "why": "URL fetch + markdown"
+    },
+    {
+      "name": "sentry",
+      "category": "quality",
+      "tier": "core",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/getsentry/sentry-mcp",
+      "why": "Error triage, release tracking (OAuth remote)"
+    },
+    {
+      "name": "semgrep",
+      "category": "quality",
+      "tier": "core",
+      "command": "uvx",
+      "args": [
+        "semgrep-mcp==0.9.0"
+      ],
+      "requires": [],
+      "repository": "https://github.com/semgrep/mcp",
+      "why": "Static analysis; find real bugs in a diff"
+    },
+    {
+      "name": "socket",
+      "category": "quality",
+      "tier": "core",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@socketsecurity/mcp@0.0.20"
+      ],
+      "requires": [],
+      "repository": "https://github.com/SocketDev/socket-mcp",
+      "why": "Supply-chain: malicious/typosquat dep checks"
+    },
+    {
+      "name": "time",
+      "category": "util",
+      "tier": "core",
+      "command": "uvx",
+      "args": [
+        "mcp-server-time==2026.7.10"
+      ],
+      "requires": [],
+      "repository": "https://github.com/modelcontextprotocol/servers",
+      "why": "Timezone conversion, current time"
+    },
+    {
+      "name": "sequential-thinking",
+      "category": "util",
+      "tier": "core",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking@2026.7.4"
+      ],
+      "requires": [],
+      "repository": "https://github.com/modelcontextprotocol/servers",
+      "why": "Structured multi-step reasoning"
+    },
+    {
+      "name": "postgres",
+      "category": "data",
+      "tier": "project",
+      "command": "uvx",
+      "args": [
+        "postgres-mcp==0.3.0"
+      ],
+      "requires": [
+        "DATABASE_URI"
+      ],
+      "repository": "https://github.com/crystaldba/postgres-mcp",
+      "why": "Schema introspection, safe queries, plans"
+    },
+    {
+      "name": "vercel",
+      "category": "deploy",
+      "tier": "project",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/vercel/mcp-server",
+      "why": "Deployments, domains, env, logs (official)"
+    },
+    {
+      "name": "fly",
+      "category": "deploy",
+      "tier": "project",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/superfly/fly-mcp",
+      "why": "Machine lifecycle, multi-region deploy (official)"
+    },
+    {
+      "name": "railway",
+      "category": "deploy",
+      "tier": "project",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/railwayapp/mcp-railway",
+      "why": "Rapid full-stack prototyping deploy (official)"
+    },
+    {
+      "name": "crates-io",
+      "category": "docs",
+      "tier": "project",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/rust-lang/cratesio-mcp",
+      "why": "Crate search/versions/features (Rust)"
+    },
+    {
+      "name": "docs-rs",
+      "category": "docs",
+      "tier": "project",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/rust-lang/docsrs-mcp",
+      "why": "Version-pinned Rust API docs"
+    },
+    {
+      "name": "grafana",
+      "category": "observability",
+      "tier": "project",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/grafana/mcp-grafana",
+      "why": "Dashboards/alerts/metric queries (official)"
+    },
+    {
+      "name": "honeycomb",
+      "category": "observability",
+      "tier": "project",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/honeycombio/honeycomb-mcp",
+      "why": "Distributed tracing / OTel event exploration"
+    },
+    {
+      "name": "elasticsearch",
+      "category": "data",
+      "tier": "project",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/elastic/mcp-server-elasticsearch",
+      "why": "Query/mapping/index management (official)"
+    },
+    {
+      "name": "chroma",
+      "category": "data",
+      "tier": "project",
+      "command": "uvx",
+      "args": [
+        "chroma-mcp==0.2.6"
+      ],
+      "requires": [],
+      "repository": "https://github.com/chroma-core/chroma-mcp",
+      "why": "Local embedded vector store"
+    },
+    {
+      "name": "basic-memory",
+      "category": "memory",
+      "tier": "project",
+      "command": "uvx",
+      "args": [
+        "basic-memory==0.22.1"
+      ],
+      "requires": [],
+      "repository": "https://github.com/basicmachines-co/basic-memory",
+      "why": "File-backed markdown knowledge graph"
+    },
+    {
+      "name": "docker",
+      "category": "infra",
+      "tier": "project",
+      "command": "uvx",
+      "args": [
+        "mcp-server-docker==0.2.1"
+      ],
+      "requires": [],
+      "repository": "https://github.com/ckreiling/mcp-server-docker",
+      "why": "Container lifecycle, logs, compose"
+    },
+    {
+      "name": "playwright",
+      "category": "browser",
+      "tier": "task",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@0.0.78"
+      ],
+      "requires": [],
+      "repository": "https://github.com/microsoft/playwright-mcp",
+      "why": "Full browser control"
+    },
+    {
+      "name": "exa",
+      "category": "docs",
+      "tier": "task",
+      "command": "npx",
+      "args": [
+        "-y",
+        "exa-mcp-server@3.2.1"
+      ],
+      "requires": [
+        "EXA_API_KEY"
+      ],
+      "repository": "https://github.com/exa-labs/exa-mcp-server",
+      "why": "Semantic web search for AI"
+    },
+    {
+      "name": "ref",
+      "category": "docs",
+      "tier": "task",
+      "command": "npx",
+      "args": [
+        "-y",
+        "ref-tools-mcp@3.0.3"
+      ],
+      "requires": [
+        "REF_API_KEY"
+      ],
+      "repository": "https://github.com/ref-tools/ref-tools-mcp",
+      "why": "Cross-repo symbol search in the wild"
+    },
+    {
+      "name": "kubernetes",
+      "category": "infra",
+      "tier": "task",
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-server-kubernetes@4.0.1"
+      ],
+      "requires": [],
+      "repository": "https://github.com/Flux159/mcp-server-kubernetes",
+      "why": "Cluster ops, safe apply"
+    },
+    {
+      "name": "terraform",
+      "category": "infra",
+      "tier": "task",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/hashicorp/terraform-mcp-server",
+      "why": "Providers/modules/plans (official, Docker)"
+    },
+    {
+      "name": "figma",
+      "category": "design",
+      "tier": "task",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/figma/figma-mcp-server",
+      "why": "Read design specs, exact values (official Dev Mode)"
+    },
+    {
+      "name": "launchdarkly",
+      "category": "flags",
+      "tier": "task",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/launchdarkly/mcp-server",
+      "why": "Flag inspection, targeting, audit (official)"
+    },
+    {
+      "name": "posthog",
+      "category": "analytics",
+      "tier": "task",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/posthog/mcp",
+      "why": "Product analytics, replays, flags (official)"
+    },
+    {
+      "name": "temporal",
+      "category": "workflow",
+      "tier": "task",
+      "command": null,
+      "args": [],
+      "requires": [],
+      "repository": "https://github.com/temporalio/mcp-server-temporal",
+      "why": "Workflow/activity/task-queue inspection (official)"
+    },
+    {
+      "name": "notion",
+      "category": "docs",
+      "tier": "task",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@notionhq/notion-mcp-server@2.4.1"
+      ],
+      "requires": [
+        "NOTION_TOKEN"
+      ],
+      "repository": "https://github.com/makenotion/notion-mcp-server",
+      "why": "Read/write pages, query databases (official)"
+    },
+    {
+      "name": "mermaid",
+      "category": "diagram",
+      "tier": "task",
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-mermaid@0.4.1"
+      ],
+      "requires": [],
+      "repository": "https://github.com/mermaid-js/mermaid-mcp",
+      "why": "Diagram generation from text"
+    },
+    {
+      "name": "jupyter",
+      "category": "data",
+      "tier": "task",
+      "command": "uvx",
+      "args": [
+        "jupyter-mcp-server==1.0.3"
+      ],
+      "requires": [],
+      "repository": "https://github.com/jupyter/mcp-jupyter",
+      "why": "Notebook execution and inspection"
+    },
+    {
+      "name": "everything",
+      "category": "util",
+      "tier": "task",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-everything@2026.7.4"
+      ],
+      "requires": [],
+      "repository": "https://github.com/modelcontextprotocol/servers",
+      "why": "Reference test server (all MCP features)"
+    }
+  ]
+}

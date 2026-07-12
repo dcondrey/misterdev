@@ -141,6 +141,19 @@ class Project:
             self._mcp_built = True
             mcp_cfg = self.config.get("mcp") or {}
             servers = list(mcp_cfg.get("servers") or [])
+            # Curated tier: mount the vetted core stack by load tier (config-gated
+            # so keyed servers appear only when their env vars are set). ``true``
+            # -> "core"; a string/list selects tiers ("core"/"project"/"task"/"all").
+            curated = mcp_cfg.get("curated")
+            if curated:
+                from misterdev.core.integration.mcp_registry import select_curated
+
+                tiers = (
+                    ("core",)
+                    if curated is True
+                    else ((curated,) if isinstance(curated, str) else tuple(curated))
+                )
+                servers.extend(select_curated(tiers))
             # On-the-fly discovery: search the free official registry for servers
             # matching each capability query and append the trusted, locally-
             # runnable ones (npx/uvx stdio). Best-effort; never blocks the build.
@@ -159,6 +172,7 @@ class Project:
                         list(discover),
                         trusted_namespaces=trusted,
                         max_servers=int(mcp_cfg.get("discover_max_servers", 3)),
+                        min_trust=float(mcp_cfg.get("min_trust", 0.5)),
                     )
                 )
             if servers:
