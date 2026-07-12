@@ -21,6 +21,14 @@ pip install 'misterdev[web]'                 # headless-browser web verification
 pip install 'misterdev[mcp]'                 # Model Context Protocol tool-host substrate
 ```
 
+### Man page
+
+`man misterdev` works once the install prefix's `share/man` is on your `MANPATH` (typical for system, `--user`, and `pipx` installs). From a source checkout, view it directly with `man ./man/misterdev.1`, or install it for your user:
+
+```bash
+install -Dm644 man/misterdev.1 ~/.local/share/man/man1/misterdev.1
+```
+
 ## Set an API key
 
 misterdev runs against OpenRouter or Anthropic. The key is read from an environment variable named by `llm.api_key_env_var` (default `OPENROUTER_API_KEY`); it never lives in config on disk.

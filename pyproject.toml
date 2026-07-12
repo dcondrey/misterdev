@@ -92,6 +92,11 @@ include = ["misterdev*"]
 # Ship the PEP 561 marker so downstreams get the inline types.
 misterdev = ["py.typed"]
 
+[tool.setuptools.data-files]
+# Install the man page so `man misterdev` works after a prefix/user/pipx install
+# (the prefix's share/man must be on MANPATH; see docs/getting-started.md).
+"share/man/man1" = ["man/misterdev.1"]
+
 [tool.ruff]
 target-version = "py310"
 line-length = 88

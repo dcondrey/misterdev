@@ -1,0 +1,142 @@
+.TH MISTERDEV 1 "2026-07-11" "misterdev" "User Commands"
+.SH NAME
+misterdev \- autonomous LLM build orchestrator
+.SH SYNOPSIS
+.B misterdev
+[\fIcommand\fR] [\fIoptions\fR]
+.br
+.B misterdev
+\(dq\fIplain-english request\fR\(dq
+.br
+.B misterdev
+.SH DESCRIPTION
+.B misterdev
+points a large language model at a repository and a goal, reads the codebase as
+a symbol graph, decomposes the goal into ordered tasks, edits code with anchored
+SEARCH/REPLACE hunks, and runs every change through correctness gates (build,
+lint, tests, typecheck) before reporting done. A change that regresses the test
+suite is reverted through git; nothing merges unless it stays green.
+.PP
+There are three ways to drive it, from most guided to most explicit:
+.TP
+.B Interactive
+Run
+.B misterdev
+with no arguments (or
+.BR "misterdev i" )
+for a guided menu \(em pick an action, answer a couple of prompts, confirm.
+Nothing to memorize.
+.TP
+.B Natural language
+If the first argument is not a known command, the whole line is treated as plain
+English:
+.B misterdev
+maps it to an action with its own model, previews it, and asks before anything
+mutating.
+.TP
+.B Flags
+The subcommands and options below, for scripts and power users.
+.SH COMMANDS
+.TP
+.BR interactive ", " i
+Launch the guided interactive menu (also the no-argument default).
+.TP
+.B build \fR[\fIpath\fR] [\fIgoal\fR] [options]
+Autonomously build, debug, or complete a goal in a project. The goal is free
+text; the words \fBdebug\fR or \fBcomplete\fR select those modes.
+.TP
+.B run \fR[\fIpath\fR] [options]
+Execute a project's pending tasks with dependency-aware ordering, parallel
+waves, and progress-based resume.
+.TP
+.B plan \fR[\fIpath\fR] [options]
+Analyze the project, recommend work, and compose a plan interactively.
+.TP
+.B status \fR[\fIpath\fR]
+Show a project's tasks and their state.
+.TP
+.B report \fR[\fIpath\fR]
+Summarize the latest build's cost, per-model ledger, and audit trail
+(read-only).
+.TP
+.B scan \fIdir\fR
+Discover and register projects (those with a \fBproject.yaml\fR) under a
+directory.
+.TP
+.B list
+List registered projects.
+.SH OPTIONS
+.SS build
+.TP
+.BI \-\-budget " DOLLARS"
+Cap the run's spend (default 100).
+.TP
+.B \-\-dry-run
+Plan only; show what would be done without editing.
+.TP
+.BI \-\-max-tasks " N"
+Cap the number of decomposed tasks.
+.TP
+.B \-\-no-verify
+Skip the final quality-gate chain.
+.SS run
+.TP
+.BI \-\-tasks " FILE"
+Execute an external task-list file instead of the \fBdevplan/\fR directory. The
+file may live in another repository and be in any format \(em JSON, YAML,
+Markdown, or plain text; ordered or unordered lists; multi-line tasks; phases;
+and a dependency table (\fB| Task | Blocked By |\fR) that unlocks parallel
+execution.
+.TP
+.BI \-\-task " ID"
+Run a single task by id.
+.TP
+.B \-\-dry-run
+Show the execution plan (topological waves) without running.
+.TP
+.B \-\-status
+Show which tasks would run vs. skip, then exit.
+.TP
+.B \-\-force
+Re-run all tasks, ignoring the completion cache.
+.SH EXAMPLES
+.TP
+Guided menu (no flags):
+.B misterdev
+.TP
+Plain English:
+.B misterdev \(dqfix the flaky auth test but keep it cheap\(dq
+.TP
+Explicit build with a budget:
+.B misterdev build . \(dqadd rate limiting to the public API\(dq \-\-budget 5
+.TP
+Run a hand-written task list from another repo, previewing first:
+.B misterdev run ./app \-\-tasks ../plans/PLAN.md \-\-dry-run
+.TP
+Fix everything that is broken:
+.B misterdev build . debug
+.SH ENVIRONMENT
+.TP
+.B OPENROUTER_API_KEY
+Default API key variable (overridable via \fBllm.api_key_env_var\fR in
+\fBproject.yaml\fR). The key is never written to config on disk.
+.SH FILES
+.TP
+.B project.yaml
+Per-project configuration (language, build/test/lint commands, gates, MCP,
+targets, \fBtasklist\fR). See \fBdocs/configuration.md\fR.
+.TP
+.B devplan/
+Directory of pre-written task files (Markdown + YAML front-matter).
+.TP
+.B .orchestrator/
+Per-project run state: progress cache, contracts, worktrees, audit trail.
+.TP
+.B ~/.misterdev/registry.json
+Registered-project cache. Stale entries (no \fBproject.yaml\fR) are pruned on
+load.
+.SH SEE ALSO
+Project documentation under \fBdocs/\fR: getting-started, configuration, mcp,
+plugins. Homepage: https://github.com/dcondrey/misterdev
+.SH AUTHOR
+David Condrey.
