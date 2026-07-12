@@ -53,6 +53,8 @@ def write_container_project_yaml(
         f'test_command: "{instance.test_command}"\n'
         "orchestrator:\n"
         "  spec_as_tests: true\n"
+        "build:\n"
+        "  max_tasks: 1\n"
         "environment:\n"
         "  type: docker\n"
         f'  image: "{instance_image(instance, arch)}"\n'

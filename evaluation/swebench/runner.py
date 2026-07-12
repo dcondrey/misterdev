@@ -70,12 +70,18 @@ def _write_project_yaml(repo: Path, instance: SWEBenchInstance) -> None:
     # targets the judged behavior. Advisory (non-blocking) so a stray repro can't
     # burn the per-instance budget, but it still directs the edit as the concrete
     # objective. The repo's own suite stays the authoritative regression gate.
+    # max_tasks: 1 — a SWE-bench instance is ONE surgical bug fix, not a project
+    # build. Uncapped, misterdev's SMART decomposition treats the issue like a
+    # feature (multiple tasks, docs/changelog edits), which is the wrong shape and
+    # wastes the budget away from the code fix the hidden tests judge.
     cfg = (
         f'name: "{instance.instance_id}"\n'
         f'language: "{instance.language}"\n'
         f'test_command: "{instance.test_command}"\n'
         "orchestrator:\n"
         "  spec_as_tests: true\n"
+        "build:\n"
+        "  max_tasks: 1\n"
     )
     (repo / "project.yaml").write_text(cfg, encoding="utf-8")
 
@@ -116,7 +122,12 @@ def run_instance(
             from misterdev.agent import ProjectOrchestrator
 
             orchestrator = ProjectOrchestrator()
-        orchestrator.build(str(repo), f"{instance.problem_statement} {build_args}")
+        goal = (
+            "Make the single, minimal code change that fixes the issue below. Do "
+            "NOT add or modify tests, documentation, or changelog/HISTORY entries "
+            "— only the code fix.\n\n" + instance.problem_statement
+        )
+        orchestrator.build(str(repo), f"{goal} {build_args}")
 
         patch = _git(repo, f"diff {base} HEAD")
         result = grade(
