@@ -143,6 +143,13 @@ def main():
     )
     run_parser.add_argument("--task", type=str, help="Specific task ID to run")
     run_parser.add_argument(
+        "--tasks",
+        type=str,
+        metavar="FILE",
+        help="Path to an external task-list file (JSON/YAML/Markdown/text, any "
+        "layout — may live in another repo). Overrides the devplan directory.",
+    )
+    run_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show execution plan without running tasks",
@@ -296,6 +303,7 @@ def main():
                 skip_preflight=args.skip_preflight,
                 force=args.force,
                 status=args.status,
+                tasklist=args.tasks,
             )
     elif args.command == "build":
         build_args = list(args.prompt)

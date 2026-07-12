@@ -18,7 +18,19 @@ class TaskManager:
         self.tasks: Dict[str, Task] = {}
 
     def discover_tasks(self) -> List[Task]:
-        """Scans the devplan directory for markdown files with front-matter."""
+        """Load the task set. A configured external ``tasklist`` file (any
+        format — JSON/YAML/Markdown/text — possibly in another repo) takes
+        precedence; otherwise scan the devplan directory for markdown files
+        with front-matter."""
+        tasklist = self.project.config.get("tasklist")
+        if tasklist:
+            path = Path(tasklist)
+            if not path.is_absolute():
+                path = self.project.path / tasklist
+            if path.exists():
+                return self.load_task_list(path)
+            logger.warning(f"Configured tasklist {path} not found; scanning devplan.")
+
         devplan_path = self.project.path / self.devplan_dir
         if not devplan_path.exists():
             logger.warning(f"Devplan directory {devplan_path} does not exist.")
@@ -40,6 +52,38 @@ class TaskManager:
             self._detect_file_overlaps()
         logger.info(f"Discovered {len(discovered_tasks)} tasks.")
         return discovered_tasks
+
+    def load_task_list(self, path: Path) -> List[Task]:
+        """Parse an arbitrary-format external task list into registered Tasks.
+
+        Deterministic across JSON/YAML/Markdown/text (phases, ordered/unordered
+        lists, multi-line tasks, dependency tables); falls back to LLM
+        normalization for messy input. Dependencies parsed here flow into the
+        same topological/parallel execution as devplan tasks. Never raises: an
+        unparseable list yields an empty set, logged."""
+        from misterdev.core.planning.tasklist_parser import parse_task_list
+
+        llm = None
+        client = getattr(self.project, "llm_client", None)
+        if client is not None:
+
+            def llm(prompt: str, system: str) -> str:
+                return client.generate_code(prompt, system)
+
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as e:
+            logger.error(f"Cannot read tasklist {path}: {e}")
+            return []
+        tasks = parse_task_list(text, path.name, str(self.project.path), llm=llm)
+        self.tasks.clear()
+        for task in tasks:
+            task.source_ref = str(path)
+            self.tasks[task.id] = task
+        if get_setting(self.project.config, "orchestrator", "auto_detect_dependencies"):
+            self._detect_file_overlaps()
+        logger.info(f"Loaded {len(tasks)} task(s) from {path}.")
+        return tasks
 
     def _detect_file_overlaps(self):
         """Add implicit dependencies when tasks touch the same file.

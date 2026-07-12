@@ -125,6 +125,7 @@ class ProjectOrchestrator:
         skip_preflight: bool = False,
         force: bool = False,
         status: bool = False,
+        tasklist: Optional[str] = None,
     ):
         """Run pending devplan tasks with dependency-aware orchestration.
 
@@ -132,10 +133,14 @@ class ProjectOrchestrator:
         analysis/spec/decomposition/gate phases but adds topological
         ordering, progress-based crash recovery, contract injection, scratchpad
         learning, and change tracking around the existing markdown tasks.
+        ``tasklist`` points at an external task-list file (any format, possibly
+        in another repo) to execute instead of the devplan directory.
         """
         project = self._get_or_register(project_path)
         if not project:
             return
+        if tasklist:
+            project.config["tasklist"] = tasklist
         _check_golden_config(project.config)
         if project.env_manager:
             project.env_manager.setup()

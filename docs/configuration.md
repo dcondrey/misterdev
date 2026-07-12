@@ -127,6 +127,20 @@ targets:
 
 Zero-config alternative: `orchestrator.auto_targets: true` auto-detects sub-projects (best-effort commands). An explicit `targets` list always wins. Custom build systems can be taught via a target plugin — see [plugins.md](plugins.md).
 
+## External task lists (`tasklist` / `run --tasks`)
+
+Point misterdev at a hand-written task list — in whatever shape it is — instead of the `devplan/` directory:
+
+```bash
+misterdev run ./my-project --tasks /path/to/PLAN.md   # the list may live in another repo
+```
+
+or set it in config: `tasklist: "PLAN.md"` (relative to the project, or an absolute path).
+
+The parser is format-agnostic — **JSON, YAML, Markdown, or plain text**; ordered or unordered lists; one task per line or multi-line with sub-bullets; organized into **phases**; and it reads a **dependency table** (`| Task | Blocked By |`) if present. Field names are alias-mapped (`success_criteria`/`done_when` → acceptance, `blocked_by`/`requires` → dependencies, `relevant_files`/`files` → target files, …), and dependency references resolve by id, title, or task number. Anything too messy for the deterministic parser falls back to LLM normalization.
+
+Parsed tasks flow into the same engine as a devplan: dependency-aware **topological ordering**, **parallel waves** for independent tasks (a dependency table is what unlocks the parallelism), wave-level regression gating, and progress-based **resume** (it tracks which task is active and re-runs only what changed). Preview the plan with `--dry-run`; see which tasks would run vs. skip with `--status`.
+
 ## Most useful keys at a glance
 
 | Key | Default | Purpose |
