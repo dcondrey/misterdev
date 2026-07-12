@@ -158,9 +158,31 @@ class MCPManager:
             self._tools = self._discover_all()
         return self._tools
 
-    def _discover_all(self) -> List[MCPTool]:
+    def add_server(self, config: Any) -> List[MCPTool]:
+        """Mount a server at runtime and return its newly discovered tools.
+
+        The on-demand path: a build can provision a server mid-task (see
+        :mod:`mcp_gather`). Deduplicated by server name, timeout-bounded, and
+        never raises — a server that fails to start simply contributes no tools.
+        """
+        normalized = _normalize_servers([config])
+        existing = {s["name"] for s in self.servers}
+        added = [s for s in normalized if s["name"] not in existing]
+        if not added:
+            return []
+        self.servers.extend(added)
+        new_tools = self._discover_all(added)
+        if self._tools is None:
+            self._tools = new_tools
+        else:
+            self._tools.extend(new_tools)
+        return new_tools
+
+    def _discover_all(
+        self, servers: Optional[List[Dict[str, Any]]] = None
+    ) -> List[MCPTool]:
         tools: List[MCPTool] = []
-        for server in self.servers:
+        for server in servers if servers is not None else self.servers:
             name = server["name"]
             discovered = run_bounded(
                 lambda s=server: _list_tools(s),

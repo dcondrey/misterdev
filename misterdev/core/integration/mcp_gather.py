@@ -28,7 +28,7 @@ running gathered-context block and fed back into the next round's prompt.
 
 import json
 import re
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from misterdev.core.integration.mcp import MCPManager
 from misterdev.llm.responses import (
@@ -49,6 +49,9 @@ _CALL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# "FIND <capability>" — request a NEW server be discovered/mounted on demand.
+_FIND_RE = re.compile(r"\bFIND\b\s+(.+)", re.IGNORECASE)
+
 _GATHER_HEADER = "## Information gathered via tools\n"
 
 _INSTRUCTION = (
@@ -58,6 +61,13 @@ _INSTRUCTION = (
     "(the JSON arguments object is optional). To gather nothing further and "
     "proceed to editing, reply with NO_TOOL. Request at most one tool per reply.\n\n"
     "## Available tools\n{tools}\n"
+)
+
+# Extra line appended to the instruction only when on-demand provisioning is on.
+_FIND_INSTRUCTION = (
+    "\nIf no available tool fits, you may request a new one: reply with\n"
+    "    FIND <capability you need>\n"
+    "and a matching server will be discovered and mounted for the next round.\n"
 )
 
 
@@ -101,6 +111,8 @@ def gather_context(
     local_tools: Optional[
         Dict[str, Tuple[str, Callable[[dict], Optional[str]]]]
     ] = None,
+    provide: Optional[Callable[[str], Optional[Any]]] = None,
+    max_provisions: int = 2,
 ) -> str:
     """Run the bounded tool-gathering loop; return the gathered-context block.
 
@@ -128,12 +140,19 @@ def gather_context(
             f"- local.{name}: {desc}" for name, (desc, _) in local_tools.items()
         )
         tools = f"{tools}\n{local_desc}" if tools else local_desc
-    if not tools:
+
+    can_provide = provide is not None and manager is not None
+    provisions_left = max_provisions if can_provide else 0
+    # Run the loop when there is at least one tool OR the model can FIND one on
+    # demand (the "nothing fits, discover one" case). Otherwise nothing to do.
+    if not tools and not can_provide:
         return ""
 
     gathered: List[str] = []
     for round_idx in range(max_rounds):
         prompt = _INSTRUCTION.format(tools=tools)
+        if provisions_left > 0:
+            prompt += _FIND_INSTRUCTION
         if task_description:
             prompt += (
                 f"\n## Task you are gathering information for\n{task_description}\n"
@@ -146,6 +165,30 @@ def gather_context(
         except Exception as e:  # a model/client failure must not sink the build
             logger.debug(f"MCP gather: model call failed in round {round_idx + 1}: {e}")
             break
+
+        if provisions_left > 0 and _CALL_RE.search(reply or "") is None:
+            fm = _FIND_RE.search(reply or "")
+            if fm:
+                capability = fm.group(1).strip()
+                provisions_left -= 1
+                logger.info(
+                    f"gather round {round_idx + 1}/{max_rounds}: FIND {capability!r}"
+                )
+                cfg = None
+                try:
+                    cfg = provide(capability)
+                except Exception as e:  # provisioning must never sink the build
+                    logger.debug(f"MCP gather: provide({capability!r}) error: {e}")
+                new_tools = manager.add_server(cfg) if cfg else []
+                if new_tools:
+                    tools = manager.describe_tools(cap=tools_cap) or tools
+                    names = ", ".join(t.qualified_name for t in new_tools)
+                    logger.info(f"MCP gather: mounted on demand -> {names}")
+                    gathered.append(f"### FIND {capability}\nmounted: {names}")
+                else:
+                    logger.info(f"MCP gather: no server found for {capability!r}")
+                    gathered.append(f"### FIND {capability} -> (no server found)")
+                continue
 
         parsed = _parse_call(reply or "")
         if parsed is None:

@@ -91,6 +91,25 @@ class ContextMixin:
         def _ask(prompt: str) -> Optional[str]:
             return project.llm_client.generate_code(prompt, "")
 
+        # On-demand provisioning: when enabled, let the model FIND and mount a new
+        # server mid-gather via the same trust ladder. Off by default (it is
+        # model-driven local code execution); mcp is None-checked above.
+        provide = None
+        mcp_cfg = project.config.get("mcp") or {}
+        if mcp is not None and mcp_cfg.get("discover_on_demand"):
+            from misterdev.core.integration.mcp_registry import provide_capability
+
+            trusted = mcp_cfg.get("trusted_namespaces") or None
+            min_trust = float(mcp_cfg.get("min_trust", 0.5))
+
+            def _provide(capability: str, _t=trusted, _m=min_trust):
+                kwargs = {"min_trust": _m}
+                if _t:
+                    kwargs["trusted_namespaces"] = _t
+                return provide_capability(capability, **kwargs)
+
+            provide = _provide
+
         try:
             return gather_context(
                 mcp,
@@ -98,6 +117,8 @@ class ContextMixin:
                 task_description=task.description,
                 max_rounds=max_rounds,
                 local_tools=local_tools,
+                provide=provide,
+                max_provisions=int(mcp_cfg.get("discover_on_demand_max", 2)),
             )
         except Exception as e:  # gathering is best-effort; never sink the build
             logger.warning(f"MCP tool-gathering skipped (error: {e}).")

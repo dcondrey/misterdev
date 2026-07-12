@@ -405,6 +405,56 @@ def test_gather_unparseable_request_stops_cleanly(server_path):
     assert ask.calls == 1
 
 
+# --- on-demand provisioning (FIND) ------------------------------------------
+def test_add_server_mounts_live_and_returns_tools(server_path):
+    mgr = MCPManager([])  # starts empty
+    new = mgr.add_server(_stdio_server(server_path))
+    assert any(t.name == "add" for t in new)
+    assert any(t.qualified_name == "tools.add" for t in mgr.tools)
+
+
+def test_add_server_dedups_by_name(server_path):
+    mgr = MCPManager([_stdio_server(server_path)])
+    assert mgr.add_server(_stdio_server(server_path)) == []  # same name -> no-op
+
+
+def test_gather_find_provisions_then_calls(server_path):
+    # Empty manager: nothing fits, so the model FINDs a server, then calls it.
+    mgr = MCPManager([])
+    ask = _ScriptedAsk(
+        ["FIND add two numbers", 'CALL tools.add {"a": 2, "b": 40}', "NO_TOOL"]
+    )
+    out = gather_context(
+        mgr, ask, max_rounds=4, provide=lambda q: _stdio_server(server_path)
+    )
+    assert "42" in out and "tools.add" in out
+    assert "mounted" in out.lower()  # the FIND result is recorded
+    assert ask.calls == 3
+
+
+def test_gather_find_ignored_without_provide(server_path):
+    # With no provider, FIND is not special: it parses as no CALL -> loop stops.
+    mgr = MCPManager([_stdio_server(server_path)])
+    ask = _ScriptedAsk(["FIND something"])
+    assert gather_context(mgr, ask, max_rounds=3) == ""
+    assert ask.calls == 1
+
+
+def test_gather_find_bounded_by_max_provisions(server_path):
+    mgr = MCPManager([])
+    ask = _ScriptedAsk(["FIND a"] * 10)
+    gather_context(
+        mgr,
+        ask,
+        max_rounds=10,
+        max_provisions=2,
+        provide=lambda q: {"name": "none", "command": "does-not-exist"},
+    )
+    # 2 FIND rounds consume the budget; the 3rd reply has no FIND handling and no
+    # CALL -> the loop stops. So at most 3 asks.
+    assert ask.calls <= 3
+
+
 def test_gather_never_hangs(monkeypatch, server_path):
     # The single tool call is bounded by call_tool's hard timeout; a hanging tool
     # body is abandoned and the loop returns promptly with no result.

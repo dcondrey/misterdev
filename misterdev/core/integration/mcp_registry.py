@@ -31,6 +31,7 @@ never raises (any failure degrades to "discovered nothing" / "no signal").
 """
 
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -64,6 +65,33 @@ DEFAULT_TRUSTED_NAMESPACES = (
 _RUNTIME_BY_REGISTRY = {"npm": "npx", "pypi": "uvx"}
 
 _CURATED_PATH = Path(__file__).with_name("curated_servers.json")
+
+# Whole-word tokenizer for capability matching (substring match spuriously fires
+# — e.g. "and" inside "commander"). Stopwords keep short filler from matching.
+_WORD_RE = re.compile(r"[a-z0-9]+")
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "for",
+        "with",
+        "to",
+        "of",
+        "in",
+        "on",
+        "my",
+        "me",
+        "i",
+    }
+)
+
+
+def _tokenize(text: str) -> set:
+    return set(_WORD_RE.findall((text or "").lower()))
+
 
 # --- trust-score weights (transparent + tunable) --------------------------------
 _NAMESPACE_BOOST = 0.5
@@ -345,6 +373,43 @@ def select_curated(
             }
         )
     return out
+
+
+def provide_capability(
+    query: str,
+    trusted_namespaces=DEFAULT_TRUSTED_NAMESPACES,
+    min_trust: float = _DEFAULT_MIN_TRUST,
+    env: Optional[Dict[str, str]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Resolve a capability query to ONE runnable stdio server config, or None.
+
+    The mid-task on-demand path: try the vetted catalog first (keyword match on
+    name/category/why, config-gated), then fall back to trust-scored registry
+    discovery. Returns a single config the caller mounts live; never raises.
+    """
+    terms = {t for t in _tokenize(query) if t not in _STOPWORDS}
+    if not terms:
+        return None
+    catalog = load_catalog()
+    best, best_score = None, 0
+    for cfg in select_curated(("all",), env=env, catalog=catalog):
+        entry = next((e for e in catalog if e["name"] == cfg["name"]), {})
+        words = _tokenize(
+            f"{cfg['name']} {entry.get('category', '')} {entry.get('why', '')}"
+        )
+        overlap = len(terms & words)  # whole-word overlap, not substring
+        if overlap > best_score:
+            best, best_score = cfg, overlap
+    if best is not None:
+        logger.info(f"MCP on-demand: '{best['name']}' matches {query!r} (curated)")
+        return best
+    found = discover_servers(
+        [query],
+        trusted_namespaces=trusted_namespaces,
+        max_servers=1,
+        min_trust=min_trust,
+    )
+    return found[0] if found else None
 
 
 # ==============================================================================

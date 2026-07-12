@@ -91,6 +91,10 @@ mcp:
 
 Mounts the catalog entries for the requested tier(s). Each is version-pinned (`pkg@1.2.3`, so a malicious *future* release cannot silently apply) and **config-gated**: a keyed server (e.g. Postgres needs `DATABASE_URI`, E2B needs `E2B_API_KEY`) mounts only when its env vars are present; otherwise it is skipped with a log line. Tiers: `core` (default-on: workspace, git, docs, quality), `project` (per-project: deploy target, database, observability), `task` (heavy, only when needed: browser, design, workflow). Entries that need a Go binary / Docker / OAuth are recorded in the catalog as *manual* and are not auto-mounted. Refresh + re-pin with `python scripts/audit_mcp_servers.py`.
 
+#### On-demand, mid-task (`mcp.discover_on_demand`)
+
+With `orchestrator.mcp_tool_use` on and `mcp.discover_on_demand: true`, the model can request a *new* capability **during** the pre-edit gather loop, not just at build start. When no mounted tool fits, it replies `FIND <capability>`; misterdev resolves it through the same trust ladder (curated catalog match first, then trust-scored discovery), mounts the server live, and the new tools are callable on the next round. Bounded by `mcp.discover_on_demand_max` (default 2) provisions per task, and off by default — this is model-driven local code execution, so it inherits `min_trust`/`trusted_namespaces` and the minimal-env, config-gating guarantees.
+
 #### Discovery tier (`mcp.discover`)
 
 ```yaml
