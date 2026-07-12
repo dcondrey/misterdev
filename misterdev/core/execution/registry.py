@@ -25,20 +25,34 @@ class ProjectRegistry:
         self._load_state()
 
     def _load_state(self):
-        """Loads registered project paths from the state file."""
-        if self.state_file.exists():
+        """Reload registered projects, pruning stale entries.
+
+        A persisted path that no longer holds a ``project.yaml`` (a deleted or
+        moved project — common with throwaway/temp dirs) is not a valid
+        registered project anymore: skip it quietly and drop it from the state,
+        rather than reloading it and logging a warning per entry on every run. A
+        pruned path re-registers on next explicit use."""
+        if not self.state_file.exists():
+            return
+        try:
+            with open(self.state_file, "r", encoding="utf-8") as f:
+                state = json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load registry state: {e}")
+            return
+        pruned = False
+        for project_path in state.get("registered_paths", []):
+            if not (Path(project_path) / "project.yaml").exists():
+                logger.debug(f"Pruning stale registry entry: {project_path}")
+                pruned = True
+                continue
             try:
-                with open(self.state_file, "r", encoding="utf-8") as f:
-                    state = json.load(f)
-                    for project_path in state.get("registered_paths", []):
-                        try:
-                            self.register_project(project_path, save=False)
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to reload project at {project_path}: {e}"
-                            )
+                self.register_project(project_path, save=False)
             except Exception as e:
-                logger.error(f"Failed to load registry state: {e}")
+                logger.error(f"Failed to reload project at {project_path}: {e}")
+                pruned = True
+        if pruned:
+            self._save_state()  # persist the cleaned registry
 
     def _save_state(self):
         """Saves registered project paths to the state file."""

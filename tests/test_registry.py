@@ -104,3 +104,21 @@ def test_state_persistence():
         assert state_file.exists()
         data = json.loads(state_file.read_text())
         assert len(data["registered_paths"]) == 1
+
+
+def test_load_state_prunes_stale_entries():
+    # A persisted path with no project.yaml (deleted/moved) must be pruned on
+    # load — not reloaded with a warning — and dropped from the saved state.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        state_file = root / "registry.json"
+        good = _make_project_dir(root, "good", with_yaml=True).resolve()
+        gone = (root / "deleted-proj").resolve()  # no project.yaml
+        state_file.write_text(
+            json.dumps({"registered_paths": [str(good), str(gone)]})
+        )
+        reg = ProjectRegistry(state_file=state_file)
+        assert str(good) in reg.projects
+        assert str(gone) not in reg.projects  # pruned
+        saved = json.loads(state_file.read_text())["registered_paths"]
+        assert str(gone) not in saved and str(good) in saved  # re-saved clean
