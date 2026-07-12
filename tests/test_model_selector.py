@@ -303,3 +303,41 @@ def test_picks_cheaper_when_quality_per_dollar_higher(ledger):
     sel = ModelSelector(cfg, ledger)
     # Equal quality, free/a is 10x cheaper -> higher quality-per-dollar.
     assert sel.select("feature", "medium", 0, 3) == "free/a"
+
+
+def _cfg3(**over):
+    return _config(
+        escalation=["cheap", "mid", "frontier"],
+        models={"cheap": "v/cheap", "mid": "v/mid", "frontier": "v/top"},
+        **over,
+    )
+
+
+_RUNG = {"v/cheap": 0, "v/mid": 1, "v/top": 2, "free/x": 0}
+
+
+def test_mislabeled_hard_task_reaches_frontier_and_never_de_escalates(ledger):
+    # Sample-then-escalate: a hard task mislabeled "small" must still climb to the
+    # strongest tier by the final attempt (never starved), and never step DOWN a
+    # rung between attempts.
+    for posture in ("conservative", "balanced", "aggressive"):
+        sel = ModelSelector(_cfg3(selection_posture=posture), ledger)
+        picks = [sel.select("feature", "small", a, 4) for a in range(4)]
+        assert picks[-1] == "v/top", posture  # final attempt = strongest, always
+        rungs = [_RUNG[p] for p in picks if p]
+        assert rungs == sorted(rungs), (posture, picks)  # monotonic, no de-escalation
+
+
+def test_short_budget_still_reaches_frontier(ledger):
+    # Even with fewer attempts than rungs, the forced-final-strongest rule means
+    # a mislabeled task is never denied the capable model.
+    sel = ModelSelector(_cfg3(selection_posture="aggressive"), ledger)
+    assert sel.select("feature", "small", 1, 2) == "v/top"  # attempt 1 of 2 = final
+
+
+def test_escalation_climbs_one_rung_per_attempt_when_exploring(ledger):
+    sel = ModelSelector(_cfg3(selection_posture="aggressive"), ledger)
+    # aggressive explores from the cheapest rung, then climbs deterministically.
+    assert sel.select("feature", "large", 0, 4) == "v/cheap"
+    assert sel.select("feature", "large", 1, 4) == "v/mid"
+    assert sel.select("feature", "large", 2, 4) == "v/top"
