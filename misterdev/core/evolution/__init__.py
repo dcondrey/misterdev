@@ -29,6 +29,12 @@ from .paired import (
     discordant,
     paired_promote,
 )
+from .partial_credit import (
+    CHECKPOINTS,
+    PartialCreditScore,
+    checkpoint_credit,
+    furthest_checkpoint,
+)
 from .sandbox import SandboxEvaluator
 from .screen import MicroEvaluator, ScreenVerdict
 from .tool_library import ToolCandidate, ToolLibrary
@@ -74,4 +80,8 @@ __all__ = [
     "decide_promotion_paired",
     "discordant",
     "paired_promote",
+    "PartialCreditScore",
+    "CHECKPOINTS",
+    "checkpoint_credit",
+    "furthest_checkpoint",
 ]
