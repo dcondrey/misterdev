@@ -720,22 +720,36 @@ def test_progress_needs_rerun_on_hash_change():
         assert not pt2.needs_rerun("T-1", "h1")
 
 
-def test_compute_task_hash_changes_with_spec():
+def test_compute_task_hash_content_based_and_mtime_stable():
+    import os
+    from types import SimpleNamespace
+
     from misterdev.core.execution.progress import compute_task_hash
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        spec = root / "task.md"
-        spec.write_text("v1")
+        (root / "a.py").write_text("print(1)\n")
 
-        class _T:
-            source_ref = str(spec)
-            files_to_modify = []
+        def task(desc="do it"):
+            return SimpleNamespace(
+                id="T1",
+                title="t",
+                description=desc,
+                acceptance_criteria="",
+                files_to_create=[],
+                files_to_modify=["a.py"],
+            )
 
-        h1 = compute_task_hash(_T(), root)
-        spec.write_text("v2 changed")
-        h2 = compute_task_hash(_T(), root)
-        assert h1 != h2
+        h1 = compute_task_hash(task(), root)
+        # Stable across an mtime bump with identical content (the resume fix).
+        os.utime(root / "a.py", None)
+        assert compute_task_hash(task(), root) == h1
+        # Changes when the committed file CONTENT changes.
+        (root / "a.py").write_text("print(2)\n")
+        assert compute_task_hash(task(), root) != h1
+        # Changes when the task SPEC changes (an intentional edit re-runs it).
+        (root / "a.py").write_text("print(1)\n")
+        assert compute_task_hash(task(desc="do it differently"), root) != h1
 
 
 # --- tree-sitter rust contract extraction (013) -----------------------------

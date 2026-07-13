@@ -21,31 +21,33 @@ logger = setup_logger(__name__)
 
 
 def compute_task_hash(task, project_path: Path) -> str:
-    """Content hash of a task's inputs: its devplan file + target file mtimes.
+    """Content-addressed fingerprint of a task, used on a resume to decide whether
+    a previously-completed task still counts as done or must re-run.
 
-    Used to detect when a previously-completed task needs re-running because
-    its spec or the files it touches changed since it last succeeded.
+    Keyed on the task's SPEC (id + title/description/acceptance — so an intentional
+    change to what the task should do re-runs it, and generic LLM-decomposed ids
+    like T-001 don't collide across builds) plus the COMMITTED CONTENT of the files
+    it owns. Content is stable across git checkouts, worktree merges, and mtime
+    churn — unlike the stat mtime this used to fold in, which spuriously
+    invalidated resumes — and the whole plan file is no longer hashed, so editing
+    an unrelated task or the preamble does not re-run everything.
     """
     h = hashlib.sha256()
-    source_ref = getattr(task, "source_ref", None)
-    if source_ref:
-        try:
-            h.update(Path(source_ref).read_bytes())
-        except OSError:
-            pass
-    # Fold in the task's own spec so that LLM-decomposed tasks (which have no
-    # source_ref and reuse generic ids like T-001 across separate builds) get a
-    # hash that reflects their actual content. Without this, a fresh plan's
-    # T-001 collides with a prior build's completed T-001 and is wrongly skipped.
-    for attr in ("title", "description"):
-        h.update(str(getattr(task, attr, "")).encode())
-    for f in sorted(getattr(task, "files_to_create", [])):
-        h.update(f"create:{f}".encode())
-    for f in sorted(getattr(task, "files_to_modify", [])):
-        h.update(f"modify:{f}".encode())
+    h.update(str(getattr(task, "id", "")).encode())
+    for attr in ("title", "description", "acceptance_criteria"):
+        h.update(b"\x00")
+        h.update(str(getattr(task, attr, "") or "").encode())
+    files = sorted(
+        set(getattr(task, "files_to_create", []) or [])
+        | set(getattr(task, "files_to_modify", []) or [])
+    )
+    for f in files:
+        h.update(f"\x00file:{f}".encode())
         fp = Path(project_path) / f
-        if fp.exists():
-            h.update(f"{f}:{fp.stat().st_mtime_ns}".encode())
+        try:
+            h.update(fp.read_bytes() if fp.is_file() else b"\x00ABSENT")
+        except OSError:
+            h.update(b"\x00UNREADABLE")
     return h.hexdigest()[:16]
 
 
