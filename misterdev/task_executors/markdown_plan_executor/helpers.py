@@ -421,6 +421,13 @@ def _extract_acceptance_command(criteria: str) -> Optional[str]:
     """
     if not criteria:
         return None
+    # A multi-CONDITION spec is not one runnable command: an assertion operator
+    # ("`pnpm typecheck` = 0") or two or more backtick-fenced command spans
+    # ("`a` completes; `b` succeeds"). Running such prose fails spuriously (inner
+    # backticks become shell command substitutions), so treat it as un-parseable
+    # and defer to the build/test/typecheck gates that already verify the task.
+    if re.search(r"\s==?\s", criteria) or criteria.count("`") >= 4:
+        return None
     # Prefer a command fenced in backticks if present, but still require it to
     # start with a known runner so prose in backticks isn't run blindly.
     for candidate in re.findall(r"`([^`]+)`", criteria):

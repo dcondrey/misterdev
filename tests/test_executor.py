@@ -850,6 +850,29 @@ def test_extract_acceptance_command_free_text_none():
     assert _extract_acceptance_command("users can reset their password") is None
 
 
+def test_extract_acceptance_command_rejects_multicondition_prose():
+    # A devplan "Completion" spec is prose with assertions and/or several
+    # backtick command spans — not one runnable command. Running it fails
+    # spuriously (inner backticks become shell substitutions), so it must yield
+    # None and let the build/test gates verify the task.
+    assert _extract_acceptance_command("`pnpm typecheck` = 0") is None
+    assert (
+        _extract_acceptance_command(
+            "`pnpm typecheck` = 0; `wrangler deploy --dry-run` parses the config"
+        )
+        is None
+    )
+    assert (
+        _extract_acceptance_command("`pnpm build` completes; `pnpm test` passes")
+        is None
+    )
+    # A single command (even backticked with trailing prose) still extracts.
+    assert (
+        _extract_acceptance_command("`pnpm --filter web test` passes")
+        == "pnpm --filter web test"
+    )
+
+
 def test_extract_acceptance_command_strips_trailing_prose_clause():
     # A command with an appended English clause (no period) reduces to the clean
     # command instead of a mangled shell string that fails good code.

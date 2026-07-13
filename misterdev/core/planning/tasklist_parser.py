@@ -372,7 +372,12 @@ def _clean_path(p: str) -> str:
 
 def _apply_attr(rec: Dict[str, Any], key: str, value: str) -> None:
     k = key.lower().replace(" ", "_")
-    value = value.strip().strip("`")
+    # Keep the raw (backtick-preserving) text for acceptance: stripping only the
+    # OUTER backticks off a value like "`a` = 0; `b`" corrupts it into an
+    # unbalanced string that later runs as a broken shell command. Other keys
+    # clean per-item (files via _clean_path, deps via resolution).
+    raw = value.strip()
+    value = raw.strip("`")
     if k.startswith("file") or "relevant_file" in k:
         default = "files_to_create" if "create" in k else "files_to_modify"
         for raw in _as_list(value):
@@ -400,7 +405,7 @@ def _apply_attr(rec: Dict[str, Any], key: str, value: str) -> None:
             "validation",
         )
     ):
-        rec["acceptance_criteria"] = value
+        rec["acceptance_criteria"] = raw
     elif k.startswith("desc") or k in ("details", "notes", "body"):
         rec["description"] = (rec.get("description", "") + " " + value).strip()
     elif k in ("id", "task_id"):
