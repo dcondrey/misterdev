@@ -140,10 +140,51 @@ def test_call_tool_unknown_server_returns_none():
     assert mgr.call_tool("nope", "add", {}) is None
 
 
+def test_add_server_dedups_by_launch_identity(server_path):
+    # Same package (command+args) under a DIFFERENT display name is a duplicate:
+    # curated `fetch` and discovered `io...fetch` both run the one subprocess.
+    mgr = MCPManager([_stdio_server(server_path)])
+    alias = {**_stdio_server(server_path), "name": "tools-alias"}
+    assert mgr.add_server(alias) == []  # identity match -> no second mount
+    assert len(mgr.servers) == 1
+
+
+def test_remove_server_unmounts_and_drops_tools(server_path):
+    mgr = MCPManager([_stdio_server(server_path)])
+    assert any(t.server == "tools" for t in mgr.tools)
+    mgr.remove_server("tools")
+    assert all(t.server != "tools" for t in mgr.tools)
+    assert mgr.servers == []
+    mgr.remove_server("tools")  # idempotent, never raises
+
+
+def test_known_identities_snapshots_mounted_servers(server_path):
+    from misterdev.core.integration.mcp import _server_identity
+
+    mgr = MCPManager([_stdio_server(server_path)])
+    assert mgr.known_identities() == {_server_identity(_stdio_server(server_path))}
+    mgr.remove_server("tools")
+    assert mgr.known_identities() == set()
+
+
+def test_server_identity_distinguishes_transport_and_target():
+    from misterdev.core.integration.mcp import _server_identity
+
+    a = _server_identity({"name": "a", "command": "npx", "args": ["-y", "p"]})
+    b = _server_identity({"name": "b", "command": "npx", "args": ["-y", "p"]})
+    c = _server_identity({"name": "c", "command": "uvx", "args": ["p"]})
+    assert a == b and a != c
+    assert _server_identity({"name": "r", "transport": "sse", "url": "u"}) == (
+        "remote",
+        "u",
+    )
+    assert _server_identity({"name": "x"}) is None  # nothing to key on
+
+
 def test_hanging_discovery_is_bounded(monkeypatch, server_path):
     # A server whose startup hangs must be abandoned by the hard timeout; the
     # manager returns what it has (nothing) without blocking the build.
-    def _hang(server):
+    def _hang(server, timeout=0):
         time.sleep(3600)
 
     monkeypatch.setattr(mcp_mod, "_list_tools", _hang)
@@ -155,7 +196,7 @@ def test_hanging_discovery_is_bounded(monkeypatch, server_path):
 
 
 def test_call_tool_error_swallowed(monkeypatch):
-    def _boom(server, name, arguments):
+    def _boom(server, name, arguments, timeout=0):
         raise RuntimeError("server crashed")
 
     monkeypatch.setattr(mcp_mod, "_call_tool", _boom)
@@ -230,11 +271,20 @@ def test_awareness_empty_when_no_tools_discovered():
 # --- project wiring ---------------------------------------------------------
 
 
-def test_project_mcp_none_without_config(tmp_path):
+def test_project_mcp_on_demand_manager_without_config(tmp_path):
+    # On-demand discovery is on by default, so even a project with no MCP config
+    # gets an (empty) manager the FIND loop can mount into. Under host-execution
+    # isolation, provisioning is refused, so there is nothing to mount -> None.
     from misterdev.core.execution.project import Project
 
     proj = Project(tmp_path, {"name": "p"})
-    assert proj.mcp is None
+    assert proj.mcp is not None and proj.mcp.servers == []
+
+    isolated = Project(tmp_path, {"name": "p", "governance": {"network": "none"}})
+    assert isolated.mcp is None
+
+    off = Project(tmp_path, {"name": "p", "mcp": {"discover_on_demand": False}})
+    assert off.mcp is None  # nothing configured and on-demand explicitly off
 
 
 def test_project_mcp_built_from_config(tmp_path, server_path):
@@ -246,6 +296,70 @@ def test_project_mcp_built_from_config(tmp_path, server_path):
     assert proj.mcp is not None
     assert proj.mcp is proj.mcp  # cached
     assert {t.name for t in proj.mcp.tools} >= {"echo", "add"}
+
+
+def test_project_discovery_refused_under_network_isolation(tmp_path, monkeypatch):
+    from misterdev.core.execution.project import Project
+
+    called = {"n": 0}
+
+    def _boom(*a, **k):
+        called["n"] += 1
+        return [{"name": "should-not-mount", "command": "npx", "args": []}]
+
+    import misterdev.core.integration.mcp_registry as regmod
+
+    monkeypatch.setattr(regmod, "discover_servers", _boom)
+    proj = Project(
+        tmp_path,
+        {
+            "name": "p",
+            "governance": {"network": "none"},
+            "mcp": {"discover": ["web search"]},
+        },
+    )
+    assert proj.mcp is None  # discovery skipped; nothing mounted
+    assert called["n"] == 0
+
+
+def test_host_exec_isolated_detects_container_and_network():
+    # A container/docker env is isolation too: MCP servers spawn on the HOST, so
+    # unvetted registry discovery there escapes the sandbox and must be refused.
+    # Unit-test the gate via __new__ to avoid constructing a real env manager.
+    from misterdev.core.execution.project import Project
+
+    p = Project.__new__(Project)
+    p.config = {"environment": {"type": "docker"}}
+    assert p._host_exec_isolated() is True
+    p.config = {"environment": {"type": "container"}}
+    assert p._host_exec_isolated() is True
+    p.config = {"governance": {"network": "none"}}
+    assert p._host_exec_isolated() is True
+    p.config = {"name": "x", "environment": {"type": "venv"}}
+    assert p._host_exec_isolated() is False
+
+
+def test_project_mcp_lazy_build_is_thread_safe(tmp_path, server_path):
+    import threading
+    from misterdev.core.execution.project import Project
+
+    proj = Project(
+        tmp_path, {"name": "p", "mcp": {"servers": [_stdio_server(server_path)]}}
+    )
+    results = []
+    barrier = threading.Barrier(8)
+
+    def _access():
+        barrier.wait()
+        results.append(proj.mcp)
+
+    threads = [threading.Thread(target=_access) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(results) == 8
+    assert all(r is results[0] for r in results)  # exactly one manager built
 
 
 # --- bounded agentic tool-gathering loop ------------------------------------
@@ -432,6 +546,76 @@ def test_gather_find_provisions_then_calls(server_path):
     assert ask.calls == 3
 
 
+def test_gather_output_is_fenced_as_untrusted(server_path):
+    mgr = MCPManager([_stdio_server(server_path)])
+    ask = _ScriptedAsk(['CALL tools.add {"a": 1, "b": 2}', "NO_TOOL"])
+    out = gather_context(mgr, ask, max_rounds=2)
+    assert "do NOT" in out and "untrusted" in out.lower()
+
+
+def test_gather_find_offtarget_server_is_kept_with_caveat(server_path):
+    # The mounted server exposes echo/add; a capability with no shared term is a
+    # SOFT miss: the server (admitted by the trust ladder) is kept, not discarded
+    # — crude lexical matching must not throw away a genuine discovery — but the
+    # gathered note flags that its tools may not fit.
+    events = []
+    mgr = MCPManager([])
+    ask = _ScriptedAsk(["FIND quantum chromodynamics solver", "NO_TOOL"])
+    out = gather_context(
+        mgr,
+        ask,
+        max_rounds=3,
+        provide=lambda q: _stdio_server(server_path),
+        on_event=lambda k, d: events.append((k, d)),
+    )
+    assert "may not match" in out  # caveat present
+    assert any(t.server == "tools" for t in mgr.tools)  # kept, not discarded
+    prov = next(d for k, d in events if k == "mcp_provision")
+    assert prov["result"] == "mounted_unverified"
+
+
+def test_gather_offtarget_call_result_is_tagged_unvetted(server_path):
+    # A newly discovered (FIND-mounted) server that DOES match keeps its output,
+    # but tagged as unvetted so the model trusts it least.
+    mgr = MCPManager([])
+    ask = _ScriptedAsk(
+        ["FIND add two numbers", 'CALL tools.add {"a": 2, "b": 40}', "NO_TOOL"]
+    )
+    out = gather_context(
+        mgr, ask, max_rounds=4, provide=lambda q: _stdio_server(server_path)
+    )
+    assert "42" in out and "UNVETTED" in out
+
+
+def test_gather_emits_audit_events(server_path):
+    events = []
+    mgr = MCPManager([])
+    ask = _ScriptedAsk(
+        ["FIND add two numbers", 'CALL tools.add {"a": 2, "b": 40}', "NO_TOOL"]
+    )
+    gather_context(
+        mgr,
+        ask,
+        max_rounds=4,
+        provide=lambda q: _stdio_server(server_path),
+        on_event=lambda kind, details: events.append((kind, details)),
+    )
+    kinds = [k for k, _ in events]
+    assert "mcp_provision" in kinds and "mcp_call" in kinds
+    prov = next(d for k, d in events if k == "mcp_provision")
+    assert prov["result"] == "mounted" and prov["server"] == "tools"
+
+
+def test_gather_audit_sink_error_never_sinks_build(server_path):
+    def _boom(kind, details):
+        raise RuntimeError("sink down")
+
+    mgr = MCPManager([_stdio_server(server_path)])
+    ask = _ScriptedAsk(['CALL tools.add {"a": 1, "b": 1}', "NO_TOOL"])
+    out = gather_context(mgr, ask, max_rounds=2, on_event=_boom)
+    assert "2" in out  # the build still gets its gathered context
+
+
 def test_gather_find_ignored_without_provide(server_path):
     # With no provider, FIND is not special: it parses as no CALL -> loop stops.
     mgr = MCPManager([_stdio_server(server_path)])
@@ -458,7 +642,7 @@ def test_gather_find_bounded_by_max_provisions(server_path):
 def test_gather_never_hangs(monkeypatch, server_path):
     # The single tool call is bounded by call_tool's hard timeout; a hanging tool
     # body is abandoned and the loop returns promptly with no result.
-    def _hang(server, name, arguments):
+    def _hang(server, name, arguments, timeout=None):
         time.sleep(3600)
 
     monkeypatch.setattr(mcp_mod, "_call_tool", _hang)
@@ -564,8 +748,11 @@ def test_gather_no_error_context_is_plain_description(monkeypatch):
 
     captured = {}
     monkeypatch.setattr(
-        cm, "gather_context",
-        lambda m, a, *, task_description="", **k: captured.update(desc=task_description) or "",
+        cm,
+        "gather_context",
+        lambda m, a, *, task_description="", **k: (
+            captured.update(desc=task_description) or ""
+        ),
     )
     project = SimpleNamespace(
         config={"orchestrator": {"mcp_tool_use": True}, "mcp": {}},

@@ -89,7 +89,7 @@ mcp:
   curated: "core"        # true | "core" | "project" | "task" | "all" | [list of tiers]
 ```
 
-Mounts the catalog entries for the requested tier(s). Each is version-pinned (`pkg@1.2.3`, so a malicious *future* release cannot silently apply) and **config-gated**: a keyed server (e.g. Postgres needs `DATABASE_URI`, E2B needs `E2B_API_KEY`) mounts only when its env vars are present; otherwise it is skipped with a log line. Tiers: `core` (default-on: workspace, git, docs, quality), `project` (per-project: deploy target, database, observability), `task` (heavy, only when needed: browser, design, workflow). Entries that need a Go binary / Docker / OAuth are recorded in the catalog as *manual* and are not auto-mounted. Refresh + re-pin with `python scripts/audit_mcp_servers.py`.
+Mounts the catalog entries for the requested tier(s). Each is version-pinned (`pkg@1.2.3`, so a malicious *future* release cannot silently apply) and **config-gated**: a keyed server (e.g. Postgres needs `DATABASE_URI`) mounts only when its env vars are present; otherwise it is skipped with a log line. The curated catalog is otherwise key-free by design — servers that require an API key are reached through discovery, not curated defaults. Tiers: `core` (default-on: workspace, git, docs, quality), `project` (per-project: deploy target, database, observability), `task` (heavy, only when needed: browser, design, workflow). Entries that need a Go binary / Docker / OAuth are recorded in the catalog as *manual* and are not auto-mounted. Refresh + re-pin with `python scripts/audit_mcp_servers.py`.
 
 #### On-demand, mid-task (`mcp.discover_on_demand`)
 
@@ -100,16 +100,29 @@ With `orchestrator.mcp_tool_use` on and `mcp.discover_on_demand: true`, the mode
 ```yaml
 mcp:
   discover: ["fetch web pages", "query sqlite"]   # capability queries
+  discover_source: "cgcone"                        # cgcone (default) | official | both
   discover_max_servers: 3                          # cap per build (default 3)
   min_trust: 0.5                                   # quality bar (0..1)
   trusted_namespaces: ["io.github.modelcontextprotocol"]  # namespace boost; ["*"] = trust all
 ```
+
+**`discover_source`** picks the backend. `cgcone` (default) searches the [cgcone](https://cgcone.com) index (~2200 stdio servers) whose GitHub stars / recency / archived-status are *pre-indexed* — so scoring needs **no per-server GitHub call** (this is what sidesteps the unauthenticated 60 req/hr limit) and reaches a much longer tail than the official registry. `official` searches only the [official registry](https://registry.modelcontextprotocol.io). `both` runs official first, then lets cgcone fill any remaining slots. cgcone is used strictly as a **data source**: its install specs are heuristic and mostly unverified (`community`), so every candidate it yields is still trust-scored, **version-resolved + pinned** (which drops the bogus specs, since they don't resolve on npm/PyPI), deduped by launch identity, and spawned with a minimal env by misterdev itself. misterdev never invokes cgcone's own installer (that writes *other* CLIs' config files, not misterdev's). A cgcone entry whose `env` is non-empty (needs a secret) is skipped like any keyed server.
 
 **This runs code from the internet locally.** A discovered server is a package installed and executed with the build's file access and network, so admission goes through a trust score, not a bare on/off gate:
 
 - Each candidate is scored on real signals — npm monthly downloads, GitHub stars, recency, and archived/inactive status — and admitted only at/above `min_trust`. A `trusted_namespaces` match is a strong *boost*, not the only key. `["*"]` trusts everything (logged loudly; remote code execution) and skips the quality bar.
 - Paid *remotes* (a hosted gateway needing an API key) and any package that **requires** a secret to start are skipped — they could not run for free anyway.
 - Discovered servers spawn with a **minimal environment**, never the build's secrets, and are bounded by the discovery/call timeouts, `discover_max_servers`, and the `allow_tools` allowlist.
+
+### Safety & operational hardening
+
+Discovery and on-demand provisioning run unvetted code from a public registry, so several guarantees back them beyond the trust score:
+
+- **Sandbox respected.** Under `governance.network: none` (what the container env enforces) registry discovery and on-demand `FIND` are **refused** — auto-installing a package on the host would punch through the isolation the project deliberately chose. Explicitly-configured `mcp.servers` and the curated tier still mount (you opted into those by name).
+- **Audit trail.** Every provision (`mcp_provision`) and tool call (`mcp_call`) is written to the build's append-only `.orchestrator/audit.jsonl` — package, resolved version, capability, and task id — so *what ran and why* is forensically reconstructable, not just a log line.
+- **Untrusted output.** A tool result is external, attacker-influenceable text. It is fenced in the gather context as inert **data** the model must not obey as instructions (prompt-injection / "lethal trifecta" defense); output from a freshly-discovered server is tagged as least-trusted.
+- **Off-target unmount.** An on-demand server that mounts but exposes no tool matching the requested capability is unmounted and reported as not-found, so it neither pollutes the tool list nor wastes a provision slot.
+- **Signal cache + quota.** Registry searches and trust signals are cached (TTL, under `.orchestrator/`), so repeated builds don't re-spend the scarce unauthenticated GitHub quota (60 req/hr) and collapse every score to zero. Set `GITHUB_TOKEN` (or `GH_TOKEN`) to lift the ceiling to 5000/hr. A package already mounted (curated/configured) is never re-discovered under a second name — dedup is by launch identity, not display name.
 
 ### The allowlist
 

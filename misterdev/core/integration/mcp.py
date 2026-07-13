@@ -23,9 +23,10 @@ the last two connect to a remote ``url`` with optional auth headers, which is ho
 misterdev reaches a hosted MCP gateway (e.g. Glama) that fronts many servers.
 """
 
+import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from misterdev.core.execution.bounded import run_bounded
 from misterdev.logging_setup import setup_logger
@@ -37,6 +38,14 @@ logger = setup_logger(__name__)
 # config but always bounded — there is no "wait forever" path.
 _DEFAULT_CONNECT_TIMEOUT = 20.0
 _DEFAULT_CALL_TIMEOUT = 30.0
+# Extra wall-clock the outer thread-level backstop (``run_bounded``) waits beyond
+# the inner asyncio deadline. The inner ``wait_for`` is the PRIMARY bound: on its
+# expiry asyncio cancels the coroutine and the ``async with`` transports unwind,
+# which terminates the launched stdio subprocess (no orphan). The outer backstop
+# only fires if that cooperative teardown itself wedges, so it must be strictly
+# later than the inner deadline or it would abandon the thread mid-teardown and
+# reintroduce the orphan it exists to prevent.
+_TEARDOWN_GRACE = 5.0
 
 
 @dataclass(frozen=True)
@@ -57,6 +66,28 @@ class MCPTool:
     def qualified_name(self) -> str:
         """``server.tool`` — unique across servers, used in awareness text."""
         return f"{self.server}.{self.name}"
+
+
+def _server_identity(server: Dict[str, Any]) -> Optional[Tuple[str, ...]]:
+    """A launch identity for dedup that survives renaming.
+
+    Two entries with different display names but the same transport target (the
+    same ``command`` + ``args`` for stdio, or the same ``url`` for a remote) are
+    the same server — e.g. curated ``fetch`` and a discovered
+    ``io.modelcontextprotocol.servers/fetch`` both run ``uvx mcp-server-fetch``.
+    Returns ``None`` when there is nothing to key on (a malformed entry).
+    """
+    transport = (server.get("transport") or "stdio").lower()
+    if transport in ("http", "streamable-http", "streamable_http", "sse"):
+        url = server.get("url")
+        return ("remote", str(url)) if url else None
+    command = server.get("command")
+    if not command:
+        return None
+    args = server.get("args") or []
+    if not isinstance(args, list):
+        args = [args]
+    return ("stdio", str(command), *(str(a) for a in args))
 
 
 def _normalize_servers(servers: Any) -> List[Dict[str, Any]]:
@@ -135,6 +166,12 @@ class MCPManager:
         # the model — the model can only see and call what you allow.
         self.allow_tools: Optional[set] = set(allow_tools) if allow_tools else None
         self._tools: Optional[List[MCPTool]] = None  # lazy, cached
+        # One manager is shared across tasks that run concurrently in a thread
+        # pool (orchestrator parallel_mode). The lock serializes discovery-cache
+        # reads and the mutating runtime paths (add/remove) so the shared
+        # ``servers``/``_tools`` lists can never be extended from two threads at
+        # once. Re-entrant: ``add_server`` holds it while calling discovery.
+        self._lock = threading.RLock()
 
     def _allowed(self, server: str, name: str) -> bool:
         if self.allow_tools is None:
@@ -154,29 +191,69 @@ class MCPManager:
         a slow or broken server is skipped rather than blocking the rest. Always
         returns a list (possibly empty); never raises.
         """
-        if self._tools is None:
-            self._tools = self._discover_all()
-        return self._tools
+        with self._lock:
+            if self._tools is None:
+                self._tools = self._discover_all()
+            return self._tools
 
     def add_server(self, config: Any) -> List[MCPTool]:
         """Mount a server at runtime and return its newly discovered tools.
 
         The on-demand path: a build can provision a server mid-task (see
-        :mod:`mcp_gather`). Deduplicated by server name, timeout-bounded, and
-        never raises — a server that fails to start simply contributes no tools.
+        :mod:`mcp_gather`). Deduplicated by both display name AND launch identity
+        (``command``+``args`` / ``url``), so the same underlying package is never
+        mounted twice under two names. Timeout-bounded and never raises — a server
+        that fails to start simply contributes no tools.
         """
         normalized = _normalize_servers([config])
-        existing = {s["name"] for s in self.servers}
-        added = [s for s in normalized if s["name"] not in existing]
-        if not added:
-            return []
-        self.servers.extend(added)
-        new_tools = self._discover_all(added)
-        if self._tools is None:
-            self._tools = new_tools
-        else:
-            self._tools.extend(new_tools)
-        return new_tools
+        with self._lock:
+            existing_names = {s["name"] for s in self.servers}
+            existing_ids = {_server_identity(s) for s in self.servers} - {None}
+            added: List[Dict[str, Any]] = []
+            for s in normalized:
+                if s["name"] in existing_names:
+                    continue
+                identity = _server_identity(s)
+                if identity is not None and identity in existing_ids:
+                    logger.info(
+                        f"MCP add_server: '{s['name']}' duplicates an already "
+                        f"mounted server by launch identity; skipping."
+                    )
+                    continue
+                added.append(s)
+                existing_names.add(s["name"])
+                if identity is not None:
+                    existing_ids.add(identity)
+            if not added:
+                return []
+            self.servers.extend(added)
+            new_tools = self._discover_all(added)
+            if self._tools is None:
+                self._tools = new_tools
+            else:
+                self._tools.extend(new_tools)
+            return new_tools
+
+    def remove_server(self, name: str) -> None:
+        """Unmount a server and drop its tools. Idempotent; never raises.
+
+        The inverse of :meth:`add_server` — lets a caller retract a server it
+        mounted at runtime (e.g. one provisioned on demand that it no longer
+        wants) so both the server list and the cached tool registry stay in sync.
+        """
+        with self._lock:
+            self.servers = [s for s in self.servers if s.get("name") != name]
+            if self._tools is not None:
+                self._tools = [t for t in self._tools if t.server != name]
+
+    def known_identities(self) -> set:
+        """Launch identities of the currently-mounted servers (lock-guarded).
+
+        A safe snapshot for the on-demand path to dedup a discovery against the
+        live stack without iterating the shared ``servers`` list unlocked while
+        another task thread mutates it."""
+        with self._lock:
+            return {_server_identity(s) for s in self.servers} - {None}
 
     def _discover_all(
         self, servers: Optional[List[Dict[str, Any]]] = None
@@ -185,8 +262,8 @@ class MCPManager:
         for server in servers if servers is not None else self.servers:
             name = server["name"]
             discovered = run_bounded(
-                lambda s=server: _list_tools(s),
-                self.connect_timeout,
+                lambda s=server: _list_tools(s, self.connect_timeout),
+                self.connect_timeout + _TEARDOWN_GRACE,
                 default=[],
                 what=f"MCP tool discovery ({name})",
             )
@@ -224,7 +301,8 @@ class MCPManager:
         clean, safe, audited entry point (config-gated, timeout-bounded,
         never-raises) to build on without touching the build loop's internals.
         """
-        cfg = next((s for s in self.servers if s["name"] == server), None)
+        with self._lock:  # a concurrent add/remove must not race this lookup
+            cfg = next((s for s in self.servers if s["name"] == server), None)
         if cfg is None:
             logger.warning(f"MCP call_tool: no configured server named '{server}'.")
             return None
@@ -237,8 +315,8 @@ class MCPManager:
             f"MCP call_tool: {server}.{name} args={list((arguments or {}).keys())}"
         )
         return run_bounded(
-            lambda: _call_tool(cfg, name, arguments or {}),
-            self.call_timeout,
+            lambda: _call_tool(cfg, name, arguments or {}, self.call_timeout),
+            self.call_timeout + _TEARDOWN_GRACE,
             default=None,
             what=f"MCP tool call ({server}.{name})",
         )
@@ -346,9 +424,9 @@ async def _open_session(server: Dict[str, Any]):
                 yield session
 
 
-def _list_tools(server: Dict[str, Any]) -> List[Dict[str, Any]]:
-    import asyncio
-
+def _list_tools(
+    server: Dict[str, Any], timeout: float = _DEFAULT_CONNECT_TIMEOUT
+) -> List[Dict[str, Any]]:
     async def _main() -> List[Dict[str, Any]]:
         async with _open_session(server) as session:
             result = await session.list_tools()
@@ -361,14 +439,15 @@ def _list_tools(server: Dict[str, Any]) -> List[Dict[str, Any]]:
                 for tool in result.tools
             ]
 
-    return asyncio.run(_main())
+    return _run_bounded_async(_main(), timeout, [], server.get("name", "?"))
 
 
 def _call_tool(
-    server: Dict[str, Any], name: str, arguments: Dict[str, Any]
+    server: Dict[str, Any],
+    name: str,
+    arguments: Dict[str, Any],
+    timeout: float = _DEFAULT_CALL_TIMEOUT,
 ) -> Optional[str]:
-    import asyncio
-
     async def _main() -> Optional[str]:
         async with _open_session(server) as session:
             result = await session.call_tool(name, arguments=arguments)
@@ -377,7 +456,31 @@ def _call_tool(
                 return None
             return _result_text(result)
 
-    return asyncio.run(_main())
+    return _run_bounded_async(_main(), timeout, None, name)
+
+
+def _run_bounded_async(coro, timeout: float, default, what: str):
+    """Run ``coro`` under an asyncio deadline, returning ``default`` on timeout.
+
+    The deadline is the PRIMARY bound for the stdio transport: ``wait_for``
+    cancels the coroutine on expiry, which unwinds the ``async with`` client and
+    terminates the launched subprocess — so a hung ``npx``/``uvx`` child is killed
+    here rather than abandoned as an orphan by the outer thread backstop. Runs its
+    own event loop in this (worker) thread; never raises into the caller.
+    """
+    import asyncio
+
+    async def _guarded():
+        return await asyncio.wait_for(coro, timeout)
+
+    try:
+        return asyncio.run(_guarded())
+    except asyncio.TimeoutError:
+        logger.warning(f"MCP async op ({what}) hit {timeout}s deadline; cancelled.")
+        return default
+    except Exception as e:  # boundary: any transport/SDK failure degrades cleanly
+        logger.debug(f"MCP async op ({what}) failed: {e}")
+        return default
 
 
 def _result_text(result) -> Optional[str]:

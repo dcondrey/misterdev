@@ -95,7 +95,7 @@ def _remote(name="glama"):
 
 def test_allow_tools_filters_discovery(monkeypatch):
     monkeypatch.setattr(
-        mcp, "_list_tools", lambda s: [{"name": "read"}, {"name": "delete"}]
+        mcp, "_list_tools", lambda s, timeout=0: [{"name": "read"}, {"name": "delete"}]
     )
     m = mcp.MCPManager([_remote()], allow_tools=["glama.read"])
     assert {t.name for t in m.tools} == {"read"}
@@ -104,7 +104,7 @@ def test_allow_tools_filters_discovery(monkeypatch):
 def test_allow_tools_refuses_disallowed_call(monkeypatch):
     seen = {}
 
-    def _fake_call(s, n, a):
+    def _fake_call(s, n, a, timeout=0):
         seen["name"] = n
         return "result"
 
@@ -118,6 +118,6 @@ def test_allow_tools_refuses_disallowed_call(monkeypatch):
 
 
 def test_no_allowlist_allows_all(monkeypatch):
-    monkeypatch.setattr(mcp, "_list_tools", lambda s: [{"name": "anything"}])
+    monkeypatch.setattr(mcp, "_list_tools", lambda s, timeout=0: [{"name": "anything"}])
     m = mcp.MCPManager([_remote()])  # allow_tools=None -> unrestricted
     assert {t.name for t in m.tools} == {"anything"}

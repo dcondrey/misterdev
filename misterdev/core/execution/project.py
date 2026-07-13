@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -62,6 +63,10 @@ class Project:
         self._ranker_built = False
         self._mcp = None
         self._mcp_built = False
+        # One Project is shared by tasks that run concurrently in a thread pool
+        # (orchestrator parallel_mode). Guard the lazy MCP build so two threads
+        # racing first access cannot each run discovery and double-launch servers.
+        self._mcp_lock = threading.Lock()
         self._audit_trail = None
         self._governance_policy = None
         self._governance_built = False
@@ -137,50 +142,106 @@ class Project:
         to first access of ``.tools`` and is timeout-bounded). A None result is
         remembered so callers can skip MCP entirely without retrying.
         """
-        if not self._mcp_built:
+        if self._mcp_built:
+            return self._mcp
+        with self._mcp_lock:
+            if self._mcp_built:  # a racing thread already built it
+                return self._mcp
+            self._mcp = self._build_mcp()
             self._mcp_built = True
-            mcp_cfg = self.config.get("mcp") or {}
-            servers = list(mcp_cfg.get("servers") or [])
-            # Curated tier: mount the vetted core stack by load tier (config-gated
-            # so keyed servers appear only when their env vars are set). ``true``
-            # -> "core"; a string/list selects tiers ("core"/"project"/"task"/"all").
-            curated = mcp_cfg.get("curated")
-            if curated:
-                from misterdev.core.integration.mcp_registry import select_curated
-
-                tiers = (
-                    ("core",)
-                    if curated is True
-                    else ((curated,) if isinstance(curated, str) else tuple(curated))
-                )
-                servers.extend(select_curated(tiers))
-            # On-the-fly discovery: search the free official registry for servers
-            # matching each capability query and append the trusted, locally-
-            # runnable ones (npx/uvx stdio). Best-effort; never blocks the build.
-            discover = mcp_cfg.get("discover")
-            if discover:
-                from misterdev.core.integration.mcp_registry import (
-                    DEFAULT_TRUSTED_NAMESPACES,
-                    discover_servers,
-                )
-
-                trusted = (
-                    mcp_cfg.get("trusted_namespaces") or DEFAULT_TRUSTED_NAMESPACES
-                )
-                servers.extend(
-                    discover_servers(
-                        list(discover),
-                        trusted_namespaces=trusted,
-                        max_servers=int(mcp_cfg.get("discover_max_servers", 3)),
-                        min_trust=float(mcp_cfg.get("min_trust", 0.5)),
-                    )
-                )
-            if servers:
-                from misterdev.core.integration.mcp import MCPManager
-
-                manager = MCPManager(servers, allow_tools=mcp_cfg.get("allow_tools"))
-                self._mcp = manager if manager.enabled else None
         return self._mcp
+
+    def _build_mcp(self):
+        mcp_cfg = self.config.get("mcp") or {}
+        servers = list(mcp_cfg.get("servers") or [])
+        # Curated tier: mount the vetted core stack by load tier (config-gated
+        # so keyed servers appear only when their env vars are set). ``true``
+        # -> "core"; a string/list selects tiers ("core"/"project"/"task"/"all").
+        curated = mcp_cfg.get("curated")
+        if curated:
+            from misterdev.core.integration.mcp_registry import select_curated
+
+            tiers = (
+                ("core",)
+                if curated is True
+                else ((curated,) if isinstance(curated, str) else tuple(curated))
+            )
+            servers.extend(select_curated(tiers))
+        # On-the-fly discovery: search the free official registry for servers
+        # matching each capability query and append the trusted, locally-
+        # runnable ones (npx/uvx stdio). Best-effort; never blocks the build.
+        # Skipped under network isolation: discovery runs UNVETTED code from the
+        # public registry on the host, which would defeat a sandbox the project
+        # explicitly chose (see also the on-demand gate in the executor).
+        discover = mcp_cfg.get("discover")
+        if discover and self._host_exec_isolated():
+            logger.warning(
+                "MCP discovery skipped: project runs under network=none isolation, "
+                "so provisioning unvetted registry servers on the host is refused."
+            )
+            discover = None
+        if discover:
+            from misterdev.core.integration.mcp import _server_identity
+            from misterdev.core.integration.mcp_registry import (
+                DEFAULT_TRUSTED_NAMESPACES,
+                RegistryCache,
+                discover_servers,
+            )
+
+            trusted = mcp_cfg.get("trusted_namespaces") or DEFAULT_TRUSTED_NAMESPACES
+            # Don't re-discover a package already mounted (curated/configured):
+            # dedup by launch identity so the same server isn't run under two names.
+            known = {_server_identity(s) for s in servers} - {None}
+            found = discover_servers(
+                list(discover),
+                trusted_namespaces=trusted,
+                max_servers=int(mcp_cfg.get("discover_max_servers", 3)),
+                min_trust=float(mcp_cfg.get("min_trust", 0.5)),
+                cache=RegistryCache(self._mcp_cache_path()),
+                known_identities=known,
+                source=str(mcp_cfg.get("discover_source", "cgcone")),
+            )
+            for cfg in found:
+                self.audit_trail.record(
+                    "mcp_provision",
+                    source="startup_discovery",
+                    server=cfg.get("name"),
+                    command=cfg.get("command"),
+                    args=cfg.get("args"),
+                )
+            servers.extend(found)
+        # On-demand discovery starts from a blank slate: the model FINDs a server
+        # mid-task and it is mounted live. That needs a manager to mount INTO even
+        # when nothing is preconfigured — but not under host-execution isolation,
+        # where provisioning is refused anyway (so a null manager is correct).
+        on_demand = bool(
+            mcp_cfg.get("discover_on_demand", True) and not self._host_exec_isolated()
+        )
+        if servers or on_demand:
+            from misterdev.core.integration.mcp import MCPManager
+
+            manager = MCPManager(servers, allow_tools=mcp_cfg.get("allow_tools"))
+            if manager.enabled or on_demand:
+                return manager
+        return None
+
+    def _mcp_cache_path(self) -> Path:
+        return self.path / ".orchestrator" / "mcp_registry_cache.json"
+
+    def _host_exec_isolated(self) -> bool:
+        """True when the project deliberately runs under isolation.
+
+        Two signals, either of which means unvetted host execution would break
+        the boundary the build chose: ``governance.network=none`` (host network
+        cut off), and a container/docker environment (the build runs inside a
+        sandbox, but MCP servers spawn on the HOST — so auto-installing a registry
+        package on the host escapes that sandbox entirely).
+        """
+        gov = self.config.get("governance") or {}
+        if gov.get("network") == "none":
+            return True
+        env_type = (self.config.get("environment") or {}).get("type")
+        return env_type in ("docker", "container")
 
     @property
     def llm_cache(self):

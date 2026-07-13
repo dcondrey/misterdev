@@ -25,21 +25,6 @@
       "why": "LSP-backed symbol navigation (manual: uvx-from-git)"
     },
     {
-      "name": "e2b",
-      "category": "workspace",
-      "tier": "core",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@e2b/mcp-server@0.2.3"
-      ],
-      "requires": [
-        "E2B_API_KEY"
-      ],
-      "repository": "https://github.com/e2b-dev/mcp-server",
-      "why": "Sandboxed Linux VMs for code execution"
-    },
-    {
       "name": "git",
       "category": "vcs",
       "tier": "core",
@@ -50,18 +35,6 @@
       "requires": [],
       "repository": "https://github.com/modelcontextprotocol/servers",
       "why": "Native git operations"
-    },
-    {
-      "name": "github",
-      "category": "vcs",
-      "tier": "core",
-      "command": null,
-      "args": [],
-      "requires": [
-        "GITHUB_PERSONAL_ACCESS_TOKEN"
-      ],
-      "repository": "https://github.com/github/github-mcp-server",
-      "why": "Official GitHub: PRs/issues/Actions/code search (Go/Docker)"
     },
     {
       "name": "context7",
@@ -109,21 +82,6 @@
       "requires": [],
       "repository": "https://github.com/semgrep/mcp",
       "why": "Static analysis; find real bugs in a diff"
-    },
-    {
-      "name": "socket",
-      "category": "quality",
-      "tier": "core",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@socketsecurity/mcp@0.0.20"
-      ],
-      "requires": [
-        "SOCKET_API_TOKEN"
-      ],
-      "repository": "https://github.com/SocketDev/socket-mcp",
-      "why": "Supply-chain: malicious/typosquat dep checks"
     },
     {
       "name": "time",
@@ -294,36 +252,6 @@
       "why": "Full browser control"
     },
     {
-      "name": "exa",
-      "category": "docs",
-      "tier": "task",
-      "command": "npx",
-      "args": [
-        "-y",
-        "exa-mcp-server@3.2.1"
-      ],
-      "requires": [
-        "EXA_API_KEY"
-      ],
-      "repository": "https://github.com/exa-labs/exa-mcp-server",
-      "why": "Semantic web search for AI"
-    },
-    {
-      "name": "ref",
-      "category": "docs",
-      "tier": "task",
-      "command": "npx",
-      "args": [
-        "-y",
-        "ref-tools-mcp@3.0.3"
-      ],
-      "requires": [
-        "REF_API_KEY"
-      ],
-      "repository": "https://github.com/ref-tools/ref-tools-mcp",
-      "why": "Cross-repo symbol search in the wild"
-    },
-    {
       "name": "kubernetes",
       "category": "infra",
       "tier": "task",
@@ -385,21 +313,6 @@
       "requires": [],
       "repository": "https://github.com/temporalio/mcp-server-temporal",
       "why": "Workflow/activity/task-queue inspection (official)"
-    },
-    {
-      "name": "notion",
-      "category": "docs",
-      "tier": "task",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@notionhq/notion-mcp-server@2.4.1"
-      ],
-      "requires": [
-        "NOTION_TOKEN"
-      ],
-      "repository": "https://github.com/makenotion/notion-mcp-server",
-      "why": "Read/write pages, query databases (official)"
     },
     {
       "name": "mermaid",

@@ -162,7 +162,7 @@ def test_discover_dedups_and_caps(monkeypatch):
     monkeypatch.setattr(
         reg,
         "gather_signals",
-        lambda s, p, timeout=10.0: TrustSignals(
+        lambda s, p, timeout=10.0, cache=None: TrustSignals(
             npm_downloads_month=50000, github_stars=5000, github_pushed_days=10
         ),
     )
@@ -171,5 +171,218 @@ def test_discover_dedups_and_caps(monkeypatch):
 
 
 def test_search_registry_never_raises(monkeypatch):
-    monkeypatch.setattr(reg, "_http_get_json", lambda url, timeout: None)
+    monkeypatch.setattr(reg, "_http_get_json", lambda url, timeout, headers=None: None)
     assert search_registry("anything") == []
+
+
+# --- stemming (curated match reaches plurals / nominalisations) ---------------
+def test_stem_normalizes_plurals_and_gerunds():
+    assert reg._stem("timezones") == reg._stem("timezone")
+    assert reg._stem("searches") == reg._stem("search")
+    assert reg._stem("fetching") == reg._stem("fetch")
+    assert reg._stem("access") == "access"  # -ss is not a plural
+
+
+def test_provide_capability_matches_curated_via_stem(monkeypatch):
+    # "convert timezones" must resolve to the curated `time` entry (why:
+    # "Timezone conversion, current time") instead of falling to discovery.
+    monkeypatch.setattr(
+        reg, "discover_servers", lambda *a, **k: [{"name": "SHOULD_NOT_REACH"}]
+    )
+    cfg = reg.provide_capability("convert timezones", env={})
+    assert cfg is not None and cfg["name"] == "time"
+
+
+# --- persistent cache ---------------------------------------------------------
+def test_registry_cache_roundtrip_and_ttl(tmp_path):
+    c = reg.RegistryCache(tmp_path / "c.json", ttl=1000)
+    assert c.get("k") is None
+    c.put("k", {"v": 1})
+    assert c.get("k") == {"v": 1}
+    reg.RegistryCache(tmp_path / "c.json", ttl=1000)  # persisted across instances
+    assert reg.RegistryCache(tmp_path / "c.json", ttl=1000).get("k") == {"v": 1}
+    assert reg.RegistryCache(tmp_path / "c.json", ttl=-1).get("k") is None  # expired
+
+
+def test_registry_cache_concurrent_instances_preserve_entries(tmp_path):
+    # Two instances on the same file (the manager is shared, the cache is built
+    # per call site): each write merges the other's entries and swaps the file
+    # atomically, so neither clobbers the other and the JSON is never torn.
+    import threading
+
+    path = tmp_path / "c.json"
+    a = reg.RegistryCache(path)
+    b = reg.RegistryCache(path)
+
+    def _writer(cache, prefix):
+        for i in range(50):
+            cache.put(f"{prefix}{i}", {"i": i})
+
+    ta = threading.Thread(target=_writer, args=(a, "a"))
+    tb = threading.Thread(target=_writer, args=(b, "b"))
+    ta.start()
+    tb.start()
+    ta.join()
+    tb.join()
+    final = reg.RegistryCache(path)  # re-read from disk: valid JSON, both merged
+    assert final.get("a49") == {"i": 49}
+    assert final.get("b49") == {"i": 49}
+
+
+def test_gather_signals_uses_cache(monkeypatch, tmp_path):
+    calls = {"n": 0}
+
+    def _gh(url, timeout, headers=None):
+        calls["n"] += 1
+        return {"stargazers_count": 1234, "archived": False}
+
+    monkeypatch.setattr(reg, "_http_get_json", _gh)
+    cache = reg.RegistryCache(tmp_path / "c.json")
+    server = {"name": "io.x/a", "repository": {"url": "https://github.com/x/a"}}
+    pkg = {"registryType": "pypi", "identifier": "a", "version": "1.0"}
+    s1 = reg.gather_signals(server, pkg, cache=cache)
+    s2 = reg.gather_signals(server, pkg, cache=cache)
+    assert s1.github_stars == 1234 and s2.github_stars == 1234
+    assert calls["n"] == 1  # second call served from cache, no network
+
+
+def test_search_caches_results(monkeypatch, tmp_path):
+    calls = {"n": 0}
+
+    def _http(url, timeout, headers=None):
+        calls["n"] += 1
+        return {"servers": [{"server": {"name": "io.x/a"}}]}
+
+    monkeypatch.setattr(reg, "_http_get_json", _http)
+    cache = reg.RegistryCache(tmp_path / "c.json")
+    search_registry("web", cache=cache)
+    search_registry("web", cache=cache)
+    assert calls["n"] == 1
+
+
+# --- identity dedup against the already-mounted stack -------------------------
+def test_discover_skips_known_identity(monkeypatch):
+    s = _npm_server("io.x/fetch", "server-fetch")
+    monkeypatch.setattr(reg, "search_registry", lambda q, **k: [s])
+    monkeypatch.setattr(
+        reg,
+        "gather_signals",
+        lambda *a, **k: TrustSignals(
+            npm_downloads_month=50000, github_stars=5000, github_pushed_days=10
+        ),
+    )
+    # Pretend the same package is already mounted (curated) by its launch identity.
+    known = {("stdio", "npx", "-y", "server-fetch")}
+    assert discover_servers(["fetch"], known_identities=known) == []
+
+
+# --- search re-ranks by query relevance --------------------------------------
+def test_search_reranks_relevant_first(monkeypatch):
+    servers = [
+        {"server": {"name": "io.x/misc", "description": "an unrelated tool"}},
+        {"server": {"name": "io.x/fetcher", "description": "fetch web pages"}},
+    ]
+    monkeypatch.setattr(
+        reg, "_http_get_json", lambda url, timeout, headers=None: {"servers": servers}
+    )
+    out = search_registry("fetch web pages")
+    assert out[0]["name"] == "io.x/fetcher"  # most on-topic first
+
+
+# --- cgcone discovery backend -------------------------------------------------
+def _cgcone_entry(
+    name,
+    identifier,
+    command="npx",
+    stars=5000,
+    days=10,
+    archived=False,
+    env=None,
+    server_type="stdio",
+    tags=None,
+    description="fetch web pages and content",
+):
+    from datetime import datetime, timedelta, timezone
+
+    last = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    args = ["-y", identifier] if command == "npx" else [identifier]
+    return {
+        "name": name,
+        "description": description,
+        "category": "docs",
+        "tags": tags or ["fetch", "web"],
+        "serverType": server_type,
+        "stars": stars,
+        "isArchived": archived,
+        "lastCommit": last,
+        "installConfig": {"command": command, "args": args, "env": env or {}, "type": "npm"},
+    }
+
+
+def test_cgcone_config_admits_free_stdio_rejects_keyed_and_remote():
+    assert reg._cgcone_config(_cgcone_entry("x/a", "a"))["command"] == "npx"
+    assert reg._cgcone_config(_cgcone_entry("x/a", "a", env={"API_KEY": ""})) is None
+    assert reg._cgcone_config(_cgcone_entry("x/a", "a", server_type="streamable-http")) is None
+    assert reg._cgcone_config({"name": "x", "serverType": "stdio", "installConfig": {}}) is None
+
+
+def test_cgcone_signals_map_from_index():
+    sig = reg._cgcone_signals(_cgcone_entry("x/a", "a", stars=3000, days=5, archived=True))
+    assert sig.github_stars == 3000 and sig.archived is True
+    assert 0 <= sig.github_pushed_days <= 7
+
+
+def test_discover_via_cgcone_admits_pins_and_ranks(monkeypatch):
+    entries = [
+        _cgcone_entry("io.x/fetcher", "server-fetch", stars=8000),
+        _cgcone_entry("io.x/obscure", "obscure-pkg", stars=1, description="unrelated"),
+    ]
+    monkeypatch.setattr(reg, "fetch_cgcone_registry", lambda cache=None, timeout=10.0: entries)
+    monkeypatch.setattr(
+        reg, "_resolve_version", lambda rt, ident, t, c: "1.2.3"
+    )
+    out = reg.discover_via_cgcone(["fetch web pages"], max_servers=2)
+    assert out and out[0]["name"] == "io.x.fetcher"
+    assert out[0]["args"][-1] == "server-fetch@1.2.3"  # version-pinned
+    assert out[0]["_source"] == "cgcone"
+
+
+def test_discover_via_cgcone_drops_bogus_unresolvable_spec(monkeypatch):
+    entries = [_cgcone_entry("io.x/bogus", "n8n-monorepo", stars=9000)]
+    monkeypatch.setattr(reg, "fetch_cgcone_registry", lambda cache=None, timeout=10.0: entries)
+    monkeypatch.setattr(reg, "_resolve_version", lambda rt, ident, t, c: "")  # doesn't resolve
+    assert reg.discover_via_cgcone(["fetch web pages"], max_servers=2) == []
+
+
+def test_discover_via_cgcone_skips_archived_by_score(monkeypatch):
+    entries = [_cgcone_entry("io.x/dead", "dead-pkg", stars=9000, archived=True)]
+    monkeypatch.setattr(reg, "fetch_cgcone_registry", lambda cache=None, timeout=10.0: entries)
+    monkeypatch.setattr(reg, "_resolve_version", lambda rt, ident, t, c: "1.0.0")
+    assert reg.discover_via_cgcone(["fetch web pages"], max_servers=2) == []
+
+
+def test_discover_via_cgcone_dedups_known_identity(monkeypatch):
+    entries = [_cgcone_entry("io.x/fetcher", "server-fetch", stars=8000)]
+    monkeypatch.setattr(reg, "fetch_cgcone_registry", lambda cache=None, timeout=10.0: entries)
+    monkeypatch.setattr(reg, "_resolve_version", lambda rt, ident, t, c: "1.2.3")
+    known = {("stdio", "npx", "-y", "server-fetch@1.2.3")}
+    assert reg.discover_via_cgcone(["fetch"], known_identities=known) == []
+
+
+def test_discover_servers_routes_source_cgcone(monkeypatch):
+    called = {"cgcone": 0, "official": 0}
+    monkeypatch.setattr(
+        reg, "discover_via_cgcone",
+        lambda *a, **k: called.__setitem__("cgcone", called["cgcone"] + 1) or [],
+    )
+    monkeypatch.setattr(
+        reg, "search_registry",
+        lambda *a, **k: called.__setitem__("official", called["official"] + 1) or [],
+    )
+    discover_servers(["fetch"], source="cgcone")
+    assert called == {"cgcone": 1, "official": 0}  # cgcone only, no official search
+
+
+def test_fetch_cgcone_registry_never_raises(monkeypatch):
+    monkeypatch.setattr(reg, "_http_get_json", lambda url, timeout: None)
+    assert reg.fetch_cgcone_registry() == []
