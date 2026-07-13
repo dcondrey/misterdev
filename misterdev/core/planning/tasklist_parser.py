@@ -56,6 +56,9 @@ _ALIASES: Dict[str, tuple] = {
         "dod",
         "success",
         "verify",
+        "completion",
+        "verification",
+        "validation",
     ),
     "files_to_modify": (
         "files_to_modify",
@@ -89,15 +92,19 @@ _ATTR_RE = re.compile(
     r"^\s*[-*+]?\s*\**\s*"
     r"(id|task[_ ]?id|files?(?:\s+to\s+(?:modify|edit|create))?|relevant\s+files?|"
     r"context(?:\s+files?)?|success\s+criteria|acceptance(?:\s+criteria)?|criteria|"
-    r"done[_ ]when|depends?(?:\s+on)?|blocked\s+by|requires?|needs|after|"
+    r"done[_ ]when|completion|verification|validation|description|details|notes|"
+    r"depends?(?:\s+on)?|blocked\s+by|requires?|needs|after|"
     r"priority|category|complexity|effort|phase)"
-    r"\**\s*[:=]\s*(.+)$",
+    # trailing ``\**`` on BOTH sides of the separator: authors write ``**Key:**``
+    # (closing stars after the colon) as often as ``**Key**:``.
+    r"\**\s*[:=]\**\s*(.+)$",
     re.IGNORECASE,
 )
 _LIST_ITEM_RE = re.compile(r"^(\s*)(?:[-*+]|\d+[.)])\s+(?:\[[ xX~-]?\]\s+)?(.+)$")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*$")
 _PHASE_WORD_RE = re.compile(
-    r"\b(phase|stage|milestone|epic|part|section)\b", re.IGNORECASE
+    r"\b(phase|stage|milestone|epic|part|section|wave|sprint|iteration)\b",
+    re.IGNORECASE,
 )
 _SPLIT_REFS_RE = re.compile(r"[,;]| and ")  # NOT '/': it is a path separator
 
@@ -211,9 +218,59 @@ def _extract_dependency_table(text: str) -> Dict[str, List[str]]:
             continue
         ref = cells[task_col].strip("*` ")
         raw = cells[dep_col].strip("*` ")
-        if ref and raw and raw.lower() not in ("-", "none", "n/a", ""):
+        if ref and raw and raw.lower() not in ("-", "–", "—", "none", "n/a", ""):
             deps[ref] = _as_list(raw)
     return deps
+
+
+# A leading task id on a heading/item title: "T004 — ...", "T-001 - ...",
+# "Task 12: ...". The separator class includes en/em dashes (– —), the common
+# devplan style, so an id is captured (and stripped) rather than left in the title.
+# The trailing ``[a-z]?`` admits sub-task ids like ``T062a`` / ``T062b`` (a common
+# way to split one numbered task) so both halves parse instead of being dropped.
+_TASK_ID_RE = re.compile(
+    r"^(task\s*\d+[a-z]?|T-?\d+[a-z]?)\s*[:.)\-–—]+\s*", re.IGNORECASE
+)
+# A trailing inline dependency note on a heading title: "... (after T015)",
+# "... (depends on T7, T8)". Lets a plan that states edges in the heading — not
+# only in a table — still contribute them.
+_INLINE_DEPS_RE = re.compile(
+    r"\(\s*(?:after|depends?(?:\s+on)?|blocked\s+by|requires?|needs)\b[:\s]*"
+    r"([^)]+)\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _split_task_id(title: str) -> tuple:
+    """(id, remaining_title) — split a leading task id off a title, or (None, title)."""
+    m = _TASK_ID_RE.match(title or "")
+    if not m:
+        return None, (title or "").strip()
+    return m.group(1).strip(), title[m.end() :].strip()
+
+
+def _extract_inline_deps(title: str) -> tuple:
+    """(clean_title, [raw_dep_refs]) — pull a trailing "(after ...)" note and a
+    trailing parallel marker ("‖ parallel") off a title."""
+    deps: List[str] = []
+    t = title or ""
+    m = _INLINE_DEPS_RE.search(t)
+    if m:
+        deps = _as_list(m.group(1))
+        t = t[: m.start()].strip()
+    t = re.sub(r"\s*‖.*$", "", t).strip()  # drop a trailing "‖ parallel" marker
+    return t, deps
+
+
+def _new_task_record(raw_title: str, phase: str) -> Dict[str, Any]:
+    tid, rest = _split_task_id(raw_title)
+    title, deps = _extract_inline_deps(rest)
+    rec: Dict[str, Any] = {"title": title, "phase": phase}
+    if tid:
+        rec["id"] = tid
+    if deps:
+        rec["dependencies"] = deps
+    return rec
 
 
 def _records_from_markdown(text: str) -> List[Dict[str, Any]]:
@@ -228,6 +285,18 @@ def _records_from_markdown(text: str) -> List[Dict[str, Any]]:
             cur = None
 
     lines = text.splitlines()
+    # "Task-id mode": when the doc numbers its tasks (T001, Task 3), ONLY id'd
+    # headings are tasks. Non-id headings (a "Global Conventions" preamble, a
+    # trailing "Dependency Table" section) and their bullets are then context, not
+    # phantom tasks — and everything before the first task/phase is captured as a
+    # shared preamble injected into every task.
+    has_ids = any(
+        _split_task_id(_HEADING_RE.match(ln).group(2))[0]
+        for ln in lines
+        if _HEADING_RE.match(ln)
+    )
+    preamble: List[str] = []
+    in_preamble = has_ids
     in_table = False
     for line in lines:
         if line.strip().startswith("|"):  # dependency/other table — handled apart
@@ -237,12 +306,26 @@ def _records_from_markdown(text: str) -> List[Dict[str, Any]]:
         heading = _HEADING_RE.match(line)
         if heading:
             title = heading.group(2).strip()
-            if _PHASE_WORD_RE.search(title) and len(heading.group(1)) <= 2:
+            is_phase = bool(_PHASE_WORD_RE.search(title)) and len(heading.group(1)) <= 2
+            tid = _split_task_id(title)[0]
+            if is_phase:
                 flush()
+                in_preamble = False
                 current_phase = title
                 continue
+            if has_ids and not tid:
+                # A non-task section heading in a numbered plan: preamble (before
+                # the first task) or a trailing note (after) — never a task.
+                flush()
+                if in_preamble:
+                    preamble.append(line)
+                continue
             flush()
-            cur = {"title": _strip_task_prefix(title), "phase": current_phase}
+            in_preamble = False
+            cur = _new_task_record(title, current_phase)
+            continue
+        if in_preamble:
+            preamble.append(line)
             continue
         item = _LIST_ITEM_RE.match(line)
         attr = _ATTR_RE.match(line)
@@ -256,37 +339,70 @@ def _records_from_markdown(text: str) -> List[Dict[str, Any]]:
             if inner and cur is not None and indent > 0:
                 _apply_attr(cur, inner.group(1), inner.group(2))
                 continue
+            if has_ids:
+                # In a numbered plan a bullet is task detail, not a sibling task:
+                # fold it into the description (markdown emphasis stripped).
+                if cur is not None:
+                    cur["description"] = (
+                        cur.get("description", "") + " " + re.sub(r"\*+", "", body)
+                    ).strip()
+                continue
             flush()
-            cur = {"title": _strip_task_prefix(body), "phase": current_phase}
+            cur = _new_task_record(body, current_phase)
             continue
         if cur is not None and line.strip() and not in_table:
             cur["description"] = (
                 cur.get("description", "") + " " + line.strip()
             ).strip()
     flush()
+
+    shared = "\n".join(preamble).strip()
+    if shared:
+        for rec in records:
+            rec.setdefault("shared_context", shared)
     return records
 
 
-def _strip_task_prefix(title: str) -> str:
-    # "Task 1: Foo" / "T-001 - Foo" / "1. Foo" -> "Foo" (keep an explicit id aside)
-    return re.sub(
-        r"^(task\s*\d+|T-?\d+)\s*[:.\-)]\s*", "", title, flags=re.IGNORECASE
-    ).strip()
+def _clean_path(p: str) -> str:
+    """One file path from a prose list: drop wrapping backticks/quotes and a
+    trailing annotation like ``(new)`` / ``(generated)`` that authors append."""
+    p = re.sub(r"\s*\([^)]*\)\s*$", "", p.strip().strip("`'\"").strip())
+    return p.strip("`'\" ")
 
 
 def _apply_attr(rec: Dict[str, Any], key: str, value: str) -> None:
     k = key.lower().replace(" ", "_")
     value = value.strip().strip("`")
     if k.startswith("file") or "relevant_file" in k:
-        target = "files_to_create" if "create" in k else "files_to_modify"
-        rec.setdefault(target, [])
-        rec[target] = _as_list(rec[target]) + _as_list(value)
+        default = "files_to_create" if "create" in k else "files_to_modify"
+        for raw in _as_list(value):
+            # A per-path "(new)"/"(create)" annotation routes that path to
+            # files_to_create even under a generic "Files:" key.
+            new = any(w in raw.lower() for w in ("(new", "(create", "(generated"))
+            target = "files_to_create" if new else default
+            path = _clean_path(raw)
+            if path:
+                rec.setdefault(target, [])
+                rec[target] = _as_list(rec[target]) + [path]
     elif k.startswith("context"):
         rec["context_files"] = _as_list(rec.get("context_files")) + _as_list(value)
     elif any(w in k for w in ("depend", "blocked", "require", "need", "after")):
         rec["dependencies"] = _as_list(rec.get("dependencies")) + _as_list(value)
-    elif any(w in k for w in ("success", "acceptance", "criteria", "done_when")):
+    elif any(
+        w in k
+        for w in (
+            "success",
+            "acceptance",
+            "criteria",
+            "done_when",
+            "completion",
+            "verif",
+            "validation",
+        )
+    ):
         rec["acceptance_criteria"] = value
+    elif k.startswith("desc") or k in ("details", "notes", "body"):
+        rec["description"] = (rec.get("description", "") + " " + value).strip()
     elif k in ("id", "task_id"):
         rec["id"] = value
     elif k in ("category", "priority", "complexity", "effort", "phase"):
@@ -308,7 +424,7 @@ def _records_from_text(text: str) -> List[Dict[str, Any]]:
         title = item.group(2).strip() if item else line.strip()
         if cur is not None:
             records.append(cur)
-        cur = {"title": _strip_task_prefix(title)}
+        cur = _new_task_record(title, "")
     if cur is not None:
         records.append(cur)
     return records

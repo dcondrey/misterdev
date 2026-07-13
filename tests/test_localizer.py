@@ -71,16 +71,61 @@ def test_no_terms_or_no_match_returns_empty():
     assert localize("zzzznomatch", g) == []
 
 
-def test_ranker_reorders_shortlist():
+class _FakeRanker:
+    """Stub matching the real SemanticRanker.top_k(query, {id: text}, k) contract."""
+
+    def __init__(self, order):
+        self.order = order  # candidate keys, best-first
+        self.calls = 0
+
+    def top_k(self, query, candidates, k):
+        self.calls += 1
+        return [key for key in self.order if key in candidates][:k]
+
+
+def test_ranker_selects_topk_from_lexical_overfetch():
+    # Both names match "alpha beta" lexically; the ranker picks which one wins the
+    # single slot. top_k reorders only when selecting a strict subset, so top_k=1.
     g = _graph(_sym("alpha", "a.py", content="x"), _sym("beta", "b.py", content="y"))
+    base = [h.symbol for h in localize("alpha beta", g, top_k=1, ranker=None)]
+    assert base == ["alpha"]  # lexical tie broken by key order
+    ranker = _FakeRanker(order=["b.py:beta", "a.py:alpha"])
+    ranked = [h.symbol for h in localize("alpha beta", g, top_k=1, ranker=ranker)]
+    assert ranked == ["beta"] and ranker.calls == 1
 
-    # A ranker that reverses the lexical order.
-    def ranker(query, snippets):
-        return list(range(len(snippets)))[::-1]
 
-    base = [h.symbol for h in localize("alpha beta", g, ranker=None)]
-    ranked = [h.symbol for h in localize("alpha beta", g, ranker=ranker)]
-    assert ranked == base[::-1]
+def test_semantic_fallback_rescues_vocabulary_mismatch():
+    # The issue's words ("login is slow") share NO token with the target symbol
+    # `authenticate`, so lexical scoring is empty. A semantic ranker that knows the
+    # mapping rescues it; without a ranker the query localizes to nothing.
+    g = _graph(
+        _sym("authenticate", "auth.py", content="verify user credentials session"),
+        _sym("render_page", "html.py", content="template html output"),
+    )
+    assert localize("login is slow", g, ranker=None) == []  # pure lexical miss
+    ranker = _FakeRanker(order=["auth.py:authenticate"])
+    hits = localize("login is slow", g, ranker=ranker)
+    assert [h.symbol for h in hits] == ["authenticate"]
+    assert hits[0].score > 0  # synthetic descending score, usable for file rollup
+
+
+def test_semantic_fallback_not_used_when_lexical_is_strong():
+    # A confident name-level hit must NOT trigger the fallback (no wasted embed).
+    g = _graph(_sym("authenticate", "auth.py"), _sym("render", "html.py"))
+    ranker = _FakeRanker(order=["html.py:render"])
+    hits = localize("authenticate the user", g, ranker=ranker)
+    assert hits[0].symbol == "authenticate" and ranker.calls == 0
+
+
+def test_semantic_fallback_degrades_when_ranker_raises():
+    g = _graph(_sym("authenticate", "auth.py"))
+
+    class _Boom:
+        def top_k(self, *a):
+            raise RuntimeError("embedding backend down")
+
+    # Fallback swallows the error; a pure lexical miss still returns empty, no raise.
+    assert localize("login is slow", g, ranker=_Boom()) == []
 
 
 def test_hit_is_structured():

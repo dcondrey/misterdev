@@ -320,7 +320,46 @@ def _parse_test_counts(output: str) -> Tuple[int, int]:
     fm = re.search(r"(?:ℹ|#)\s*fail\s+(\d+)", output)
     if tm and fm:
         return int(tm.group(1)), int(fm.group(1))
+    # stdlib unittest: "Ran N tests in ..." with "OK" or
+    # "FAILED (failures=F, errors=E)". No "passed"/"failed" summary line, so the
+    # pytest block above misses it and it would otherwise read as zero tests.
+    m = re.search(r"Ran (\d+) tests? in", output)
+    if m:
+        fails = sum(int(n) for n in re.findall(r"(?:failures|errors)=(\d+)", output))
+        return int(m.group(1)), fails
     return 0, 0
+
+
+# Explicit "zero tests were executed" phrases across common runners. A test
+# command that exits 0 having collected nothing is a false-GREEN gate: it
+# greenlights any edit while catching no regression. These are high-confidence
+# strings (not a parsed count of 0, which can also mean "output format we don't
+# parse"), so a warning built on them never cries wolf on a real-but-unparsed
+# suite.
+_NO_TESTS_RAN_SIGNALS = (
+    "no tests ran",  # pytest
+    "collected 0 items",  # pytest
+    "ran 0 tests",  # stdlib unittest
+    "no tests found",  # jest / vitest
+    "no test files found",  # vitest
+    "no test files",  # go
+    "running 0 tests",  # cargo / rust (per-crate; guard with a 0 total)
+    "0 tests found",
+    "no tests to run",
+)
+
+
+def gate_ran_no_tests(output: str) -> bool:
+    """True when test output explicitly reports that zero tests were executed.
+
+    Callers should also require a parsed test_count of 0: "running 0 tests" is
+    emitted per-crate by cargo even in a workspace where other crates DO run
+    tests, so the phrase alone is not sufficient. Pairing an explicit signal with
+    a zero total is high precision — a genuine no-op gate — with no false alarm on
+    a healthy multi-package run.
+    """
+    low = (output or "").lower()
+    return any(sig in low for sig in _NO_TESTS_RAN_SIGNALS)
 
 
 # ----------------------------------------------------------------

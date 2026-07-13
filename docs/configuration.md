@@ -85,6 +85,21 @@ runtime:
   vision:{ capture: ".orchestrator/web_verify_evidence.png", assert: "shows a chart" }
 ```
 
+### Flaky-test quarantine (`orchestrator.flaky_reruns`)
+
+A flaky test (a race, a clock, an ordering dependency) makes the test gate fail nondeterministically. Left unchecked it reverts a *correct* edit and burns attempts re-solving code that was never broken — the main hazard when misterdev runs on a repo whose suite it does not control.
+
+```yaml
+orchestrator:
+  flaky_reruns: 2     # 0 (default) = strict single run; >0 = confirm before trusting a red
+```
+
+When `> 0`, a failed test gate is re-run up to this many times with **no code change**. A failure that does not reproduce is a flake: it is quarantined and the gate passes; a failure that reproduces every run stays RED. Applies to both the per-task gate and the integration gate. A rerun costs one extra test run only on an already-red gate. Default `0` preserves the strict single-run behavior.
+
+### No-op test-gate warning (automatic)
+
+Before a run, misterdev validates the resolved `test_command` on the pristine tree. If it exits clean but runs **zero** tests (a wrong path, a marker filter matching nothing, a misinferred runner), the run records a "No-op test gate" warning — the gate would otherwise pass every edit while catching no regression. Advisory; no config.
+
 ## MCP (Model Context Protocol)
 
 Declare servers under `mcp.servers`, then enable awareness and/or the agentic gathering loop under `orchestrator.*`. A remote gateway uses `transport: http` (or `sse`) plus a `url` and a Bearer token from `api_key_env`. `mcp.allow_tools` is an allowlist of `server.tool` (or bare tool) names.
@@ -155,6 +170,7 @@ Parsed tasks flow into the same engine as a devplan: dependency-aware **topologi
 | `llm.failover` | `[]` | Ordered fallback provider/model list. |
 | `llm.dynamic_selection` | `"auto"` | Ledger-driven cost-aware selection. |
 | `llm.use_free_models` | `true` | Harvest free models into the cheap tier. |
+| `orchestrator.flaky_reruns` | `0` | Re-run a red test gate N times; a non-reproducing failure is a quarantined flake. |
 | `orchestrator.adversarial_critic` | `false` | Independent pre-apply edit review. |
 | `orchestrator.goal_check` | `false` | Post-build goal-completion judge (advisory). |
 | `orchestrator.mcp_enabled` | `false` | Inject discovered MCP tool awareness. |

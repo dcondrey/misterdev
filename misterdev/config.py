@@ -226,6 +226,14 @@ class OrchestratorSettings:
     # just passes. Off by default and timeout-bounded; no config / an unparseable
     # score / a timeout is a SKIP, only a score below the floor is a RED.
     mutation_gate: bool = False
+    # Flaky-test quarantine: when > 0, a failed G3 test gate is re-run this many
+    # times with NO code change before it is trusted. A failure that does not
+    # reproduce is nondeterministic (a flake) and must not revert a correct edit,
+    # so it is quarantined and the gate passes; a failure that reproduces every run
+    # is deterministic and stays RED. Off (0) by default preserves the strict
+    # single-run gate; set 1-2 for repos whose suite is not under misterdev's
+    # control. Each rerun costs one extra test run only on an already-red gate.
+    flaky_reruns: int = 0
     verify_acceptance: bool = True
     llm_acceptance_judge: bool = True
     # Optional goal-completion check: when on, an LLM judge reads the goal,
@@ -279,16 +287,17 @@ class OrchestratorSettings:
     # default and additive only — it never changes the single-shot build loop.
     # The substrate (connect/discover/call) is always available via project.mcp;
     # this flag gates only the awareness injection. Timeout-bounded throughout.
-    mcp_enabled: bool = False
+    mcp_enabled: bool = True
     # Optional agentic MCP tool use: when on (and an MCP manager with discovered
     # tools exists), a BOUNDED pre-edit loop lets the model request MCP tool
     # calls to gather information; results are prepended to the task context and
-    # the existing edit-generation path runs unchanged. Off by default and purely
-    # additive — when off the executor path is byte-identical to today. Each round
-    # is timeout-bounded (the tool call goes through MCPManager.call_tool); the
-    # loop is hard-capped by ``mcp_max_tool_rounds``. Implies ``mcp_enabled`` for
-    # the awareness/registry, but the gathering loop is gated by this flag alone.
-    mcp_tool_use: bool = False
+    # the existing edit-generation path runs unchanged. ON by default so a build
+    # can discover and use tools out of the box; when off the executor path is
+    # byte-identical to a no-MCP build. Each round is timeout-bounded (the tool
+    # call goes through MCPManager.call_tool); the loop is hard-capped by
+    # ``mcp_max_tool_rounds``. Implies ``mcp_enabled`` for the awareness/registry,
+    # but the gathering loop is gated by this flag alone.
+    mcp_tool_use: bool = True
     # Hard ceiling on the agentic gathering loop's rounds (see ``mcp_tool_use``).
     # Each round is at most one model turn plus one tool call; the loop always
     # stops at this count even if the model keeps requesting tools.

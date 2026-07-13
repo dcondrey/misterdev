@@ -89,6 +89,20 @@ class ExecuteMixin:
             f for f in task.context_files if not _is_golden_path(f, golden_paths)
         ]
 
+        # No declared targets (a bare issue): localize them from the symbol graph
+        # so the task edits with real file context instead of blind. Runs BEFORE
+        # routing so a routed target is selected from the localized files too;
+        # golden-filtered; best-effort ([] leaves the prior edit-blind path).
+        if not target_files:
+            localized = [
+                f
+                for f in self._localize_target_files(project, task)
+                if not _is_golden_path(f, golden_paths)
+            ]
+            if localized:
+                logger.info(f"No target files declared; localized to: {localized}")
+                target_files = localized
+
         # Multi-target routing: pick the sub-project that owns this task's files
         # and gate with ITS build/test/typecheck commands. No targets / no match
         # -> top-level commands, i.e. the single-target path is unchanged.
@@ -122,6 +136,10 @@ class ExecuteMixin:
         task_build_command = target_cmds["build_command"]
         build_timeout = get_setting(project.config, "build", "build_timeout")
         test_timeout = get_setting(project.config, "build", "test_timeout")
+        # Flaky-test quarantine for the per-task gate (0 disables, matching the
+        # integration gate). A red test that does not reproduce on re-run is a
+        # flake and must not revert a correct edit.
+        flaky_reruns = get_setting(project.config, "orchestrator", "flaky_reruns")
 
         # Atomic execution: git branch per task (disabled in parallel mode to avoid races)
         can_branch = use_git_branch and self._is_git_repo(project)
@@ -240,6 +258,19 @@ class ExecuteMixin:
         topo = getattr(project, "topography", None)
         project_outline = topo.get_project_outline() if topo is not None else ""
 
+        # Cross-build warm-start: seed THIS task with how the nearest previously-
+        # solved tasks were done, keyed on the task description. Computed once (it
+        # is identical across attempts); "" when the index is empty or nothing
+        # matches. Closes the learning loop at the executor, not just the planner.
+        solved_priors = self._solved_task_priors(project, task)
+
+        # Shared task-list preamble: the global conventions a numbered devplan
+        # states once up front (canonical constants, locked dependency versions,
+        # "never guess" rules) that every task must honor. The tasklist parser
+        # attaches it to each task; inject it so the model sees those constraints
+        # on this task, not only at planning time. "" when the plan had no preamble.
+        shared_context = str(task.processor_data.get("shared_context", "") or "")
+
         # Optional, off-by-default agentic pre-edit gathering: when enabled and
         # an MCP manager with tools exists, the model may request bounded MCP
         # tool calls to gather information. The result is prepended to the task
@@ -357,6 +388,10 @@ class ExecuteMixin:
             budget.set("topo_context", topo_context, priority=2, min_lines=40)
             budget.set("error_logs", error_logs or "", priority=1, min_lines=20)
             budget.set("scratchpad", scratchpad_context, priority=3)
+            budget.set("solved_priors", solved_priors, priority=3, min_lines=0)
+            # Priority 2: the plan's global constraints outrank scratchpad/outline
+            # but yield to the task's own code and errors under real pressure.
+            budget.set("shared_context", shared_context, priority=2, min_lines=0)
             budget.set("interface_contracts", interface_contracts, priority=2)
             budget.set("recent_changes", recent_changes, priority=2)
             budget.set("consensus_context", consensus, priority=3)
@@ -385,6 +420,13 @@ class ExecuteMixin:
                 full_code_context += "\n\n" + allocated["topo_context"]
             if allocated["recent_changes"]:
                 full_code_context += "\n\n" + allocated["recent_changes"]
+            if allocated["solved_priors"]:
+                full_code_context += "\n\n" + allocated["solved_priors"]
+            if allocated["shared_context"]:
+                full_code_context += (
+                    "\n\n## Plan-wide conventions (apply to every task)\n"
+                    + allocated["shared_context"]
+                )
             if allocated["project_outline"]:
                 full_code_context += (
                     "\n\n## Project Structure (files and their symbols)\n"
@@ -715,6 +757,14 @@ class ExecuteMixin:
                 success, output = self._run_command(
                     project, test_command, timeout=test_timeout, cwd=task_cwd
                 )
+                # Whether the command genuinely exited zero on THIS tree — kept
+                # separate from a flake rescue below so the acceptance short-circuit
+                # only ever skips a re-run of a real green (not a flaked-then-passed).
+                test_exited_green = success
+                if not success and self._confirm_flaky(
+                    project, test_command, output, test_timeout, task_cwd, flaky_reruns
+                ):
+                    success = True
                 accepted, post_failures = self._gate_accepts(
                     success, output, baseline_failures
                 )
@@ -739,6 +789,11 @@ class ExecuteMixin:
                         llm_acceptance_judge,
                         test_timeout,
                         cwd=task_cwd,
+                        # Only a genuinely GREEN test run (exit 0) lets acceptance
+                        # skip an identical command; a red-but-accepted-under-
+                        # baseline run OR a flake-rescued one must still be
+                        # re-checked, so key on the raw result, not the flake flip.
+                        already_passed=test_command if test_exited_green else None,
                     )
                     if not acc_ok:
                         logger.warning(

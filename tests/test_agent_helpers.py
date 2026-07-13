@@ -10,11 +10,76 @@ from misterdev.agent_helpers import (
     _check_golden_config,
     _combine_commands,
     _warn_if_no_test_gate,
+    _warn_if_test_gate_is_noop,
 )
+from misterdev.core.verification.validator import gate_ran_no_tests
 
 
 def _report():
     return SimpleNamespace(degraded_subsystems=[], key_decisions=[])
+
+
+def _assessment(test_command, tests_pass, test_count, test_output=""):
+    return SimpleNamespace(
+        structure=SimpleNamespace(test_command=test_command),
+        health=SimpleNamespace(
+            tests_pass=tests_pass, test_count=test_count, test_output=test_output
+        ),
+    )
+
+
+def test_no_tests_ran_signal_detects_common_runners():
+    assert gate_ran_no_tests("no tests ran in 0.01s")  # pytest
+    assert gate_ran_no_tests("collected 0 items")  # pytest
+    assert gate_ran_no_tests("No tests found, exiting")  # jest
+    assert gate_ran_no_tests("?   pkg   [no test files]")  # go
+    assert not gate_ran_no_tests("5 passed in 1.2s")
+
+
+def test_warn_noop_fires_on_zero_tests_with_signal():
+    a = _assessment(
+        "pytest -k nope",
+        tests_pass=True,
+        test_count=0,
+        test_output="collected 0 items\n\nno tests ran in 0.01s",
+    )
+    report = _report()
+    _warn_if_test_gate_is_noop(a, report)
+    assert any("no-op test gate" in d.lower() for d in report.degraded_subsystems)
+
+
+def test_warn_noop_silent_when_tests_actually_ran():
+    a = _assessment("pytest", tests_pass=True, test_count=42, test_output="42 passed")
+    report = _report()
+    _warn_if_test_gate_is_noop(a, report)
+    assert not report.degraded_subsystems
+
+
+def test_warn_noop_silent_without_explicit_signal():
+    # A 0 count with no zero-test phrase may just be an unparsed format: don't cry wolf.
+    a = _assessment(
+        "run-tests", tests_pass=True, test_count=0, test_output="OK: all green"
+    )
+    report = _report()
+    _warn_if_test_gate_is_noop(a, report)
+    assert not report.degraded_subsystems
+
+
+def test_warn_noop_silent_on_cargo_workspace_mix():
+    # cargo prints "running 0 tests" for empty crates; a nonzero total means the
+    # gate is real, so the phrase alone must not trip the warning.
+    out = "running 0 tests\n\nrunning 5 tests\ntest result: ok. 5 passed; 0 failed"
+    a = _assessment("cargo test", tests_pass=True, test_count=5, test_output=out)
+    report = _report()
+    _warn_if_test_gate_is_noop(a, report)
+    assert not report.degraded_subsystems
+
+
+def test_warn_noop_silent_when_no_command_or_baseline_red():
+    report = _report()
+    _warn_if_test_gate_is_noop(_assessment(None, True, 0, "no tests ran"), report)
+    _warn_if_test_gate_is_noop(_assessment("pytest", False, 0, "no tests ran"), report)
+    assert not report.degraded_subsystems  # missing/red baseline handled elsewhere
 
 
 # --- Finding 1: a malformed `targets` config must not crash the safety warning ---

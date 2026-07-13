@@ -5,6 +5,7 @@ from rich.console import Console
 
 from misterdev.analyzers.project_analyzer import has_test_files
 from misterdev.config import get_setting
+from misterdev.core.verification.validator import gate_ran_no_tests
 from misterdev.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -167,6 +168,40 @@ def _warn_if_no_test_gate(assessment, project, report) -> None:
     console.print(f"[yellow]No test gate:[/] {msg}")
     report.degraded_subsystems.append(
         "No test gate: test files exist but no test command was detected"
+    )
+
+
+def _warn_if_test_gate_is_noop(assessment, report) -> None:
+    """Surface a resolved test command that runs but exercises ZERO tests.
+
+    Distinct from ``_warn_if_no_test_gate`` (a MISSING command): here a command
+    exists and exits clean yet collects nothing — a wrong path, a marker filter
+    that matches no tests, or a misinferred runner. That is a false-GREEN gate: it
+    passes every edit while catching no regression, the same silent hole a missing
+    gate opens. Fires only on high confidence — an explicit "no tests ran" signal
+    AND a parsed count of 0 — so a real suite whose output format we don't parse
+    never trips it, and a healthy multi-crate run (cargo prints "running 0 tests"
+    per empty crate) is excluded by the nonzero total.
+    """
+    health = assessment.health
+    if not assessment.structure.test_command:
+        return  # a missing command is _warn_if_no_test_gate's concern
+    if not health.tests_pass:
+        return  # a failing baseline is surfaced by _warn_if_baseline_broken
+    if health.test_count > 0:
+        return  # it ran real tests
+    if not gate_ran_no_tests(health.test_output):
+        return  # a 0 count alone may just be an unparsed format; need the signal
+    msg = (
+        "Test command resolved but ran ZERO tests — the test gate is a no-op and "
+        "will pass every edit without catching regressions. Check the command "
+        "targets the right path/markers (detected: "
+        f"`{assessment.structure.test_command}`)."
+    )
+    logger.warning(msg)
+    console.print(f"[yellow]No-op test gate:[/] {msg}")
+    report.degraded_subsystems.append(
+        "No-op test gate: test command resolved but ran zero tests"
     )
 
 

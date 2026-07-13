@@ -34,6 +34,7 @@ class HealthCheck(_AssessmentModel):
     lint_warnings: int = 0
     lint_output: str = ""
     missing_dependencies: list[str] = Field(default_factory=list)
+    flaky_quarantined: list[str] = Field(default_factory=list)
 
 
 class FeatureInfo(_AssessmentModel):

@@ -103,6 +103,75 @@ def test_markdown_phases():
     assert tasks[2].processor_data["phase"] == "Phase 2: Features"
 
 
+_DEVPLAN = """\
+# Countless — v1 Development Plan
+
+## Global Conventions
+
+### Canonical constants (never guess)
+- `RAW_RETENTION_DAYS = 90`
+- Package `@countless/server` is the Worker.
+
+### Secrets (must not guess)
+- `ADMIN_TOKEN` is a secret, not a var.
+
+## Wave 0 — Foundations
+
+### T001 — Shared event and error types ‖ parallel
+- **Description:** Define the shared types.
+- **Files:** `packages/shared/src/types.ts` (new), `packages/shared/src/index.ts`
+- **Completion:** `pnpm --filter @countless/shared typecheck` = 0
+
+### T002 — Drizzle schema → D1 migration
+- **Description:** Author the schema and generate the migration.
+- **Files:** `apps/server/src/db/schema.ts`
+- **Completion:** `pnpm --filter @countless/server db:generate` writes a migration
+
+## Wave 1 — Ingest
+
+### T003 — POST /api/collect handler (depends T001, T002)
+- **Description:** Wire the ingest endpoint.
+- **Completion:** `pnpm --filter @countless/server test` passes
+
+### T062a — Analytics Engine binding
+- **Completion:** binding present
+
+### T062b — AE query lib ‖ parallel (after T062a)
+- **Completion:** query returns rows
+
+## Dependency Table
+
+| Task | Title | Blocked by |
+| --- | --- | --- |
+| T001 | types | — |
+| T002 | schema | — |
+| T003 | collect | T001, T002 |
+"""
+
+
+def test_devplan_format_parses_as_written():
+    tasks = _p(_DEVPLAN, name="DEVPLAN.md")
+    by_id = {t.id: t for t in tasks}
+    # Exactly the five real tasks — the global preamble and the trailing
+    # dependency-table section did NOT become phantom tasks.
+    assert sorted(by_id) == ["T001", "T002", "T003", "T062a", "T062b"]
+    # Em-dash-id headings captured the id and stripped the ‖-parallel marker.
+    assert by_id["T001"].title == "Shared event and error types"
+    # `**Completion:**` mapped to the acceptance gate; backtick-annotated `**Files:**`
+    # cleaned (the "(new)" note dropped).
+    assert "typecheck" in by_id["T001"].acceptance_criteria
+    assert by_id["T001"].files_to_create == ["packages/shared/src/types.ts"]
+    assert "packages/shared/src/index.ts" in by_id["T001"].files_to_modify
+    # Deps resolve from BOTH the heading "(depends ...)" and the table, and a
+    # sub-task id (T062b) resolves its "(after T062a)".
+    assert by_id["T003"].dependencies == ["T001", "T002"]
+    assert by_id["T062b"].dependencies == ["T062a"]
+    # Waves became phases; the preamble rode along as shared context.
+    assert by_id["T001"].processor_data["phase"] == "Wave 0 — Foundations"
+    shared = by_id["T003"].processor_data.get("shared_context", "")
+    assert "RAW_RETENTION_DAYS = 90" in shared and "ADMIN_TOKEN" in shared
+
+
 def test_markdown_dependency_table_unlocks_graph():
     md = (
         "## Build core\n## Add API\n## Write docs\n\n"

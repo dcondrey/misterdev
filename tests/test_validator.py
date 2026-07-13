@@ -33,6 +33,21 @@ def test_parse_test_counts_sums_multiple_pytest_blocks():
     assert _parse_test_counts(out) == (9, 1)
 
 
+def test_parse_test_counts_unittest_ok_and_failures():
+    assert _parse_test_counts("Ran 5 tests in 0.01s\n\nOK\n") == (5, 0)
+    assert _parse_test_counts(
+        "Ran 7 tests in 0.02s\n\nFAILED (failures=2, errors=1)\n"
+    ) == (7, 3)
+
+
+def test_gate_ran_no_tests_covers_unittest_and_vitest():
+    from misterdev.core.verification.validator import gate_ran_no_tests
+
+    assert gate_ran_no_tests("Ran 0 tests in 0.000s\n\nOK")  # unittest
+    assert gate_ran_no_tests("No test files found, exiting with code 1")  # vitest
+    assert not gate_ran_no_tests("Ran 3 tests in 0.01s\n\nOK")
+
+
 def test_run_validation_all_pass():
     with tempfile.TemporaryDirectory() as td:
         r = run_validation(Path(td), "true", "true", "true")

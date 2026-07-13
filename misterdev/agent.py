@@ -70,6 +70,7 @@ from misterdev.agent_helpers import (
     _combine_commands,
     _warn_if_baseline_broken,
     _warn_if_no_test_gate,
+    _warn_if_test_gate_is_noop,
 )
 from misterdev.config import get_setting
 from misterdev.logging_setup import setup_logger
@@ -414,6 +415,7 @@ class ProjectOrchestrator:
             report.health_before = assessment.health.model_copy()
             _warn_if_baseline_broken(assessment, report)
             _warn_if_no_test_gate(assessment, project, report)
+            _warn_if_test_gate_is_noop(assessment, report)
 
             return self._run_pipeline(
                 project, prompt, mode, flags, assessment, env_activate, report
@@ -522,6 +524,7 @@ class ProjectOrchestrator:
             report.health_before = assessment.health.model_copy()
             _warn_if_baseline_broken(assessment, report)
             _warn_if_no_test_gate(assessment, project, report)
+            _warn_if_test_gate_is_noop(assessment, report)
             return self._run_pipeline(
                 project,
                 goal,
@@ -790,6 +793,9 @@ class ProjectOrchestrator:
                 env_activate=env_activate,
                 build_timeout=get_setting(project.config, "build", "build_timeout"),
                 test_timeout=get_setting(project.config, "build", "test_timeout"),
+                flaky_reruns=get_setting(
+                    project.config, "orchestrator", "flaky_reruns"
+                ),
                 lint_timeout=get_setting(project.config, "build", "lint_timeout"),
                 lsp_diagnostics=get_setting(
                     project.config, "orchestrator", "lsp_diagnostics"

@@ -68,6 +68,7 @@ class GateKeeper:
         env_activate: Optional[str] = None,
         build_timeout: int = 180,
         test_timeout: int = 180,
+        flaky_reruns: int = 0,
         lint_timeout: Optional[int] = None,
         lsp_diagnostics: bool = False,
         lsp_language: Optional[str] = None,
@@ -97,6 +98,12 @@ class GateKeeper:
         # isn't falsely failed by the gate the way the analyzer once was.
         self.build_timeout = build_timeout
         self.test_timeout = test_timeout
+        # Flaky-test quarantine: on a red G3 gate, re-run the test command this many
+        # times before trusting the failure. 0 keeps the strict single-run gate; a
+        # positive value relaxes RED only for failures that do not reproduce with no
+        # code change (see core/verification/flaky.py). Never turns a deterministic
+        # failure green.
+        self.flaky_reruns = flaky_reruns
         self.lint_timeout = lint_timeout if lint_timeout is not None else test_timeout
         self.lsp_diagnostics = lsp_diagnostics
         self.lsp_language = lsp_language
@@ -120,6 +127,26 @@ class GateKeeper:
         """The command runner for gate commands: the container's ``run`` when a
         usable engine is attached, else ``None`` (local execution)."""
         return self.container.run if self.container else None
+
+    def _confirm_test_failure(self, test_cmd: str, first_output: str):
+        """Re-run a red test gate to tell a real regression from a flake.
+
+        Returns a ``FlakyVerdict``; with ``flaky_reruns`` at 0 it keeps the failure
+        RED (strict single-run gate, the default). The re-run uses the SAME command
+        and runner as the original, so a non-reproducing failure is nondeterministic
+        by construction."""
+        from misterdev.core.verification.flaky import confirm_test_failure
+
+        def _rerun() -> Tuple[bool, str]:
+            return _run_cmd(
+                test_cmd,
+                self.project_path,
+                self.env_activate,
+                timeout=self.test_timeout,
+                runner=self._runner,
+            )
+
+        return confirm_test_failure(_rerun, first_output, self.flaky_reruns)
 
     def run_gates(
         self, commands: Dict[str, Optional[str]]
@@ -192,8 +219,20 @@ class GateKeeper:
             health.tests_pass = success
             health.test_output = output
             if not success:
-                issues.append("G3: Tests failed")
-                return False, issues, health
+                verdict = self._confirm_test_failure(test_cmd, output)
+                if verdict.is_real_failure:
+                    issues.append("G3: Tests failed")
+                    return False, issues, health
+                # Nondeterministic: a flake, not a consequence of the edit. Do not
+                # revert a correct change; record what was quarantined and continue.
+                # Replace the stale failing output with an accurate note so a
+                # downstream reader of test_output can't misread a green gate.
+                health.tests_pass = True
+                health.flaky_quarantined = sorted(verdict.quarantined)
+                health.test_output = (
+                    f"Test failure quarantined as flaky: {verdict.reason}"
+                )
+                logger.warning("G3: %s; not blocking the build", verdict.reason)
         else:
             health.tests_pass = True
 

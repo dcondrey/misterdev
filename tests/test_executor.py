@@ -257,6 +257,154 @@ def _make_task():
     )
 
 
+def test_solved_task_priors_injects_nearest_match():
+    # A prior build solved a similar task; the executor should retrieve it keyed
+    # on THIS task's description and return a warm-start block naming it.
+    import json
+    from types import SimpleNamespace
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        orch = td / ".orchestrator"
+        orch.mkdir()
+        (orch / "solved_tasks.jsonl").write_text(
+            json.dumps(
+                {
+                    "task_id": "T-9",
+                    "description": "add rate limiting to the login endpoint",
+                    "language": "python",
+                    "files": ["api/login.py"],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        e = MarkdownPlanExecutor()
+        project = SimpleNamespace(path=td, semantic_ranker=None)  # lexical-only
+        task = _make_task()
+        task.description = "add rate limiting to the login endpoint"
+        priors = e._solved_task_priors(project, task)
+        assert "warm-start priors" in priors
+        assert "rate limiting to the login endpoint" in priors
+
+
+def test_solved_task_priors_empty_without_index():
+    from types import SimpleNamespace
+
+    with tempfile.TemporaryDirectory() as td:
+        e = MarkdownPlanExecutor()
+        project = SimpleNamespace(path=Path(td), semantic_ranker=None)
+        assert e._solved_task_priors(project, _make_task()) == ""
+
+
+def test_confirm_flaky_disabled_and_reproducing_and_flake():
+    e = MarkdownPlanExecutor()
+    # reruns=0 -> disabled, never re-runs, never a flake.
+    calls = []
+    e._run_command = lambda *a, **k: calls.append(1) or (True, "")
+    assert e._confirm_flaky(object(), "pytest", "1 failed", 60, None, 0) is False
+    assert calls == []
+
+    # A clean re-run means the failure did not reproduce -> flake.
+    e._run_command = lambda *a, **k: (True, "3 passed")
+    assert e._confirm_flaky(object(), "pytest", "1 failed", 60, None, 1) is True
+
+    # A failure that reproduces every re-run is real, not a flake.
+    e._run_command = lambda *a, **k: (False, "FAILED tests/x.py::t")
+    assert (
+        e._confirm_flaky(object(), "pytest", "FAILED tests/x.py::t", 60, None, 2)
+        is False
+    )
+
+
+def test_localize_target_files_from_symbol_graph():
+    from types import SimpleNamespace
+
+    e = MarkdownPlanExecutor()
+    topo = SimpleNamespace(
+        localize_files=lambda desc, ranker=None: [("api/login.py", 4.0), ("x.py", 1.0)]
+    )
+    project = SimpleNamespace(topography=topo, semantic_ranker=None)
+    task = _make_task()
+    task.description = "rate limit the login endpoint"
+    assert e._localize_target_files(project, task) == ["api/login.py", "x.py"]
+
+
+def test_localize_target_files_degrades_to_empty():
+    from types import SimpleNamespace
+
+    e = MarkdownPlanExecutor()
+    # No topography -> [].
+    assert (
+        e._localize_target_files(SimpleNamespace(topography=None), _make_task()) == []
+    )
+
+    # A raising localizer -> [] (best-effort, never sinks the build).
+    def _boom(*a, **k):
+        raise RuntimeError("graph unavailable")
+
+    project = SimpleNamespace(
+        topography=SimpleNamespace(localize_files=_boom), semantic_ranker=None
+    )
+    assert e._localize_target_files(project, _make_task()) == []
+
+
+def _acceptance_task(criteria):
+    t = _make_task()
+    t.acceptance_criteria = criteria
+    return t
+
+
+def test_acceptance_skips_redundant_rerun_of_passed_test_command():
+    # The extracted acceptance command == the test command that just passed green
+    # on this unchanged tree, so it must NOT re-run (pure redundancy).
+    e = MarkdownPlanExecutor()
+    calls = []
+    e._run_command = lambda *a, **k: calls.append(a) or (True, "")
+    ok, out = e._verify_acceptance(
+        object(),
+        _acceptance_task("run `pytest` to verify"),
+        True,
+        False,
+        60,
+        already_passed="pytest",
+    )
+    assert ok and out == "" and calls == []  # short-circuited, no subprocess
+
+
+def test_acceptance_runs_when_command_differs():
+    # A DIFFERENT acceptance command is still executed — the skip is exact-match only.
+    e = MarkdownPlanExecutor()
+    calls = []
+    e._run_command = lambda *a, **k: calls.append(a) or (True, "")
+    ok, _ = e._verify_acceptance(
+        object(),
+        _acceptance_task("pytest -q integration"),
+        True,
+        False,
+        60,
+        already_passed="pytest",
+    )
+    assert ok and len(calls) == 1  # ran the distinct command
+
+
+def test_acceptance_runs_when_no_green_test_recorded():
+    # already_passed=None (e.g. a red-but-accepted-under-baseline run) preserves
+    # the original behavior: the acceptance command runs.
+    e = MarkdownPlanExecutor()
+    calls = []
+    e._run_command = lambda *a, **k: calls.append(a) or (True, "")
+    ok, _ = e._verify_acceptance(
+        object(),
+        _acceptance_task("run `pytest` to verify"),
+        True,
+        False,
+        60,
+        already_passed=None,
+    )
+    assert ok and len(calls) == 1
+
+
 def _run_no_test_task(td, response, config_extra=None):
     # No test_command, no build_command, prose-only response (no code blocks)
     # so no edits are applied. Reaches the no-test completion branch.

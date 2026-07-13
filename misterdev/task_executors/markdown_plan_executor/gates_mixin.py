@@ -224,6 +224,34 @@ class GatesMixin:
             return True, post
         return False, post if total > 0 else None
 
+    def _confirm_flaky(
+        self, project, test_command: str, output: str, timeout: int, cwd, reruns: int
+    ) -> bool:
+        """True when a red per-task test gate did NOT reproduce on re-run — a flake.
+
+        The integration gate (GateKeeper) already confirms flakes; this closes the
+        same hole in the per-task loop, where an unconfirmed flake feeds the model
+        a misleading error and, on final failure, reverts a correct task. Re-runs
+        the SAME command on the SAME (unchanged) tree, so a non-reproducing failure
+        is nondeterministic by construction and must not block. ``reruns`` <= 0
+        disables it (the default), preserving the strict single-run gate."""
+        if reruns <= 0:
+            return False
+        from misterdev.core.verification.flaky import confirm_test_failure
+
+        def _rerun():
+            return self._run_command(project, test_command, timeout=timeout, cwd=cwd)
+
+        verdict = confirm_test_failure(_rerun, output, reruns)
+        if not verdict.is_real_failure:
+            logger.warning(
+                "Per-task test failure did not reproduce (%s); treating as a flake, "
+                "not reverting the edit.",
+                verdict.reason,
+            )
+            return True
+        return False
+
     def _verify_acceptance(
         self,
         project: Project,
@@ -232,6 +260,7 @@ class GatesMixin:
         llm_acceptance_judge: bool,
         timeout: int,
         cwd=None,
+        already_passed: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Verify the task's acceptance_criteria after build/test gates pass.
 
@@ -242,6 +271,12 @@ class GatesMixin:
         no-op that passes (behaviour identical to before this gate) unless the
         default-off ``orchestrator.llm_acceptance_judge`` flag is set, in which
         case an LLM judge is consulted. Never blocks on un-parseable free text.
+
+        ``already_passed`` is the test command that JUST exited zero on this exact
+        (unchanged) tree. When the extracted acceptance command is byte-identical
+        to it, re-running is pure redundancy — the same command on the same tree
+        must produce the same green — so it is skipped. Only an exact match short-
+        circuits; any different command still runs.
         """
         if not verify_acceptance:
             return True, ""
@@ -249,6 +284,12 @@ class GatesMixin:
         if not criteria:
             return True, ""
         command = _extract_acceptance_command(criteria)
+        if command and already_passed and command == already_passed:
+            logger.info(
+                "Acceptance command matches the test command that just passed on "
+                f"this tree; skipping the redundant re-run: {command}"
+            )
+            return True, ""
         if command:
             logger.info(f"Verifying acceptance criteria via command: {command}")
             success, output = self._run_command(

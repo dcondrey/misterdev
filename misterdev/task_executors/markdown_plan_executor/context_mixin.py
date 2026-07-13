@@ -93,22 +93,41 @@ class ContextMixin:
 
         # On-demand provisioning: when enabled, let the model FIND and mount a new
         # server mid-gather via the same trust ladder. Off by default (it is
-        # model-driven local code execution); mcp is None-checked above.
+        # model-driven local code execution); mcp is None-checked above. Refused
+        # under network=none isolation — running unvetted registry code on the
+        # host would defeat the sandbox the project explicitly chose.
         provide = None
         mcp_cfg = project.config.get("mcp") or {}
-        if mcp is not None and mcp_cfg.get("discover_on_demand"):
-            from misterdev.core.integration.mcp_registry import provide_capability
+        isolated = bool(getattr(project, "_host_exec_isolated", lambda: False)())
+        if mcp is not None and mcp_cfg.get("discover_on_demand", True) and not isolated:
+            from misterdev.core.integration.mcp_registry import (
+                RegistryCache,
+                provide_capability,
+            )
 
             trusted = mcp_cfg.get("trusted_namespaces") or None
             min_trust = float(mcp_cfg.get("min_trust", 0.5))
+            cache_path = getattr(project, "_mcp_cache_path", lambda: None)()
+            cache = RegistryCache(cache_path) if cache_path else None
 
-            def _provide(capability: str, _t=trusted, _m=min_trust):
-                kwargs = {"min_trust": _m}
+            source = str(mcp_cfg.get("discover_source", "cgcone"))
+
+            def _provide(
+                capability: str, _t=trusted, _m=min_trust, _c=cache, _s=source
+            ):
+                kwargs = {"min_trust": _m, "cache": _c, "source": _s}
                 if _t:
                     kwargs["trusted_namespaces"] = _t
+                # Skip re-discovering anything already mounted, by launch identity
+                # (locked snapshot — the manager is shared across parallel tasks).
+                kwargs["known_identities"] = mcp.known_identities()
                 return provide_capability(capability, **kwargs)
 
             provide = _provide
+        elif mcp_cfg.get("discover_on_demand", True) and isolated:
+            logger.info(
+                "MCP on-demand provisioning disabled under host-execution isolation."
+            )
 
         # Query-on-failure: on a retry, frame the gather around the actual gate
         # error so the model looks up what it needs to FIX the failure (a doc, an
@@ -122,6 +141,16 @@ class ContextMixin:
                 "specific failure before the next attempt."
             )
 
+        # Audit sink: record provisions and tool calls to the build's append-only
+        # trail. Installing/running internet code and calling external tools are
+        # the security-relevant events here; the logger alone is not forensic.
+        audit = getattr(project, "audit_trail", None)
+        on_event = None
+        if audit is not None:
+
+            def on_event(kind: str, details: dict, _a=audit, _tid=task.id):
+                _a.record(kind, task_id=_tid, **details)
+
         try:
             return gather_context(
                 mcp,
@@ -131,6 +160,7 @@ class ContextMixin:
                 local_tools=local_tools,
                 provide=provide,
                 max_provisions=int(mcp_cfg.get("discover_on_demand_max", 2)),
+                on_event=on_event,
             )
         except Exception as e:  # gathering is best-effort; never sink the build
             logger.warning(f"MCP tool-gathering skipped (error: {e}).")
@@ -165,6 +195,55 @@ class ContextMixin:
 
             local[name] = (desc, _call)
         return local
+
+    def _solved_task_priors(self, project: Project, task: Task) -> str:
+        """Warm-start THIS task from its nearest previously-solved tasks, or "".
+
+        The build already seeds the SPEC with priors for the overall goal; this
+        closes the same cross-build learning loop at the EXECUTOR, keyed on the
+        individual task description, so a recurring task shape starts from a proven
+        approach instead of re-deriving it cold. Reads the project's append-only
+        solved-task index and reuses the project's embedder for dense+lexical
+        retrieval (lexical-only without one). Best-effort: a missing/unreadable
+        index or no prior match degrades to "" and never breaks execution.
+        """
+        try:
+            from misterdev.core.learning.warm_start import SolvedTaskIndex
+
+            embedder = getattr(
+                getattr(project, "semantic_ranker", None), "embedder", None
+            )
+            index = SolvedTaskIndex(
+                project.path / ".orchestrator" / "solved_tasks.jsonl",
+                embedder=embedder,
+            )
+            return index.context(task.description)
+        except Exception as e:  # warm-start is best-effort; never sink the build
+            logger.debug(f"Solved-task warm-start skipped: {e}")
+            return ""
+
+    def _localize_target_files(self, project: Project, task: Task) -> List[str]:
+        """Find edit targets for a task that declares none, or [].
+
+        Decomposition usually names a task's files, but a bare issue ("fix the X
+        bug") can arrive with none — and the executor would then edit blind, with
+        no target-file context. This ranks the tree-sitter symbol graph against the
+        task description (lexical + call-graph, semantic when an embedder exists;
+        see :mod:`misterdev.core.context.localizer`) and returns the owning files,
+        best-first. A seed, not a cage: the model may still edit beyond them. Best-
+        effort — no graph, no match, or any error degrades to [] (edit blind, the
+        prior behavior)."""
+        topo = getattr(project, "topography", None)
+        if topo is None:
+            return []
+        try:
+            ranked = topo.localize_files(
+                task.description, ranker=getattr(project, "semantic_ranker", None)
+            )
+            return [file_path for file_path, _score in ranked]
+        except Exception as e:  # localization is best-effort; never sink the build
+            logger.debug(f"Target-file localization skipped: {e}")
+            return []
 
     def _mcp_awareness(self, project: Project) -> str:
         """Render the available-MCP-tools section, or "" when off / no tools.
