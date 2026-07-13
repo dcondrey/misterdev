@@ -13,7 +13,7 @@ from misterdev.core.execution.error_resolver import ErrorResolver
 from misterdev.core.execution.error_classifier import (
     format_classified_error,
 )
-from misterdev.llm.client import CACHE_BREAKPOINT
+from misterdev.llm.client import CACHE_BREAKPOINT, SYSTEM_CACHE_SPLIT
 from misterdev.llm.prompt_manager import PromptManager
 from misterdev.config import get_setting
 from misterdev.core.context.guidance import guidance_for_files
@@ -310,7 +310,7 @@ class ExecuteMixin:
             logger.info(f"Attempt {attempt + 1}/{attempt_cap} for task {task.id}")
             # Diagnostic: sizes of the context that ACCUMULATES across attempts,
             # so growth (or a runaway component) is visible per retry.
-            logger.info(
+            logger.debug(
                 f"[attempt-ctx] task={task.id} #{attempt + 1} "
                 f"error_logs={len(error_logs or '')}c "
                 f"reflections={len(reflections)}x/{sum(len(r) for r in reflections)}c "
@@ -401,15 +401,20 @@ class ExecuteMixin:
             budget.set("error_logs", error_logs or "", priority=1, min_lines=20)
             budget.set("scratchpad", scratchpad_context, priority=3)
             budget.set("solved_priors", solved_priors, priority=3, min_lines=0)
-            # Priority 2: the plan's global constraints outrank scratchpad/outline
-            # but yield to the task's own code and errors under real pressure.
-            budget.set("shared_context", shared_context, priority=2, min_lines=0)
             # The user's own directive for this task must survive truncation.
             budget.set("user_answer", user_answer, priority=1, min_lines=0)
             budget.set("interface_contracts", interface_contracts, priority=2)
             budget.set("recent_changes", recent_changes, priority=2)
             budget.set("consensus_context", consensus, priority=3)
-            budget.set("project_outline", project_outline, priority=3, min_lines=0)
+            # Token efficiency: the whole-project outline duplicates what the
+            # task-ranked topo_context + reference_sites already give a FOCUSED task
+            # (one with explicit target files and a substantial relevant map), so
+            # drop it there. Keep it for a bare/localized task (no targets), which
+            # needs whole-project awareness to find where to edit.
+            outline = (
+                "" if (target_files and len(topo_context) > 800) else project_outline
+            )
+            budget.set("project_outline", outline, priority=3, min_lines=0)
             allocated = budget.allocate()
 
             full_code_context = allocated["code_context"]
@@ -440,11 +445,6 @@ class ExecuteMixin:
                 full_code_context += (
                     "\n\n## The user's answer to your earlier question (follow this)\n"
                     + allocated["user_answer"]
-                )
-            if allocated["shared_context"]:
-                full_code_context += (
-                    "\n\n## Plan-wide conventions (apply to every task)\n"
-                    + allocated["shared_context"]
                 )
             if allocated["project_outline"]:
                 full_code_context += (
@@ -498,6 +498,19 @@ class ExecuteMixin:
             }
 
             system_prompt = prompt_manager.format_prompt("system", context_dict)
+            # Token efficiency: the plan's global conventions (shared_context) are
+            # BYTE-IDENTICAL across every task, so put them at the very front of the
+            # system prompt with a cache split. The prefix is then created once and
+            # re-read across ALL tasks (Claude), and its stable leading position
+            # engages OpenAI/Gemini automatic prefix caching too — same content the
+            # model saw before, just billed once instead of per task.
+            if shared_context:
+                system_prompt = (
+                    "## Plan-wide conventions (apply to every task)\n"
+                    + shared_context
+                    + SYSTEM_CACHE_SPLIT
+                    + system_prompt
+                )
             # Use the error-correction template whenever failures are known —
             # including a seeded attempt 0 on a red baseline — so the model always
             # sees the actual failures to fix rather than editing blind.

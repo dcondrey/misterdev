@@ -155,6 +155,30 @@ def test_anthropic_call_parses_text_blocks_and_caches_system(monkeypatch):
     assert captured["system"][0]["cache_control"] == {"type": "ephemeral"}
 
 
+def test_system_cache_split_creates_reusable_invariant_prefix():
+    from misterdev.llm.client.providers import (
+        SYSTEM_CACHE_SPLIT,
+        _cache_system_content,
+    )
+
+    a = "PREAMBLE" + SYSTEM_CACHE_SPLIT + "task A guidance"
+    b = "PREAMBLE" + SYSTEM_CACHE_SPLIT + "task B guidance"
+    ca = _cache_system_content(a, "anthropic/claude-sonnet-4.6")
+    # Two blocks: the invariant prefix is cached, the per-task tail is not.
+    assert ca[0]["text"] == "PREAMBLE" and ca[0]["cache_control"] == {
+        "type": "ephemeral"
+    }
+    assert ca[1]["text"] == "task A guidance" and "cache_control" not in ca[1]
+    # The cached prefix is byte-identical across tasks -> cross-task cache hit.
+    cb = _cache_system_content(b, "anthropic/claude-sonnet-4.6")
+    assert ca[0] == cb[0]
+    # Non-Claude: marker stripped, stable prefix preserved for auto prefix caching.
+    g = _cache_system_content(a, "openai/gpt-5.1-codex")
+    assert (
+        isinstance(g, str) and SYSTEM_CACHE_SPLIT not in g and g.startswith("PREAMBLE")
+    )
+
+
 def test_anthropic_call_wraps_api_error(monkeypatch):
     client = _make_anthropic(monkeypatch)
 

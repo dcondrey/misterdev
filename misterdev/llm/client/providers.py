@@ -25,6 +25,12 @@ _REQUEST_TIMEOUT_SECONDS = 300.0
 # prefix at ~10% of input price instead of paying full price every call. Input
 # is ~83% of a run's tokens, so this is the largest single cost lever.
 CACHE_BREAKPOINT = "\x00\x00MISTERDEV_CACHE_BREAKPOINT\x00\x00"
+# Splits the SYSTEM prompt into a task-INVARIANT prefix (project constants, the
+# plan's shared conventions — byte-identical across every task) and a per-task
+# tail. The prefix gets its own cache breakpoint, so it is created once and reused
+# across ALL tasks, not just a task's retries — and, being a stable leading prefix,
+# it also engages OpenAI/Gemini automatic prefix caching without cache_control.
+SYSTEM_CACHE_SPLIT = "\x00\x00MISTERDEV_SYSTEM_SPLIT\x00\x00"
 
 # Anthropic prices a cache read at ~10% of the base input token rate.
 _CACHE_READ_PRICE_FRACTION = 0.1
@@ -66,9 +72,23 @@ def _cache_user_content(prompt: str, model: str):
 
 
 def _cache_system_content(system_prompt: str, model: str):
-    """System content marked cacheable (Claude only), else the plain string."""
+    """System content marked cacheable. A SYSTEM_CACHE_SPLIT marker separates a
+    task-invariant prefix (cached and reused across tasks) from the per-task tail;
+    without it the whole system prompt is one cached block (prior behavior). For a
+    non-Claude model the marker is stripped and the plain string returned — its
+    stable leading prefix still engages that provider's automatic caching."""
     if not _supports_prompt_cache(model):
-        return system_prompt
+        return system_prompt.replace(SYSTEM_CACHE_SPLIT, "")
+    if SYSTEM_CACHE_SPLIT in system_prompt:
+        prefix, tail = system_prompt.split(SYSTEM_CACHE_SPLIT, 1)
+        parts = []
+        if prefix:
+            parts.append(
+                {"type": "text", "text": prefix, "cache_control": _CACHE_CONTROL}
+            )
+        if tail:
+            parts.append({"type": "text", "text": tail})
+        return parts
     return [{"type": "text", "text": system_prompt, "cache_control": _CACHE_CONTROL}]
 
 
