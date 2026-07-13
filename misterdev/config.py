@@ -297,6 +297,13 @@ class OrchestratorSettings:
     # "auto" (worktree isolation on a git repo, else shared), "shared" (one
     # working tree), or "worktree" (always isolate each parallel task).
     parallel_mode: str = "auto"
+    # Run independent tasks within a wave concurrently in `run --tasks` (they are
+    # worktree-isolated on a git repo; `max_workers`/`parallel_mode` apply). Gates
+    # resolve deps natively in a worktree (pnpm/npm populate node_modules from their
+    # store on first run — verified; do NOT symlink node_modules, it breaks pnpm).
+    # Off by default because concurrent gates contend for CPU/the store; enable per
+    # project after a live check, and keep `max_workers` modest on a laptop.
+    run_parallel: bool = False
     auto_detect_dependencies: bool = False
     # Optional MCP (Model Context Protocol) tool awareness: when on, the tools
     # discovered from the servers in the top-level ``mcp.servers`` list are

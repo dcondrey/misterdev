@@ -199,6 +199,7 @@ class ProjectOrchestrator:
             project.config, "orchestrator", "max_consecutive_failures"
         )
 
+        run_parallel = get_setting(project.config, "orchestrator", "run_parallel")
         completed_ids = set(progress.completed)
         failed_ids: set[str] = set()
         deferred_ids: set[str] = set()
@@ -272,29 +273,16 @@ class ProjectOrchestrator:
 
             wave += 1
             reporter.start_wave(wave, [t.id for t in ready])
-            for task in ready:
-                reporter.start_task(task.id, task.title or task.description[:50])
-                try:
-                    self._inject_task_context(
-                        task, contracts, changes, strategy_optimizer, project
-                    )
-                    result = executor.execute(task, project)
-                    task.execution_history.append(result)
-                except BudgetExceededError as e:
-                    # Terminal (budget spent or account out of credits): stop the
-                    # whole run cleanly rather than crash or churn the next tasks.
-                    logger.warning(f"Halting run: {e}")
-                    aborted = True
-                    break
-                except Exception as e:
-                    logger.error(f"Task {task.id} raised: {e}")
-                    result = None
 
+            def apply_result(task, result) -> bool:
+                """Record one task's outcome (parked / done / failed). Returns True
+                when the run should abort. Shared by the sequential and parallel
+                paths so both handle deferral, progress, contracts, and the
+                consecutive-failure guard identically."""
+                nonlocal consecutive_failures
+                if result is not None:
+                    task.execution_history.append(result)
                 if result is not None and result.status == "deferred":
-                    # Parked for the user: neither success nor failure. Record the
-                    # questions, don't touch the completed/failed sets or the
-                    # consecutive-failure counter, and move on — the run never
-                    # stalls on a task that needs a human.
                     deferred_ids.add(task.id)
                     deferrals.append(
                         {
@@ -305,8 +293,7 @@ class ProjectOrchestrator:
                         }
                     )
                     reporter.park_task(task.id, result.message)
-                    continue
-
+                    return False
                 succeeded = result is not None and result.status == "completed"
                 reporter.end_task(task.id, succeeded)
                 if succeeded:
@@ -325,12 +312,55 @@ class ProjectOrchestrator:
                             language=lang,
                         )
                         changes.record_task_changes(task.id, modified)
-                else:
-                    failed_ids.add(task.id)
-                    progress.mark_failed(task.id)
-                    consecutive_failures += 1
-                    if consecutive_failures >= max_consecutive_failures:
-                        logger.error("Aborting run: too many consecutive failures.")
+                    return False
+                failed_ids.add(task.id)
+                progress.mark_failed(task.id)
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    logger.error("Aborting run: too many consecutive failures.")
+                    return True
+                return False
+
+            for task in ready:
+                self._inject_task_context(
+                    task, contracts, changes, strategy_optimizer, project
+                )
+
+            if run_parallel and len(ready) > 1:
+                # Independent tasks in a wave run concurrently (worktree-isolated on
+                # a git repo). One batch, then outcomes are applied in the SAME
+                # deterministic way as the sequential path.
+                for task in ready:
+                    reporter.start_task(task.id, task.title or task.description[:50])
+                try:
+                    batch = self._execute_parallel(ready, executor, project)
+                except BudgetExceededError as e:
+                    logger.warning(f"Halting run: {e}")
+                    aborted = True
+                    break
+                for task, result, error in batch:
+                    if isinstance(error, BudgetExceededError):
+                        aborted = True
+                        break
+                    if error is not None:
+                        logger.error(f"Task {task.id} raised: {error}")
+                        result = None
+                    if apply_result(task, result):
+                        aborted = True
+                        break
+            else:
+                for task in ready:
+                    reporter.start_task(task.id, task.title or task.description[:50])
+                    try:
+                        result = executor.execute(task, project)
+                    except BudgetExceededError as e:
+                        logger.warning(f"Halting run: {e}")
+                        aborted = True
+                        break
+                    except Exception as e:
+                        logger.error(f"Task {task.id} raised: {e}")
+                        result = None
+                    if apply_result(task, result):
                         aborted = True
                         break
 

@@ -183,3 +183,53 @@ def test_run_project_deferral_is_nonblocking(tmp_path: Path, monkeypatch):
         encoding="utf-8"
     )
     assert "T002" in progress
+
+
+def test_run_project_parallel_path_runs_and_records_wave(tmp_path, monkeypatch):
+    from misterdev.agent import ProjectOrchestrator
+    from misterdev.core.models import ExecutionResult
+
+    def mk(tid, deps=()):
+        return Task(
+            id=tid, description=tid, project_ref="p", title=tid, dependencies=list(deps)
+        )
+
+    tasks = [mk("T1"), mk("T2"), mk("T3")]  # independent wave
+    task_mgr = SimpleNamespace(
+        discover_tasks=lambda: None,
+        get_pending_tasks=lambda: tasks,
+        update_task_status=lambda *a: None,
+    )
+    # run_parallel on; no .git in tmp so _execute_parallel uses shared/thread mode.
+    project = SimpleNamespace(
+        path=tmp_path,
+        name="p",
+        config={"orchestrator": {"run_parallel": True, "max_workers": 2}},
+        env_manager=None,
+        task_manager=task_mgr,
+        llm_client=None,
+    )
+    orch = ProjectOrchestrator()
+    monkeypatch.setattr(orch, "_get_or_register", lambda p: project)
+    monkeypatch.setattr(orch, "_inject_task_context", lambda *a, **k: None)
+    seen = []
+    real_parallel = orch._execute_parallel
+
+    def spy(ready, executor, proj):
+        seen.append(sorted(t.id for t in ready))
+        return real_parallel(ready, executor, proj)
+
+    monkeypatch.setattr(orch, "_execute_parallel", spy)
+    monkeypatch.setattr(
+        MarkdownPlanExecutor,
+        "execute",
+        lambda self, task, project, **k: ExecutionResult(
+            status="completed", message="ok"
+        ),
+    )
+    orch.run_project(tmp_path, skip_preflight=True, proceed=True)
+    assert seen and seen[0] == ["T1", "T2", "T3"]  # the wave went through parallel
+    progress = (tmp_path / ".orchestrator" / "progress.json").read_text(
+        encoding="utf-8"
+    )
+    assert all(t in progress for t in ("T1", "T2", "T3"))  # all recorded completed
