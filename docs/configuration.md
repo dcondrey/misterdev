@@ -100,6 +100,26 @@ When `> 0`, a failed test gate is re-run up to this many times with **no code ch
 
 Before a run, misterdev validates the resolved `test_command` on the pristine tree. If it exits clean but runs **zero** tests (a wrong path, a marker filter matching nothing, a misinferred runner), the run records a "No-op test gate" warning — the gate would otherwise pass every edit while catching no regression. Advisory; no config.
 
+### Walk-away mode: park tasks that need you (`orchestrator.ask_when_stuck`)
+
+The goal of `misterdev run --tasks <plan>` is: start it, walk away, come back to a finished project. Some tasks can't be finished by the model alone — a step needs a **credential** you must supply (a Cloudflare login, an API token), or it's a **judgment call** (a security review), or a requirement is **too ambiguous** to resolve safely. Rather than fail (and stall the run) or guess, misterdev **parks** such a task with a specific question and keeps going.
+
+```yaml
+orchestrator:
+  ask_when_stuck: true   # default; set false to restore hard-fail behavior
+```
+
+When on, a task the model tries but can't complete/verify — or one where it emits `NEEDS_INPUT: <question>` because only you can decide — is set aside (its work reverted), never counted as a failure, and never aborts the run. Its dependents are parked too (they resume once it does). At the end, the parked tasks and their questions are written to **`.orchestrator/QUESTIONS.md`**:
+
+```markdown
+## T004 — Worker Env, constants, wrangler bindings
+- Reason: blocked — not authenticated with Cloudflare
+- Question: Provide Cloudflare credentials, or say how to proceed.
+- Answer: _(write your answer here)_
+```
+
+Answer inline (or, for a missing credential, just provide it in your environment), then **re-run the same command**: answered tasks resume with your answer injected as a directive, unanswered ones stay parked, and already-completed tasks are skipped. A run's `--budget` ceiling and the early-abort monitor still bound cost, and because parked tasks don't retry, a broken dependency parks its whole subtree instead of burning the budget on it.
+
 ## MCP (Model Context Protocol)
 
 Declare servers under `mcp.servers`, then enable awareness and/or the agentic gathering loop under `orchestrator.*`. A remote gateway uses `transport: http` (or `sse`) plus a `url` and a Bearer token from `api_key_env`. `mcp.allow_tools` is an allowlist of `server.tool` (or bare tool) names.
@@ -171,6 +191,7 @@ Parsed tasks flow into the same engine as a devplan: dependency-aware **topologi
 | `llm.dynamic_selection` | `"auto"` | Ledger-driven cost-aware selection. |
 | `llm.use_free_models` | `true` | Harvest free models into the cheap tier. |
 | `orchestrator.flaky_reruns` | `0` | Re-run a red test gate N times; a non-reproducing failure is a quarantined flake. |
+| `orchestrator.ask_when_stuck` | `true` | Park a task that needs input (credential/judgment/ambiguity) with a question in `.orchestrator/QUESTIONS.md` instead of failing; the run keeps going. |
 | `orchestrator.adversarial_critic` | `false` | Independent pre-apply edit review. |
 | `orchestrator.goal_check` | `false` | Post-build goal-completion judge (advisory). |
 | `orchestrator.mcp_enabled` | `false` | Inject discovered MCP tool awareness. |

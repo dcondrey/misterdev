@@ -4,9 +4,12 @@ from datetime import datetime, timezone
 
 
 class ExecutionResult(BaseModel):
-    status: str  # 'completed', 'failed', 'in_progress'
+    status: str  # 'completed', 'failed', 'in_progress', 'deferred'
     message: str
     logs: str = ""
+    # For status == 'deferred': the human questions that must be answered before
+    # the task can complete (a missing credential, a judgment call, an ambiguity).
+    questions: List[str] = Field(default_factory=list)
     start_time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     end_time: Optional[datetime] = None
 

@@ -1885,14 +1885,16 @@ def test_first_attempt_uses_error_template_when_seeded():
     # failures) instead of the plain task template — so the model isn't blind.
     with tempfile.TemporaryDirectory() as td:
         prompts = _seed_run(Path(td), 1, "FAIL: something broke")
-        assert prompts[0] == "fix the error"  # error_correction template selected
+        # startswith, not ==: walk-away mode appends a NEEDS_INPUT affordance; the
+        # assertion is about WHICH template was selected, not the trailing hints.
+        assert prompts[0].startswith("fix the error")  # error_correction template
 
 
 def test_green_baseline_uses_task_template():
     # No baseline failures -> attempt 0 uses the normal task template (unchanged).
     with tempfile.TemporaryDirectory() as td:
         prompts = _seed_run(Path(td), 0, "")
-        assert prompts[0] == "do the task"  # task_completion template
+        assert prompts[0].startswith("do the task")  # task_completion template
 
 
 def test_seed_content_reaches_prompt():

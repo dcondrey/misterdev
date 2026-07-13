@@ -48,6 +48,7 @@ from misterdev.core.execution.progress import (
 from misterdev.core.context.change_tracker import ChangeTracker
 from misterdev.core.reporting.report import BuildReport
 from misterdev.core.execution.project import Project
+from misterdev.core.execution.deferral import DeferralBook
 from misterdev.core.models import Task
 from misterdev.analyzers.project_analyzer import (
     analyze_project,
@@ -192,7 +193,21 @@ class ProjectOrchestrator:
 
         completed_ids = set(progress.completed)
         failed_ids: set[str] = set()
+        deferred_ids: set[str] = set()
+        deferrals: list[dict] = []
         consecutive_failures = 0
+
+        # Walk-away mode: a prior run may have parked tasks with questions in
+        # .orchestrator/QUESTIONS.md. Load any answers the user typed and hand each
+        # to its task so this run retries it WITH the answer (see execute_mixin).
+        deferral_book = DeferralBook(project.path / ".orchestrator")
+        answers = deferral_book.load_answers()
+        if answers:
+            logger.info(f"Loaded {len(answers)} answer(s) from QUESTIONS.md.")
+            for t in tasks:
+                if t.id in answers:
+                    t.processor_data["user_answer"] = answers[t.id]
+
         if completed_ids:
             logger.info(f"Resuming run: {len(completed_ids)} tasks already completed")
         logger.info(f"Running {len(tasks)} pending tasks for {project.name}.")
@@ -213,6 +228,24 @@ class ProjectOrchestrator:
                     logger.info(
                         f"Task {task.id} previously completed but inputs changed; re-running."
                     )
+                blocking = [d for d in task.dependencies if d in deferred_ids]
+                if blocking:
+                    # A dependency is parked awaiting the user, so this task can't
+                    # run either — park it too (blocked), never fail, and record a
+                    # question that points at the blocker. Keeps the run going.
+                    deferred_ids.add(task.id)
+                    deferrals.append(
+                        {
+                            "id": task.id,
+                            "title": task.title,
+                            "reason": f"blocked by parked task(s): {', '.join(blocking)}",
+                            "questions": [
+                                f"Answer {', '.join(blocking)} above; this task "
+                                "resumes automatically once they do."
+                            ],
+                        }
+                    )
+                    continue
                 if any(d in failed_ids for d in task.dependencies):
                     failed_ids.add(task.id)
                     logger.warning(f"Skipping {task.id}: a dependency failed.")
@@ -249,6 +282,25 @@ class ProjectOrchestrator:
                     logger.error(f"Task {task.id} raised: {e}")
                     result = None
 
+                if result is not None and result.status == "deferred":
+                    # Parked for the user: neither success nor failure. Record the
+                    # questions, don't touch the completed/failed sets or the
+                    # consecutive-failure counter, and move on — the run never
+                    # stalls on a task that needs a human.
+                    deferred_ids.add(task.id)
+                    deferrals.append(
+                        {
+                            "id": task.id,
+                            "title": task.title,
+                            "reason": result.message,
+                            "questions": list(result.questions),
+                        }
+                    )
+                    logger.warning(
+                        f"[{task.id}] PARKED (needs input): {result.message}"
+                    )
+                    continue
+
                 succeeded = result is not None and result.status == "completed"
                 reporter.end_task(task.id, succeeded)
                 if succeeded:
@@ -279,6 +331,21 @@ class ProjectOrchestrator:
             remaining = still_waiting
 
         reporter.summary()
+
+        # Walk-away close-out: if any task parked for the user, write the question
+        # book (preserving answers already typed) and surface a concise pointer so
+        # a returning user knows exactly what to do to finish the build.
+        if deferrals:
+            deferral_book.write(deferrals)
+            console.print(
+                f"\n[yellow]⏸  {len(deferrals)} task(s) need your input.[/] "
+                f"Answer them in [bold]{deferral_book.md_path}[/], then re-run the "
+                "same command — answered tasks resume, the rest stay parked."
+            )
+            for d in deferrals[:12]:
+                console.print(f"  [dim]{d['id']}[/] {d.get('reason', '')}")
+            if len(deferrals) > 12:
+                console.print(f"  [dim]... and {len(deferrals) - 12} more[/]")
 
     def _inject_task_context(
         self, task, contracts, changes, strategy_optimizer, project

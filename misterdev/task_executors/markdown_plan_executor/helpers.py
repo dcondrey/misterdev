@@ -77,6 +77,23 @@ Reproduce the whole file verbatim except for your intended change. Do not omit,
 summarize, or elide any existing code.
 """
 
+# Appended only in walk-away mode. Deliberately strict: the escape hatch is for a
+# genuine external blocker or an ambiguity only the user can resolve — never for
+# work the model could do itself, and never as a substitute for trying.
+NEEDS_INPUT_INSTRUCTION = """
+
+## If (and only if) a human decision is genuinely required
+Attempt the task first. Only if completing it correctly would require something
+you cannot decide or obtain — a missing credential/secret/account, or a
+requirement so ambiguous that any choice risks being wrong — then STOP and output
+exactly one line and nothing else:
+
+NEEDS_INPUT: <one specific question the user must answer>
+
+Do NOT use this to avoid effort, to ask permission for a reasonable default, or
+for anything you can resolve yourself. Prefer doing the work.
+"""
+
 # Maps file extensions to language identifiers for syntax validation and
 # contract extraction. Unknown extensions fall back to "text".
 _LANG_MAP = {
@@ -456,6 +473,22 @@ def _test_metrics(content: str) -> Tuple[int, int, int]:
         len(p.findall(content)) for p in (*_SKIP_PATTERNS, *_INBODY_SKIP_PATTERNS)
     )
     return tests, asserts, skips
+
+
+_NEEDS_INPUT_RE = re.compile(r"NEEDS[_ -]?INPUT\s*[:\-]\s*(.+)", re.IGNORECASE)
+
+
+def _extract_needs_input(text: str) -> Optional[str]:
+    """The model's explicit request for a human decision, or None.
+
+    A model that recognizes a task needs the user (an ambiguous requirement, a
+    choice only they can make) can emit a ``NEEDS_INPUT: <question>`` line; this
+    returns that question so the executor parks the task instead of guessing."""
+    m = _NEEDS_INPUT_RE.search(text or "")
+    if not m:
+        return None
+    q = m.group(1).strip().splitlines()[0].strip()
+    return q or None
 
 
 def _count_tautologies(content: str) -> int:

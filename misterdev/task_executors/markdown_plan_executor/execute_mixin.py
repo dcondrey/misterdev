@@ -22,8 +22,10 @@ from .helpers import (
     logger,
     _is_golden_path,
     _detect_language,
+    _extract_needs_input,
     EDIT_FORMAT_INSTRUCTIONS,
     FULL_FILE_FALLBACK_INSTRUCTIONS,
+    NEEDS_INPUT_INSTRUCTION,
 )
 
 
@@ -140,6 +142,11 @@ class ExecuteMixin:
         # integration gate). A red test that does not reproduce on re-run is a
         # flake and must not revert a correct edit.
         flaky_reruns = get_setting(project.config, "orchestrator", "flaky_reruns")
+        # Walk-away mode: park (defer with a question) instead of failing when a
+        # task can't be completed/verified. Whether ANY objective gate exists for
+        # this task shapes the parked question (judgment task vs real inability).
+        ask_when_stuck = get_setting(project.config, "orchestrator", "ask_when_stuck")
+        has_gate = bool(task_build_command or typecheck_command or test_command)
 
         # Atomic execution: git branch per task (disabled in parallel mode to avoid races)
         can_branch = use_git_branch and self._is_git_repo(project)
@@ -271,6 +278,11 @@ class ExecuteMixin:
         # on this task, not only at planning time. "" when the plan had no preamble.
         shared_context = str(task.processor_data.get("shared_context", "") or "")
 
+        # The user's answer to a question this task was parked on in a prior run
+        # (loaded by run_project from QUESTIONS.md). A direct instruction — inject
+        # it at top priority so the retry follows it. "" for a first-time task.
+        user_answer = str(task.processor_data.get("user_answer", "") or "")
+
         # Optional, off-by-default agentic pre-edit gathering: when enabled and
         # an MCP manager with tools exists, the model may request bounded MCP
         # tool calls to gather information. The result is prepended to the task
@@ -392,6 +404,8 @@ class ExecuteMixin:
             # Priority 2: the plan's global constraints outrank scratchpad/outline
             # but yield to the task's own code and errors under real pressure.
             budget.set("shared_context", shared_context, priority=2, min_lines=0)
+            # The user's own directive for this task must survive truncation.
+            budget.set("user_answer", user_answer, priority=1, min_lines=0)
             budget.set("interface_contracts", interface_contracts, priority=2)
             budget.set("recent_changes", recent_changes, priority=2)
             budget.set("consensus_context", consensus, priority=3)
@@ -422,6 +436,11 @@ class ExecuteMixin:
                 full_code_context += "\n\n" + allocated["recent_changes"]
             if allocated["solved_priors"]:
                 full_code_context += "\n\n" + allocated["solved_priors"]
+            if allocated["user_answer"]:
+                full_code_context += (
+                    "\n\n## The user's answer to your earlier question (follow this)\n"
+                    + allocated["user_answer"]
+                )
             if allocated["shared_context"]:
                 full_code_context += (
                     "\n\n## Plan-wide conventions (apply to every task)\n"
@@ -501,6 +520,12 @@ class ExecuteMixin:
                 else:
                     prompt += EDIT_FORMAT_INSTRUCTIONS
 
+            # Walk-away escape hatch: let the model ask rather than guess when a
+            # human decision is genuinely required. Strictly worded so it does not
+            # defer work it could simply do.
+            if ask_when_stuck:
+                prompt += NEEDS_INPUT_INSTRUCTION
+
             routed_model = self._select_model(
                 project, task, strategy, attempt, attempt_cap
             )
@@ -545,6 +570,21 @@ class ExecuteMixin:
                     no_output_forgiven += 1
                     attempt_cap += 1
                 continue
+
+            # The model can explicitly ask the user rather than guess ("NEEDS_INPUT:
+            # <question>"). Honor it immediately: revert this attempt's work and park
+            # the task with the question, so the run moves on and the user answers
+            # later. Off when walk-away mode is disabled (the marker is then ignored).
+            if ask_when_stuck:
+                needs = _extract_needs_input(llm_response)
+                if needs:
+                    logger.info(f"Task {task.id} needs user input: {needs}")
+                    self._abort_task(
+                        project, branch_name, base_branch, snapshot, untracked_before
+                    )
+                    return self._defer_task(
+                        project, task, f"Model requested input: {needs}", [needs]
+                    )
 
             certainty = CertaintyScorer.compute_score(llm_response)
             logger.info(f"LLM Certainty Score: {certainty:.2f}")
@@ -987,6 +1027,14 @@ class ExecuteMixin:
             task_id=task.id,
             files=target_files,
         )
+        # Walk-away mode: don't dead-end on a stuck task — park it with a specific
+        # question (missing credential, judgment call, or genuine inability) so the
+        # run keeps going and the user resolves it later. The work is already
+        # reverted above, so a follow-up run redoes it once answered.
+        if ask_when_stuck:
+            reason, question = self._deferral_reason(task, error_logs, has_gate)
+            logger.warning(f"Task {task.id} parked (needs input): {reason}")
+            return self._defer_task(project, task, reason, [question], error_logs)
         return self._fail_task(
             project,
             task,

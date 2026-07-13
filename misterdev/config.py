@@ -234,6 +234,13 @@ class OrchestratorSettings:
     # single-run gate; set 1-2 for repos whose suite is not under misterdev's
     # control. Each rerun costs one extra test run only on an already-red gate.
     flaky_reruns: int = 0
+    # Walk-away mode: when a task can't be completed or verified — a missing
+    # credential, a judgment/review call, or an ambiguity — PARK it with a
+    # question for the user (written to .orchestrator/QUESTIONS.md) instead of
+    # failing, and keep the run going. A follow-up run reads the answers and
+    # resumes the parked tasks. On (default) so an unattended run finishes with a
+    # question list, not a dead stop; set false to restore hard-fail behavior.
+    ask_when_stuck: bool = True
     verify_acceptance: bool = True
     llm_acceptance_judge: bool = True
     # Optional goal-completion check: when on, an LLM judge reads the goal,
