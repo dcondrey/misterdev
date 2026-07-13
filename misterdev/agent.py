@@ -304,9 +304,7 @@ class ProjectOrchestrator:
                             "questions": list(result.questions),
                         }
                     )
-                    logger.warning(
-                        f"[{task.id}] PARKED (needs input): {result.message}"
-                    )
+                    reporter.park_task(task.id, result.message)
                     continue
 
                 succeeded = result is not None and result.status == "completed"
@@ -338,7 +336,12 @@ class ProjectOrchestrator:
 
             remaining = still_waiting
 
-        reporter.summary()
+        cost = getattr(
+            getattr(project.llm_client, "cumulative_usage", None),
+            "estimated_cost",
+            None,
+        )
+        reporter.summary(cost=cost)
 
         # Walk-away close-out: if any task parked for the user, write the question
         # book (preserving answers already typed) and surface a concise pointer so

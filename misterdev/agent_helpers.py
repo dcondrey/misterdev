@@ -29,43 +29,82 @@ class _WorktreeProjectView:
 
 
 class ProgressReporter:
-    """Lightweight wave/task progress logger for long runs."""
+    """Scannable wave/task progress for long walk-away runs.
+
+    Prints a clean spine (wave banners, per-task ✓/⏸/✗ with timing and a running
+    tally) to the console so a returning user can follow the run at a glance; the
+    verbose per-attempt diagnostics stay at DEBUG below it.
+    """
 
     def __init__(self, total_tasks: int):
         self.total = total_tasks
         self.completed = 0
         self.failed = 0
+        self.parked = 0
         self.current_wave = 0
         self.start_time = time.time()
         self._task_start: Optional[float] = None
 
+    def _tally(self) -> str:
+        done = self.completed + self.failed + self.parked
+        parts = [f"{self.completed} done"]
+        if self.parked:
+            parts.append(f"{self.parked} parked")
+        if self.failed:
+            parts.append(f"{self.failed} failed")
+        return f"{done}/{self.total} · " + " · ".join(parts)
+
+    def _elapsed(self) -> float:
+        return time.time() - self._task_start if self._task_start else 0
+
     def start_wave(self, wave_num: int, task_ids: list[str]):
         self.current_wave = wave_num
-        logger.info(f"=== Wave {wave_num} === [{', '.join(task_ids)}]")
+        ids = ", ".join(task_ids[:8]) + (" …" if len(task_ids) > 8 else "")
+        console.print(
+            f"\n[bold cyan]▶ Wave {wave_num}[/] [dim]· {len(task_ids)} task(s): {ids}[/]"
+        )
 
     def start_task(self, task_id: str, title: str):
         self._task_start = time.time()
-        logger.info(
-            f"[{self.completed + self.failed}/{self.total}] Starting {task_id}: {title}"
-        )
+        console.print(f"  [dim]→ {task_id}  {title[:64]}[/]")
 
     def end_task(self, task_id: str, success: bool):
-        elapsed = time.time() - self._task_start if self._task_start else 0
         if success:
             self.completed += 1
-            logger.info(
-                f"[{self.completed + self.failed}/{self.total}] {task_id} DONE ({elapsed:.0f}s)"
+            console.print(
+                f"  [green]✓[/] {task_id} [dim]· {self._elapsed():.0f}s · {self._tally()}[/]"
             )
         else:
             self.failed += 1
-            logger.warning(
-                f"[{self.completed + self.failed}/{self.total}] {task_id} FAILED ({elapsed:.0f}s)"
+            console.print(
+                f"  [red]✗[/] {task_id} failed [dim]· {self._elapsed():.0f}s · {self._tally()}[/]"
             )
 
-    def summary(self):
-        total_time = time.time() - self.start_time
-        logger.info(
-            f"=== Complete: {self.completed} done, {self.failed} failed, {total_time:.0f}s total ==="
+    def park_task(self, task_id: str, reason: str = ""):
+        self.parked += 1
+        detail = f" · {reason[:56]}" if reason else ""
+        console.print(
+            f"  [yellow]⏸[/] {task_id} parked [dim]· {self._elapsed():.0f}s{detail} · "
+            f"{self._tally()}[/]"
+        )
+
+    def summary(self, cost: Optional[float] = None):
+        total = time.time() - self.start_time
+        bits = [f"[green]{self.completed} done[/]"]
+        if self.parked:
+            bits.append(f"[yellow]{self.parked} parked[/]")
+        if self.failed:
+            bits.append(f"[red]{self.failed} failed[/]")
+        cost_num = (
+            cost
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool)
+            else None
+        )
+        cost_s = f" · [dim]${cost_num:.2f}[/]" if cost_num is not None else ""
+        console.print(
+            "\n[bold]■ Run complete[/] · "
+            + " · ".join(bits)
+            + f" · [dim]{int(total // 60)}m {int(total % 60)}s[/]{cost_s}\n"
         )
 
 

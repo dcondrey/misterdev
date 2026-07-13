@@ -15,6 +15,10 @@ from misterdev.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
 
+# Roles that have already logged the "no independent model" note, so it appears
+# once per run instead of on every reflection/critic call.
+_INDEPENDENCE_NOTED: set = set()
+
 
 def generate_independent(
     llm_client, prompt: str, system: str = "", *, model: Optional[str] = None
@@ -53,11 +57,12 @@ def build_independent_call(
             f"{role}: an independent model is set but the client cannot switch "
             f"models; running on the generator's own model (weaker independence)."
         )
-    elif not model:
+    elif not model and role not in _INDEPENDENCE_NOTED:
+        _INDEPENDENCE_NOTED.add(role)
         logger.info(
-            f"{role}: no independent model configured; running on the generator's "
-            f"own model (weaker independence — set one for a true second "
-            f"component)."
+            f"{role} is running on the same model that wrote the code (no separate "
+            f"reviewer set). This still works; for a stronger, independent check, "
+            f"set a different model for it in project.yaml. Noted once per run."
         )
 
     effective = model if (model and can_switch) else None
