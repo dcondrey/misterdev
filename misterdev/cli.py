@@ -186,6 +186,12 @@ def main():
         help="Max dollar ceiling for this run (tighter of this and build.budget "
         "wins). Omit to use the project.yaml build.budget.",
     )
+    run_parser.add_argument(
+        "--proceed",
+        action="store_true",
+        help="Skip the requirements-preflight stop: run now and park any missing "
+        "inputs instead of stopping to gather foundational ones first.",
+    )
 
     # 'interactive' / 'i' — guided menu (also the no-argument default)
     subparsers.add_parser(
@@ -329,6 +335,7 @@ def main():
                 status=args.status,
                 tasklist=args.tasks,
                 budget=args.budget,
+                proceed=args.proceed,
             )
     elif args.command == "build":
         build_args = list(args.prompt)

@@ -120,6 +120,20 @@ When on, a task the model tries but can't complete/verify — or one where it em
 
 Answer inline (or, for a missing credential, just provide it in your environment), then **re-run the same command**: answered tasks resume with your answer injected as a directive, unanswered ones stay parked, and already-completed tasks are skipped. A run's `--budget` ceiling and the early-abort monitor still bound cost, and because parked tasks don't retry, a broken dependency parks its whole subtree instead of burning the budget on it.
 
+### Requirements preflight: gather inputs up front (`orchestrator.gather_requirements`)
+
+Parking mid-run is the safety net; the preflight is the front door. Before executing, misterdev **reviews the whole plan** for inputs only you can supply — credentials, cloud accounts, tokens (a deterministic scan of task text; add `orchestrator.requirements_llm_review: true` for one extra LLM pass) — and writes them to **`.orchestrator/REQUIREMENTS.md`**, each marked satisfied ✓ / missing ✗ with how to provide it.
+
+```yaml
+orchestrator:
+  gather_requirements: true      # default; false skips the review
+  requirements_llm_review: false # add an LLM pass for non-obvious needs
+```
+
+Then the **smart gate** decides whether to spend: it stops before execution **only** when a *missing* input is needed by a **foundational** task (one whose fan-out — transitive dependents — is large), because running would just park that whole subtree. A missing input needed only by **late/leaf** tasks (a real deploy, an npm publish) doesn't stop the run — those proceed and park at the end. Secret *names* the build configures but doesn't need the *value* of (e.g. an app's own `ADMIN_TOKEN`) are listed as advisory and never gate.
+
+Pass `--proceed` to skip the stop and run immediately (parking anything missing). Provide the flagged inputs — set the credential in your environment, or answer a decision in `REQUIREMENTS.md` — then re-run.
+
 ## MCP (Model Context Protocol)
 
 Declare servers under `mcp.servers`, then enable awareness and/or the agentic gathering loop under `orchestrator.*`. A remote gateway uses `transport: http` (or `sse`) plus a `url` and a Bearer token from `api_key_env`. `mcp.allow_tools` is an allowlist of `server.tool` (or bare tool) names.
@@ -192,6 +206,7 @@ Parsed tasks flow into the same engine as a devplan: dependency-aware **topologi
 | `llm.use_free_models` | `true` | Harvest free models into the cheap tier. |
 | `orchestrator.flaky_reruns` | `0` | Re-run a red test gate N times; a non-reproducing failure is a quarantined flake. |
 | `orchestrator.ask_when_stuck` | `true` | Park a task that needs input (credential/judgment/ambiguity) with a question in `.orchestrator/QUESTIONS.md` instead of failing; the run keeps going. |
+| `orchestrator.gather_requirements` | `true` | Review the plan up front for needed credentials/accounts (`.orchestrator/REQUIREMENTS.md`); stop before spending only if a missing one is foundational. `run --proceed` overrides. |
 | `orchestrator.adversarial_critic` | `false` | Independent pre-apply edit review. |
 | `orchestrator.goal_check` | `false` | Post-build goal-completion judge (advisory). |
 | `orchestrator.mcp_enabled` | `false` | Inject discovered MCP tool awareness. |

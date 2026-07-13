@@ -241,6 +241,16 @@ class OrchestratorSettings:
     # resumes the parked tasks. On (default) so an unattended run finishes with a
     # question list, not a dead stop; set false to restore hard-fail behavior.
     ask_when_stuck: bool = True
+    # Requirements preflight: before executing, review the whole plan for inputs
+    # only the user can supply (credentials, cloud accounts, decisions), write them
+    # to .orchestrator/REQUIREMENTS.md, and stop before spending ONLY when a missing
+    # input is needed by a foundational (high-fan-out) task — otherwise proceed and
+    # park the late/leaf ones. On by default; false skips the review entirely.
+    gather_requirements: bool = True
+    # Add one LLM pass to the requirements review to catch non-obvious needs. Off by
+    # default (the heuristic scan already covers credentials/accounts) — it costs a
+    # call at run start; turn on for a deeper review.
+    requirements_llm_review: bool = False
     verify_acceptance: bool = True
     llm_acceptance_judge: bool = True
     # Optional goal-completion check: when on, an LLM judge reads the goal,

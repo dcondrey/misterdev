@@ -129,6 +129,7 @@ class ProjectOrchestrator:
         status: bool = False,
         tasklist: Optional[str] = None,
         budget: Optional[float] = None,
+        proceed: bool = False,
     ):
         """Run pending devplan tasks with dependency-aware orchestration.
 
@@ -178,6 +179,13 @@ class ProjectOrchestrator:
             self._print_rerun_status(
                 tasks, ProgressTracker(project.path), project.path, force
             )
+            return
+
+        # Requirements preflight: review the WHOLE plan up front for inputs only the
+        # user can supply (credentials, accounts, decisions), surface them in
+        # REQUIREMENTS.md, and — the smart gate — stop before spending only when a
+        # MISSING input would cascade widely. Returns False to stop the run.
+        if not self._requirements_preflight(project, tasks, proceed):
             return
 
         scratchpad = Scratchpad()
@@ -346,6 +354,68 @@ class ProjectOrchestrator:
                 console.print(f"  [dim]{d['id']}[/] {d.get('reason', '')}")
             if len(deferrals) > 12:
                 console.print(f"  [dim]... and {len(deferrals) - 12} more[/]")
+
+    def _requirements_preflight(self, project, tasks, proceed: bool) -> bool:
+        """Review the plan for user-supplied inputs up front. Writes REQUIREMENTS.md,
+        injects any typed decision answers, prints a summary, and — the smart gate —
+        returns False (stop) only when a MISSING, cascade-wide input needs the user
+        first. ``--proceed`` (or ``gather_requirements: false``) always returns True.
+        Best-effort: any failure degrades to "proceed"."""
+        if proceed or not get_setting(
+            project.config, "orchestrator", "gather_requirements"
+        ):
+            return True
+        try:
+            from misterdev.core.planning.requirements import (
+                RequirementsBook,
+                gating_requirements,
+                review_requirements,
+            )
+
+            llm = None
+            if get_setting(project.config, "orchestrator", "requirements_llm_review"):
+                llm = lambda p, s: project.llm_client.generate_code(p, s)  # noqa: E731
+            reqs = review_requirements(tasks, llm=llm)
+            if not reqs:
+                return True
+
+            book = RequirementsBook(project.path / ".orchestrator")
+            book.write(reqs)
+            for key, answer in book.load_answers().items():
+                for r in reqs:
+                    if r["key"] == key:
+                        for t in tasks:
+                            if t.id in r.get("task_ids", []):
+                                t.processor_data["user_answer"] = answer
+
+            missing = [r for r in reqs if not r.get("satisfied")]
+            console.print(
+                f"\n[bold]Requirements review:[/] {len(reqs)} input(s), "
+                f"{len(missing)} not yet provided (see "
+                f"{project.path / '.orchestrator' / 'REQUIREMENTS.md'})."
+            )
+            for r in missing[:10]:
+                console.print(f"  [yellow]✗[/] {r['key']} — {r.get('summary', '')}")
+
+            gating = gating_requirements(reqs, tasks)
+            if gating:
+                keys = ", ".join(g["key"] for g in gating)
+                console.print(
+                    f"[red]Stopping before execution:[/] {keys} are required by "
+                    "foundational tasks and would cascade. Provide them (see "
+                    "REQUIREMENTS.md), then re-run — or pass [bold]--proceed[/] to "
+                    "run now and park what's missing."
+                )
+                return False
+            if missing:
+                console.print(
+                    "[dim]All missing inputs are late/leaf — proceeding; they will "
+                    "park at the end if still unprovided.[/]"
+                )
+            return True
+        except Exception as e:  # a preflight review must never block a run itself
+            logger.warning(f"Requirements preflight skipped ({e}).")
+            return True
 
     def _inject_task_context(
         self, task, contracts, changes, strategy_optimizer, project
