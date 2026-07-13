@@ -2,13 +2,40 @@
 ordered/unordered, one-line/multi-line, phases, field aliases, dependency
 tables, dependency resolution, and the LLM fallback."""
 
-from misterdev.core.planning.tasklist_parser import detect_format, parse_task_list
+from misterdev.core.planning.tasklist_parser import (
+    _clean_path,
+    detect_format,
+    parse_task_list,
+)
 
 PR = "/proj"
 
 
 def _p(text, name="tasks.md", llm=None):
     return parse_task_list(text, name, PR, llm=llm)
+
+
+def test_clean_path_strips_backticks_annotations_and_prose_punctuation():
+    # A backtick-quoted path followed by sentence punctuation must not strand an
+    # inner backtick (the real-DEVPLAN bug: "`stats.ts`." -> "stats.ts`.").
+    assert _clean_path("`stats.ts`.") == "stats.ts"
+    assert _clean_path("`a.ts` (new)") == "a.ts"
+    assert _clean_path("`x.ts`;") == "x.ts"
+    assert _clean_path("src/f.ts).") == "src/f.ts"
+    assert _clean_path("`p/q.ts`") == "p/q.ts"
+    assert _clean_path("plain.ts") == "plain.ts"
+
+
+def test_files_attr_cleans_backtick_quoted_prose_list():
+    md = (
+        "## T1: Types\n"
+        "- **Files:** `packages/shared/src/events.ts`, `packages/shared/src/stats.ts`.\n"
+    )
+    t = _p(md)[0]
+    assert t.files_to_modify == [
+        "packages/shared/src/events.ts",
+        "packages/shared/src/stats.ts",
+    ]
 
 
 # --- structured: JSON -------------------------------------------------------

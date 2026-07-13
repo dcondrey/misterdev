@@ -364,10 +364,13 @@ def _records_from_markdown(text: str) -> List[Dict[str, Any]]:
 
 
 def _clean_path(p: str) -> str:
-    """One file path from a prose list: drop wrapping backticks/quotes and a
-    trailing annotation like ``(new)`` / ``(generated)`` that authors append."""
-    p = re.sub(r"\s*\([^)]*\)\s*$", "", p.strip().strip("`'\"").strip())
-    return p.strip("`'\" ")
+    """One file path from a prose list: drop a trailing annotation like ``(new)`` /
+    ``(generated)``, every backtick (a path never contains one — so a quoted path
+    followed by sentence punctuation like ``\\`stats.ts\\`.`` doesn't strand an
+    inner backtick), surrounding quotes, and trailing prose punctuation."""
+    p = re.sub(r"\s*\([^)]*\)\s*$", "", p.strip())
+    p = p.replace("`", "").strip().strip("'\"")
+    return p.rstrip(" .,;:)").strip()
 
 
 def _apply_attr(rec: Dict[str, Any], key: str, value: str) -> None:
