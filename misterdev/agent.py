@@ -127,6 +127,7 @@ class ProjectOrchestrator:
         force: bool = False,
         status: bool = False,
         tasklist: Optional[str] = None,
+        budget: Optional[float] = None,
     ):
         """Run pending devplan tasks with dependency-aware orchestration.
 
@@ -142,6 +143,11 @@ class ProjectOrchestrator:
             return
         if tasklist:
             project.config["tasklist"] = tasklist
+        # A --budget on `run` is a ceiling like build's: the tighter of it and the
+        # project.yaml budget already on the client wins. None -> keep the config
+        # budget (this path previously had no CLI override at all).
+        if budget is not None:
+            _apply_budget_ceiling(project.llm_client, budget)
         _check_golden_config(project.config)
         if project.env_manager:
             project.env_manager.setup()

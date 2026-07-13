@@ -179,6 +179,13 @@ def main():
         action="store_true",
         help="Show which tasks would run vs skip, then exit",
     )
+    run_parser.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        help="Max dollar ceiling for this run (tighter of this and build.budget "
+        "wins). Omit to use the project.yaml build.budget.",
+    )
 
     # 'interactive' / 'i' — guided menu (also the no-argument default)
     subparsers.add_parser(
@@ -321,6 +328,7 @@ def main():
                 force=args.force,
                 status=args.status,
                 tasklist=args.tasks,
+                budget=args.budget,
             )
     elif args.command == "build":
         build_args = list(args.prompt)
