@@ -60,6 +60,10 @@ from misterdev.analyzers.project_analyzer.detection import (
 )
 from misterdev.analyzers.reference_digest import build_reference_digest
 from misterdev.core.planning.advisor import recommend_work
+from misterdev.core.planning.plan_store import (
+    approved_items,
+    save_plan,
+)
 from misterdev.llm.client import BudgetExceededError
 from misterdev.task_executors.markdown_plan_executor import (
     MarkdownPlanExecutor,
@@ -96,6 +100,24 @@ class ProjectOrchestrator:
         self.registry = ProjectRegistry()
         self.last_build_succeeded = True
         self.last_build_cost = 0.0
+        # Cooperative-stop plumbing for background jobs (see core.execution.jobs).
+        # request_stop() lowers the active run's budget so the next model call
+        # trips the existing graceful-halt path; None until a run loads a client.
+        self._active_client: Any = None
+        self._stop_requested = False
+
+    def request_stop(self) -> None:
+        """Cooperatively cancel the in-flight build/run, if any.
+
+        Reuses the budget kill-switch instead of interrupting the task loop:
+        the active client's ceiling is dropped to 0 so its next call raises
+        BudgetExceededError, which build()/the pipeline already degrade to a
+        partial report. Safe to call before a client exists (the flag is
+        honored when the run loads one) and idempotent.
+        """
+        self._stop_requested = True
+        if self._active_client is not None:
+            _apply_budget_ceiling(self._active_client, 0.0)
 
     def scan_directory(self, path: str | Path):
         self.registry.discover_projects(path)
@@ -152,6 +174,11 @@ class ProjectOrchestrator:
         # budget (this path previously had no CLI override at all).
         if budget is not None:
             _apply_budget_ceiling(project.llm_client, budget)
+        # Expose this run's client so a background job's request_stop() can trip
+        # the budget kill-switch; honor a stop that arrived before it existed.
+        self._active_client = project.llm_client
+        if self._stop_requested:
+            _apply_budget_ceiling(self._active_client, 0.0)
         _check_golden_config(project.config)
         if project.env_manager:
             project.env_manager.setup()
@@ -614,6 +641,13 @@ class ProjectOrchestrator:
         # Propagate budget to LLM client
         _apply_budget_ceiling(project.llm_client, flags.budget)
 
+        # Expose this run's client so a background job's request_stop() can trip
+        # the budget kill-switch. Honor a stop that arrived before the client
+        # existed (dropped budget halts the very first call).
+        self._active_client = project.llm_client
+        if self._stop_requested:
+            _apply_budget_ceiling(self._active_client, 0.0)
+
         # Preflight: fail fast on a retired/misrouted model id before spending
         # the analysis phase on calls that would 404 mid-run.
         if not flags.dry_run:
@@ -705,6 +739,48 @@ class ProjectOrchestrator:
         except Exception as e:
             logger.warning(f"Solved-task indexing failed (non-fatal): {e}")
             report.degraded_subsystems.append(f"Solved-task indexing: {e}")
+
+    def propose_plan(self, project_path: str | Path, args: str = "") -> Dict[str, Any]:
+        """Analyze the project and persist ranked work proposals for approval.
+
+        The non-interactive counterpart to interactive_plan(): runs analysis and
+        the advisor, writes the proposals to .orchestrator/proposed_plan.json
+        (each unapproved), and returns them so a client can review and approve a
+        subset before any code is edited. Spends LLM budget; edits no code.
+        """
+        project = self._get_or_register(project_path)
+        if not project:
+            return {"error": "could not load project"}
+        _, flags = parse_flags(args.split() if args else [])
+        _apply_budget_ceiling(project.llm_client, flags.budget)
+        self._active_client = project.llm_client
+        try:
+            env_activate = self._setup_env(project)
+            assessment = self._analyze(project, env_activate)
+            recs = recommend_work(assessment, project.llm_client)
+        except BudgetExceededError as e:
+            return {"error": f"budget exhausted during analysis: {e}"}
+        return {"items": save_plan(project.path, recs)}
+
+    def execute_plan(self, project_path: str | Path, args: str = "") -> str:
+        """Build the approved items from a previously proposed plan.
+
+        Composes a single goal from the approved proposals and runs the normal
+        build pipeline (decompose -> execute -> verify) over it. Returns a
+        message when nothing is approved. Any build flags in ``args`` (budget,
+        parallel, ...) are preserved.
+        """
+        project = self._get_or_register(project_path)
+        if not project:
+            return "Error: could not load project"
+        approved = approved_items(project.path)
+        if not approved:
+            return "No approved plan items to execute. Approve items first."
+        goal = "complete the following approved work: " + "; ".join(
+            it["title"] for it in approved
+        )
+        build_args = f"{goal} {args}".strip()
+        return self.build(project_path, build_args)
 
     def interactive_plan(self, project_path: str | Path, args: str = "") -> str:
         """Analyze the project, recommend work, and compose a plan with the user.

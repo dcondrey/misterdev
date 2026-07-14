@@ -1,8 +1,10 @@
 """misterdev exposed as an MCP server — thin adapter over ProjectOrchestrator."""
 
 import asyncio
+import time
 
 from misterdev import mcp_server
+from misterdev.core.execution.jobs import JobRegistry
 
 
 class _FakeOrch:
@@ -28,15 +30,59 @@ class _FakeOrch:
     def run_task(self, path, task_id):
         _FakeOrch.calls["run_task"] = (path, task_id)
 
+    def request_stop(self):
+        _FakeOrch.calls["request_stop"] = True
+
+    def propose_plan(self, path, args):
+        _FakeOrch.calls["propose_plan"] = (path, args)
+        return {"items": [{"id": "P-001", "title": "t", "approved": False}]}
+
+    def execute_plan(self, path, args):
+        _FakeOrch.calls["execute_plan"] = (path, args)
+        return "PLAN-EXEC-REPORT"
+
 
 def _patch(monkeypatch):
     _FakeOrch.calls = {}
     monkeypatch.setattr(mcp_server, "ProjectOrchestrator", _FakeOrch)
 
 
+def _patch_jobs(monkeypatch):
+    """Give the async tools a fresh, isolated registry per test."""
+    reg = JobRegistry()
+    monkeypatch.setattr(mcp_server, "registry", reg)
+    return reg
+
+
+def _await_status(reg, run_id, want, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = reg.status(run_id)
+        if state and state["status"] == want:
+            return state
+        time.sleep(0.01)
+    raise AssertionError(f"{run_id} never reached {want}: {reg.status(run_id)}")
+
+
 def test_all_expected_tools_registered():
     names = {t.name for t in asyncio.run(mcp_server.mcp.list_tools())}
-    assert {"scan", "list_projects", "status", "build", "run", "report"} <= names
+    assert {
+        "scan",
+        "list_projects",
+        "status",
+        "build",
+        "run",
+        "report",
+        "build_async",
+        "run_async",
+        "job_status",
+        "stop_job",
+        "list_jobs",
+        "propose_plan",
+        "get_plan",
+        "approve_plan",
+        "execute_plan",
+    } <= names
 
 
 def test_tool_definitions_are_well_documented():
@@ -128,3 +174,100 @@ def test_report_on_unbuilt_project_returns_null_report(tmp_path):
     out = mcp_server.report(str(tmp_path))
     assert out["latest_report"] is None
     assert "audit" in out and "models" in out
+
+
+def test_build_async_starts_job_and_forwards_args(monkeypatch):
+    _patch(monkeypatch)
+    reg = _patch_jobs(monkeypatch)
+    out = mcp_server.build_async("/repo", "port it", budget=3.0, reference_dir="/ref")
+    assert out["status"] == "running"
+    run_id = out["run_id"]
+    _await_status(reg, run_id, "succeeded")
+    state = reg.status(run_id)
+    assert state["kind"] == "build"
+    assert state["result"] == "REPORT-BODY"
+    path, args, reference_dir = _FakeOrch.calls["build"]
+    assert path == "/repo" and reference_dir == "/ref"
+    assert "--budget 3.0" in args
+
+
+def test_run_async_starts_job(monkeypatch):
+    _patch(monkeypatch)
+    reg = _patch_jobs(monkeypatch)
+    out = mcp_server.run_async("/repo")
+    _await_status(reg, out["run_id"], "succeeded")
+    assert _FakeOrch.calls["run_project"] == ("/repo", False)
+
+
+def test_build_async_refuses_second_job_same_project(monkeypatch):
+    _patch(monkeypatch)
+    reg = _patch_jobs(monkeypatch)
+    hold = {"go": False}
+
+    def _slow(self, path, args, reference_dir=None):
+        while not hold["go"]:
+            time.sleep(0.005)
+        return "REPORT-BODY"
+
+    monkeypatch.setattr(_FakeOrch, "build", _slow)
+    first = mcp_server.build_async("/repo", "x")
+    assert "run_id" in first
+    second = mcp_server.build_async("/repo", "y")
+    assert "error" in second
+    hold["go"] = True
+    _await_status(reg, first["run_id"], "succeeded")
+
+
+def test_job_status_and_list_and_stop(monkeypatch):
+    _patch(monkeypatch)
+    reg = _patch_jobs(monkeypatch)
+    out = mcp_server.build_async("/repo", "x")
+    run_id = out["run_id"]
+    _await_status(reg, run_id, "succeeded")
+
+    assert mcp_server.job_status(run_id)["status"] == "succeeded"
+    assert mcp_server.job_status("nope") == {"error": "unknown run_id: nope"}
+    assert run_id in {j["run_id"] for j in mcp_server.list_jobs()["jobs"]}
+    # Stopping an already-finished job is a harmless no-op.
+    assert mcp_server.stop_job(run_id) == {"run_id": run_id, "stopping": False}
+
+
+def test_propose_plan_routes(monkeypatch):
+    _patch(monkeypatch)
+    out = mcp_server.propose_plan("/repo", budget=4.0)
+    path, args = _FakeOrch.calls["propose_plan"]
+    assert path == "/repo" and "--budget 4.0" in args
+    assert out["items"][0]["id"] == "P-001"
+
+
+def test_execute_plan_routes(monkeypatch):
+    _patch(monkeypatch)
+    out = mcp_server.execute_plan("/repo", budget=6.0)
+    path, args = _FakeOrch.calls["execute_plan"]
+    assert path == "/repo" and "--budget 6.0" in args
+    assert out == "PLAN-EXEC-REPORT"
+
+
+def test_get_and_approve_plan_use_the_store(tmp_path):
+    from misterdev.core.planning import plan_store
+
+    plan_store.save_plan(
+        tmp_path,
+        [{"title": "one"}, {"title": "two"}],
+    )
+    # get_plan reads the persisted proposals.
+    got = mcp_server.get_plan(str(tmp_path))
+    assert {it["id"] for it in got["items"]} == {"P-001", "P-002"}
+    # approve_plan flips the flag and persists.
+    approved = mcp_server.approve_plan(str(tmp_path), approve_ids=["P-002"])
+    flags = {it["id"]: it["approved"] for it in approved["items"]}
+    assert flags == {"P-001": False, "P-002": True}
+
+
+def test_approve_plan_without_plan_errors(tmp_path):
+    out = mcp_server.approve_plan(str(tmp_path), approve_all=True)
+    assert "error" in out
+
+
+def test_get_plan_empty_when_none(tmp_path):
+    assert mcp_server.get_plan(str(tmp_path)) == {"items": []}
