@@ -73,6 +73,23 @@ class ProgressTracker:
                 self.completed = set()
                 self.failed = set()
                 self.hashes = {}
+                return
+            # One-shot reconciliation: completed is the single terminal state, so a
+            # task recorded as BOTH completed and failed (a pre-fix poisoned ledger,
+            # or a failure written after an earlier success) is healed by dropping
+            # it from failed — completed wins. Persist immediately so an existing
+            # poisoned progress.json self-heals on disk even if this run marks
+            # nothing else.
+            poisoned = self.failed & self.completed
+            if poisoned:
+                logger.info(
+                    "Reconciling progress ledger: %d task(s) in both completed and "
+                    "failed; keeping completed: %s",
+                    len(poisoned),
+                    ", ".join(sorted(poisoned)),
+                )
+                self.failed -= self.completed
+                self._save()
 
     def _save(self):
         data = json.dumps(
@@ -102,6 +119,14 @@ class ProgressTracker:
 
     def mark_failed(self, task_id: str):
         with self._lock:
+            # completed is the single terminal state and always wins: a task that
+            # already succeeded must never be re-listed as failed (deferred
+            # persists through this same path), or the ledger reports two terminal
+            # states and a stale failed entry could shadow green work. A genuine
+            # post-success regression is caught by needs_rerun via the content
+            # hash, not by a failed entry.
+            if task_id in self.completed:
+                return
             self.failed.add(task_id)
             self._save()
 
