@@ -473,6 +473,7 @@ class ProjectOrchestrator:
             for key, answer in book.load_answers().items():
                 for r in reqs:
                     if r["key"] == key:
+                        r["answered"] = True
                         for t in tasks:
                             if t.id in r.get("task_ids", []):
                                 t.processor_data["user_answer"] = answer
@@ -2170,12 +2171,19 @@ class ProjectOrchestrator:
         git = GitTool({})
         wt_root = project.path / ".orchestrator" / "worktrees"
         wt_root.mkdir(parents=True, exist_ok=True)
+        # Drop metadata from any worktree a prior run left dangling before we add new ones.
+        git.worktree_prune(project)
         results: list = []
         prepared: list = []
 
         for task in ready:
-            branch = f"task/{task.id}"
-            wt_path = wt_root / f"{task.id}-{uuid.uuid4().hex[:6]}"
+            # A run-unique branch name (never a bare ``task/<id>``): a leftover branch
+            # from a prior failed run must not collide with this run's ``-b`` create,
+            # which would fail the worktree and the task. The unique branch is always
+            # cut fresh from the current HEAD, so it carries the latest committed work.
+            run_id = uuid.uuid4().hex[:6]
+            branch = f"task/{task.id}-{run_id}"
+            wt_path = wt_root / f"{task.id}-{run_id}"
             ok, out = git.worktree_add(project, str(wt_path), branch, new_branch=True)
             if ok:
                 prepared.append((task, wt_path, branch))
@@ -2209,12 +2217,21 @@ class ProjectOrchestrator:
                 raw = [f.result() for f in concurrent.futures.as_completed(futures)]
 
         for task, result, error, wt_path, branch in raw:
+            # Remove the worktree BEFORE merging/deleting the branch: git refuses to
+            # delete a branch still checked out in a worktree, which otherwise leaks
+            # even merged branches. The task's commits live on the branch ref, so the
+            # merge below still sees them after the working directory is gone.
+            git.worktree_remove(project, str(wt_path))
+            merged = False
             if result is not None and getattr(result, "status", None) == "completed":
                 merged, mout = git.merge_worktree(project, branch)
                 if not merged:
                     logger.error(f"Worktree merge failed for {task.id}: {mout}")
                     error, result = RuntimeError(f"merge failed: {mout}"), None
-            git.worktree_remove(project, str(wt_path))
+            # A successful merge already deleted the branch; drop any un-merged one so
+            # no throwaway branch is left to accumulate or collide with a later run.
+            if not merged:
+                git.branch_delete(project, branch)
             results.append((task, result, error))
         return results
 

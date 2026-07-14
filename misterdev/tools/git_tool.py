@@ -54,6 +54,11 @@ class GitTool(CommandTool):
             project, command=f"git worktree remove --force {shlex.quote(path)}"
         )
 
+    def worktree_prune(self, project: Any) -> Tuple[bool, str]:
+        """Drop administrative metadata for worktrees whose directory is gone
+        (e.g. a prior run crashed mid-task), so a fresh run starts clean."""
+        return super().execute(project, command="git worktree prune")
+
     def merge_worktree(self, project: Any, branch: str) -> Tuple[bool, str]:
         """Merge a worktree's branch into the current branch, then delete it."""
         success, out = super().execute(

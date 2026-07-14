@@ -140,7 +140,7 @@ def gating_requirements(reqs: List[Dict], tasks, threshold: int = 3) -> List[Dic
     never gate on their own."""
     out = []
     for r in reqs:
-        if r.get("satisfied"):
+        if r.get("satisfied") or r.get("answered"):
             continue
         if r.get("kind") != "account":
             continue
@@ -266,7 +266,7 @@ class RequirementsBook:
                 lines = [head, f"- Status: {mark}", f"- Needed by: {tids or '(plan)'}"]
                 if r.get("how_to_provide"):
                     lines.append(f"- Provide: {r['how_to_provide']}")
-                if r.get("kind") == "decision" and not r.get("satisfied"):
+                if not r.get("satisfied"):
                     lines.append(f"- Answer: {existing.get(r['key'], _PLACEHOLDER)}")
                 blocks.append("\n".join(lines))
             self.md_path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")

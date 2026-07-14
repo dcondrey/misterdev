@@ -445,6 +445,69 @@ def test_execute_parallel_worktrees_merges_back():
         assert not any(wt_root.iterdir()) if wt_root.exists() else True
 
 
+def test_execute_parallel_worktrees_tolerates_stale_task_branch():
+    """Regression: a leftover ``task/<id>`` branch from a prior failed run must not
+    collide with this run's worktree creation, and no throwaway branch is left
+    behind (whether the task succeeds or fails)."""
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    def _branches(path):
+        out = subprocess.run(
+            ["git", "branch", "--format=%(refname:short)"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+        ).stdout
+        return [b.strip() for b in out.splitlines() if b.strip()]
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _git(td, "init")
+        _git(td, "config", "user.email", "t@t.t")
+        _git(td, "config", "user.name", "t")
+        (td / "base.txt").write_text("base\n")
+        _git(td, "add", "-A")
+        _git(td, "commit", "-m", "init")
+        # Two stale leftover branches from an imagined prior run — the exact names
+        # the old fixed-name scheme would try to re-create and fail on.
+        _git(td, "branch", "task/T-A")
+        _git(td, "branch", "task/T-B")
+
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {"parallel_mode": "worktree", "max_workers": 2}
+        }
+
+        class FakeExec:
+            def execute(self, task, proj, use_git_branch=True):
+                if task.id == "T-B":  # this one fails: it must still clean up
+                    raise RuntimeError("boom")
+                f = Path(proj.path) / f"{task.id}.txt"
+                f.write_text(task.id)
+                _git(proj.path, "add", "-A")
+                _git(proj.path, "commit", "-m", f"task({task.id}): work")
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+        orch = agent_mod.ProjectOrchestrator()
+        results = orch._execute_parallel_worktrees(
+            [_mock_task("T-A"), _mock_task("T-B")], FakeExec(), project
+        )
+
+        by_id = {t.id: (r, e) for t, r, e in results}
+        # The stale branch did not block T-A; its work merged despite the collision.
+        assert by_id["T-A"][0] is not None and by_id["T-A"][0].status == "completed"
+        assert (td / "T-A.txt").exists()
+        assert by_id["T-B"][1] is not None  # T-B surfaced its error, didn't wedge
+        # No run-created throwaway branches remain (only the two inert stale names).
+        assert sorted(_branches(td)) == ["main", "task/T-A", "task/T-B"] or sorted(
+            _branches(td)
+        ) == ["master", "task/T-A", "task/T-B"]
+
+
 # --- streaming with early abort (028) ---------------------------------------
 
 
