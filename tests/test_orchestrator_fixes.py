@@ -508,6 +508,77 @@ def test_execute_parallel_worktrees_tolerates_stale_task_branch():
         ) == ["master", "task/T-A", "task/T-B"]
 
 
+def test_worktree_setup_command_detection(tmp_path):
+    """Priming command: explicit config wins ('' disables); else auto-detect from
+    the lockfile so a gate never pays a full install inside its own timeout."""
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    orch = agent_mod.ProjectOrchestrator()
+
+    def proj(sub, files=(), cfg=None):
+        d = tmp_path / sub
+        d.mkdir()
+        for f in files:
+            (d / f).write_text("")
+        p = MagicMock()
+        p.path = d
+        p.config = cfg or {}
+        return p
+
+    explicit = proj("a", cfg={"orchestrator": {"worktree_setup_command": "make deps"}})
+    assert orch._worktree_setup_command(explicit) == "make deps"
+    disabled = proj("b", cfg={"orchestrator": {"worktree_setup_command": ""}})
+    assert orch._worktree_setup_command(disabled) is None
+    assert "pnpm install" in orch._worktree_setup_command(proj("c", ["pnpm-lock.yaml"]))
+    assert orch._worktree_setup_command(proj("d", ["package-lock.json"])) == "npm ci"
+    assert "yarn install" in orch._worktree_setup_command(proj("e", ["yarn.lock"]))
+    assert orch._worktree_setup_command(proj("f")) is None  # nothing to install
+
+
+def test_execute_parallel_worktrees_primes_deps_before_gate():
+    """The setup command runs INSIDE each worktree before the task body, so the
+    gate finds dependencies already present instead of installing on the hot path."""
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _git(td, "init")
+        _git(td, "config", "user.email", "t@t.t")
+        _git(td, "config", "user.name", "t")
+        (td / "base.txt").write_text("base\n")
+        _git(td, "add", "-A")
+        _git(td, "commit", "-m", "init")
+
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {
+                "parallel_mode": "worktree",
+                "max_workers": 2,
+                # a marker-writing stand-in for `pnpm install`
+                "worktree_setup_command": "touch .primed",
+            }
+        }
+
+        seen = {}
+
+        class FakeExec:
+            def execute(self, task, proj, use_git_branch=True):
+                # The prime step must have already run in this worktree.
+                seen[task.id] = (Path(proj.path) / ".primed").exists()
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+        orch = agent_mod.ProjectOrchestrator()
+        orch._execute_parallel_worktrees(
+            [_mock_task("T-A"), _mock_task("T-B")], FakeExec(), project
+        )
+        assert seen == {"T-A": True, "T-B": True}
+
+
 # --- streaming with early abort (028) ---------------------------------------
 
 

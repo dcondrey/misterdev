@@ -298,12 +298,19 @@ class OrchestratorSettings:
     # working tree), or "worktree" (always isolate each parallel task).
     parallel_mode: str = "auto"
     # Run independent tasks within a wave concurrently in `run --tasks` (they are
-    # worktree-isolated on a git repo; `max_workers`/`parallel_mode` apply). Gates
-    # resolve deps natively in a worktree (pnpm/npm populate node_modules from their
-    # store on first run — verified; do NOT symlink node_modules, it breaks pnpm).
+    # worktree-isolated on a git repo; `max_workers`/`parallel_mode` apply).
     # Off by default because concurrent gates contend for CPU/the store; enable per
     # project after a live check, and keep `max_workers` modest on a laptop.
     run_parallel: bool = False
+    # Prime a fresh worktree's dependencies ONCE at setup (serially, before the
+    # parallel gate phase). A new git worktree has no node_modules, so an un-primed
+    # gate pays a full install (~15-20s) INSIDE its own timeout while N worktrees
+    # hammer the package store at once — which intermittently times out and fails
+    # correct code. Priming moves that install out of the gate and off the hot path.
+    # None auto-detects the command from the lockfile; "" disables; or set an
+    # explicit command. Do NOT symlink node_modules to skip this — it breaks pnpm.
+    worktree_setup_command: Optional[str] = None
+    worktree_setup_timeout: int = 600
     auto_detect_dependencies: bool = False
     # Optional MCP (Model Context Protocol) tool awareness: when on, the tools
     # discovered from the servers in the top-level ``mcp.servers`` list are

@@ -2157,15 +2157,40 @@ class ProjectOrchestrator:
                 results.append((task, None, e))
         return results
 
+    def _worktree_setup_command(self, project: Project) -> Optional[str]:
+        """The command that primes a fresh worktree's dependencies before gating,
+        or None to skip. An explicit ``orchestrator.worktree_setup_command`` wins
+        (``""`` disables); otherwise it is auto-detected from the project's lockfile
+        so a gate never pays a full dependency install inside its own timeout."""
+        explicit = get_setting(project.config, "orchestrator", "worktree_setup_command")
+        if explicit is not None:
+            return explicit or None
+        root = project.path
+        if (root / "pnpm-lock.yaml").exists():
+            return "pnpm install --prefer-offline"
+        if (root / "yarn.lock").exists():
+            return "yarn install --frozen-lockfile"
+        if (root / "bun.lockb").exists():
+            return "bun install"
+        if (root / "package-lock.json").exists():
+            return "npm ci"
+        if (root / "package.json").exists():
+            return "npm install --no-audit --no-fund"
+        return None
+
     def _execute_parallel_worktrees(
         self, ready: list[Task], executor: MarkdownPlanExecutor, project: Project
     ) -> list:
         """Run each task in an isolated git worktree, then merge successes back.
 
         Worktrees are created and merged serially (git's index/worktree metadata
-        is not concurrency-safe); only the task bodies run in parallel.
+        is not concurrency-safe); only the task bodies run in parallel. Each fresh
+        worktree's dependencies are primed once at creation (see
+        ``_worktree_setup_command``) so the parallel gates test code, not install
+        speed.
         """
         import uuid
+        from misterdev.tools.command import CommandTool
         from misterdev.tools.git_tool import GitTool
 
         git = GitTool({})
@@ -2173,6 +2198,11 @@ class ProjectOrchestrator:
         wt_root.mkdir(parents=True, exist_ok=True)
         # Drop metadata from any worktree a prior run left dangling before we add new ones.
         git.worktree_prune(project)
+        setup_cmd = self._worktree_setup_command(project)
+        setup_timeout = get_setting(
+            project.config, "orchestrator", "worktree_setup_timeout"
+        )
+        cmd_tool = CommandTool({}) if setup_cmd else None
         results: list = []
         prepared: list = []
 
@@ -2185,13 +2215,25 @@ class ProjectOrchestrator:
             branch = f"task/{task.id}-{run_id}"
             wt_path = wt_root / f"{task.id}-{run_id}"
             ok, out = git.worktree_add(project, str(wt_path), branch, new_branch=True)
-            if ok:
-                prepared.append((task, wt_path, branch))
-            else:
+            if not ok:
                 logger.error(f"Worktree add failed for {task.id}: {out}")
                 results.append(
                     (task, None, RuntimeError(f"worktree add failed: {out}"))
                 )
+                continue
+            # Prime deps ONCE here (serially, off the parallel gate path) so the gate
+            # tests code, not install speed. Best-effort: if it fails, the gate's own
+            # implicit install is the fallback — never drop the task over setup.
+            if cmd_tool is not None:
+                sok, sout = cmd_tool.execute(
+                    project, setup_cmd, cwd=str(wt_path), timeout=setup_timeout
+                )
+                if not sok:
+                    logger.warning(
+                        f"Worktree dep prep failed for {task.id} "
+                        f"(gate will fall back to its own install): {sout[-200:]}"
+                    )
+            prepared.append((task, wt_path, branch))
 
         def run_one(item):
             task, wt_path, branch = item

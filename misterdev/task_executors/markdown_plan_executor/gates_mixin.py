@@ -234,15 +234,28 @@ class GatesMixin:
         a misleading error and, on final failure, reverts a correct task. Re-runs
         the SAME command on the SAME (unchanged) tree, so a non-reproducing failure
         is nondeterministic by construction and must not block. ``reruns`` <= 0
-        disables it (the default), preserving the strict single-run gate."""
-        if reruns <= 0:
+        disables it (the default), preserving the strict single-run gate — EXCEPT
+        when the failure carries an environment/infra signature (a timeout, a
+        missing dependency, a locked store), where a self-healing re-run is always
+        warranted because the fault is not in the code."""
+        from misterdev.core.execution.infra import infra_failure
+
+        infra = infra_failure(output)
+        effective_reruns = reruns if reruns > 0 else (1 if infra else 0)
+        if effective_reruns <= 0:
             return False
+        if infra:
+            logger.warning(
+                "Test gate failed on an environment fault (%s), not the code; "
+                "re-running once before trusting it.",
+                infra,
+            )
         from misterdev.core.verification.flaky import confirm_test_failure
 
         def _rerun():
             return self._run_command(project, test_command, timeout=timeout, cwd=cwd)
 
-        verdict = confirm_test_failure(_rerun, output, reruns)
+        verdict = confirm_test_failure(_rerun, output, effective_reruns)
         if not verdict.is_real_failure:
             logger.warning(
                 "Per-task test failure did not reproduce (%s); treating as a flake, "
