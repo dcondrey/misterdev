@@ -73,6 +73,8 @@ def test_stop_signals_hook_and_marks_stopped():
     assert reg.stop(run_id) is True
     _wait(reg, run_id, "stopped")
     assert stopped["seen"] is True
+    # A stop-labelled result, so the reader isn't misled by the budget mechanism.
+    assert reg.status(run_id)["result"].startswith("Stopped by request")
 
 
 def test_stop_unknown_or_finished_returns_false():
@@ -95,6 +97,33 @@ def test_list_jobs_reports_all():
 
 def test_status_unknown_run_id_is_none():
     assert JobRegistry().status("missing") is None
+
+
+def test_finished_jobs_are_evicted_beyond_cap():
+    reg = JobRegistry(max_finished=3)
+    ids = []
+    for i in range(6):
+        run_id = reg.start("build", f"/p{i}", lambda: "done")
+        _wait(reg, run_id, "succeeded")
+        ids.append(run_id)
+    # Only the most recent 3 finished jobs are retained; the oldest are gone.
+    kept = {j["run_id"] for j in reg.list_jobs()}
+    assert len(kept) == 3
+    assert kept == set(ids[-3:])
+    assert reg.status(ids[0]) is None
+
+
+def test_running_jobs_are_never_evicted():
+    reg = JobRegistry(max_finished=1)
+    hold = threading.Event()
+    long_running = reg.start("build", "/long", lambda: hold.wait(3) or "x")
+    # Churn several finished jobs past the cap while the long one runs.
+    for i in range(4):
+        done = reg.start("build", f"/p{i}", lambda: "done")
+        _wait(reg, done, "succeeded")
+    assert reg.status(long_running)["status"] == "running"
+    hold.set()
+    _wait(reg, long_running, "succeeded")
 
 
 def test_request_stop_trips_active_client_budget():

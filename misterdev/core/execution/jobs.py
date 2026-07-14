@@ -79,12 +79,38 @@ class Job:
         }
 
 
+# Cap on retained FINISHED jobs. A long-lived MCP server runs many builds over
+# its lifetime; without eviction every job — and the orchestrator/client/report
+# its stop-hook closure pins — would live forever (the donor's CLU-004 leak).
+# Running jobs are never evicted.
+_DEFAULT_MAX_FINISHED = 50
+
+
 class JobRegistry:
     """Thread-safe registry of background jobs, keyed by ``run_id``."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_finished: int = _DEFAULT_MAX_FINISHED) -> None:
         self._jobs: Dict[str, Job] = {}
         self._lock = threading.Lock()
+        self._max_finished = max(1, max_finished)
+
+    def _prune_finished_locked(self) -> None:
+        """Evict the least-recently-FINISHED jobs beyond the retention cap.
+
+        Caller must hold ``self._lock``. Ordered by ``ended_at`` (finish time),
+        not insertion order: a long job that started first but finished last is
+        the newest result and must be kept, not dropped.
+        """
+        finished = sorted(
+            (
+                (j.ended_at or "", rid)
+                for rid, j in self._jobs.items()
+                if j.status != "running"
+            )
+        )
+        excess = len(finished) - self._max_finished
+        for _, rid in finished[:excess] if excess > 0 else []:
+            del self._jobs[rid]
 
     def start(
         self,
@@ -114,13 +140,23 @@ class JobRegistry:
                 _stop_hook=stop_hook,
             )
             self._jobs[run_id] = job
+            # Bound retention so finished jobs (and the resources their closures
+            # pin) don't accumulate over the server's lifetime.
+            self._prune_finished_locked()
 
         def _runner() -> None:
             try:
                 report = target()
                 with self._lock:
-                    job.status = "stopped" if job.stop_requested else "succeeded"
-                    job.result = report
+                    if job.stop_requested:
+                        # build() catches the stop's budget-trip and returns its
+                        # report normally; label it so the reader knows the run
+                        # was cancelled, not that a real budget ran out.
+                        job.status = "stopped"
+                        job.result = "Stopped by request (partial).\n\n" + report
+                    else:
+                        job.status = "succeeded"
+                        job.result = report
             except Exception as e:  # noqa: BLE001 - a crashed run must be observable, not lost
                 logger.error(f"Job {run_id} ({kind}) raised: {e}")
                 with self._lock:
@@ -133,6 +169,7 @@ class JobRegistry:
             finally:
                 with self._lock:
                     job.ended_at = _now()
+                    self._prune_finished_locked()
 
         thread = threading.Thread(
             target=_runner, name=f"misterdev-job-{run_id}", daemon=True
