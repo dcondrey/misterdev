@@ -761,8 +761,8 @@ class ExecuteMixin:
             gate_verified = False
             build_cmd = task_build_command
             if build_cmd:
-                success, output = self._run_command(
-                    project, build_cmd, timeout=build_timeout, cwd=task_cwd
+                success, output = self._run_gate(
+                    project, build_cmd, build_timeout, task_cwd
                 )
                 if not success:
                     logger.warning(f"Build failed on attempt {attempt + 1}")
@@ -784,8 +784,8 @@ class ExecuteMixin:
                 gate_verified = True
 
             if typecheck_command:
-                success, output = self._run_command(
-                    project, typecheck_command, timeout=build_timeout, cwd=task_cwd
+                success, output = self._run_gate(
+                    project, typecheck_command, build_timeout, task_cwd
                 )
                 if not success:
                     logger.warning(f"Type check failed on attempt {attempt + 1}")
@@ -807,8 +807,8 @@ class ExecuteMixin:
                 gate_verified = True
 
             if test_command:
-                success, output = self._run_command(
-                    project, test_command, timeout=test_timeout, cwd=task_cwd
+                success, output = self._run_gate(
+                    project, test_command, test_timeout, task_cwd
                 )
                 # Whether the command genuinely exited zero on THIS tree — kept
                 # separate from a flake rescue below so the acceptance short-circuit

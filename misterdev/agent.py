@@ -78,6 +78,7 @@ from misterdev.agent_helpers import (
     _warn_if_baseline_broken,
     _warn_if_no_test_gate,
     _warn_if_test_gate_is_noop,
+    worktree_setup_command,
 )
 from misterdev.config import get_setting
 from misterdev.logging_setup import setup_logger
@@ -2159,24 +2160,9 @@ class ProjectOrchestrator:
 
     def _worktree_setup_command(self, project: Project) -> Optional[str]:
         """The command that primes a fresh worktree's dependencies before gating,
-        or None to skip. An explicit ``orchestrator.worktree_setup_command`` wins
-        (``""`` disables); otherwise it is auto-detected from the project's lockfile
-        so a gate never pays a full dependency install inside its own timeout."""
-        explicit = get_setting(project.config, "orchestrator", "worktree_setup_command")
-        if explicit is not None:
-            return explicit or None
-        root = project.path
-        if (root / "pnpm-lock.yaml").exists():
-            return "pnpm install --prefer-offline"
-        if (root / "yarn.lock").exists():
-            return "yarn install --frozen-lockfile"
-        if (root / "bun.lockb").exists():
-            return "bun install"
-        if (root / "package-lock.json").exists():
-            return "npm ci"
-        if (root / "package.json").exists():
-            return "npm install --no-audit --no-fund"
-        return None
+        or None to skip. Delegates to the shared resolver so worktree creation and
+        the per-gate infra-reprime helper agree on one command."""
+        return worktree_setup_command(project.config, project.path)
 
     def _execute_parallel_worktrees(
         self, ready: list[Task], executor: MarkdownPlanExecutor, project: Project

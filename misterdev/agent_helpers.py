@@ -108,6 +108,31 @@ class ProgressReporter:
         )
 
 
+def worktree_setup_command(config, root) -> Optional[str]:
+    """The command that primes a worktree's dependencies before gating, or None.
+
+    An explicit ``orchestrator.worktree_setup_command`` wins (``""`` disables);
+    otherwise it is auto-detected from the project's lockfile so a gate never pays
+    a full dependency install inside its own timeout. Pure (config + path in,
+    string out) so both the parallel worktree creation path and the per-gate
+    infra-reprime helper resolve the same command from one place.
+    """
+    explicit = get_setting(config, "orchestrator", "worktree_setup_command")
+    if explicit is not None:
+        return explicit or None
+    if (root / "pnpm-lock.yaml").exists():
+        return "pnpm install --prefer-offline"
+    if (root / "yarn.lock").exists():
+        return "yarn install --frozen-lockfile"
+    if (root / "bun.lockb").exists():
+        return "bun install"
+    if (root / "package-lock.json").exists():
+        return "npm ci"
+    if (root / "package.json").exists():
+        return "npm install --no-audit --no-fund"
+    return None
+
+
 def _combine_commands(*cmds: Optional[str]) -> Optional[str]:
     """Join shell commands with ``&&`` (each parenthesised), or None if all empty.
 
