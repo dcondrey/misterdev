@@ -36,7 +36,7 @@ def _patch(monkeypatch):
 
 def test_all_expected_tools_registered():
     names = {t.name for t in asyncio.run(mcp_server.mcp.list_tools())}
-    assert {"scan", "list_projects", "status", "build", "run"} <= names
+    assert {"scan", "list_projects", "status", "build", "run", "report"} <= names
 
 
 def test_tool_definitions_are_well_documented():
@@ -105,3 +105,26 @@ def test_run_tool_routes(monkeypatch):
     assert _FakeOrch.calls["run_project"] == ("/repo", True)
     mcp_server.run("/repo", task_id="T-1")
     assert _FakeOrch.calls["run_task"] == ("/repo", "T-1")
+
+
+def test_report_rejects_non_directory():
+    out = mcp_server.report("/no/such/dir/xyz")
+    assert "error" in out
+
+
+def test_report_reads_saved_artifacts(tmp_path):
+    reports = tmp_path / ".orchestrator" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "report_20240101_000000.json").write_text(
+        '{"mode": "debug", "project": "p", "completed": ["T-1"], "failed": []}'
+    )
+    out = mcp_server.report(str(tmp_path))
+    assert out["latest_report"]["mode"] == "debug"
+    assert out["latest_report"]["completed"] == ["T-1"]
+    assert "audit" in out and "models" in out
+
+
+def test_report_on_unbuilt_project_returns_null_report(tmp_path):
+    out = mcp_server.report(str(tmp_path))
+    assert out["latest_report"] is None
+    assert "audit" in out and "models" in out

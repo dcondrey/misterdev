@@ -13,6 +13,7 @@ descriptions and honest behavioral annotations (read-only vs. destructive,
 idempotent, open-world) so an AI agent can pick and call them correctly.
 """
 
+from pathlib import Path
 from typing import Annotated, Any, Dict, Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -20,6 +21,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from misterdev.agent import ProjectOrchestrator
+from misterdev.core.reporting.report_view import collect
 
 # Conservative default $ ceiling for an AI-client-triggered build (the CLI
 # default is higher). The client can raise it explicitly per call.
@@ -89,6 +91,52 @@ def status(
     Returns the project's tasks, each with its id, title, and status.
     """
     return ProjectOrchestrator().get_project_status(path)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Show the latest build report, audit trail, and model stats",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
+def report(
+    path: Annotated[
+        str,
+        Field(
+            description=(
+                "Absolute path to a project directory that has been built at "
+                "least once. Reads only misterdev's own ``.orchestrator`` "
+                "artifacts under it. Example: '/Users/me/code/my-api'."
+            ),
+            examples=["/Users/me/code/my-api"],
+            min_length=1,
+        ),
+    ],
+) -> Dict[str, Any]:
+    """Return the latest build report, audit trail, and model performance.
+
+    Use when: a ``build`` or ``run`` has finished (or was stopped) and you want
+    the outcome — which tasks completed/failed/deferred, per-file edits, failed
+    commands, governance escalations, unmet-goal gaps, token/cost totals, and
+    per-model success rates. This is misterdev's read-only equivalent of asking
+    "what did the last run find and do?". Do NOT use when: nothing has been
+    built yet — ``latest_report`` will be null. Related: ``status`` (live task
+    states), ``build``/``run`` (produce a report).
+
+    Side effects: none — reads only the project's ``.orchestrator`` artifacts,
+    calls no LLM, and returns the same result on repeated calls (idempotent).
+
+    Returns an object with ``latest_report`` (the most recent build's structured
+    summary, or null), ``audit`` (command/edit/governance counts), and
+    ``models`` (per-model attempts, success rate, and average cost). Returns an
+    ``error`` field instead when ``path`` is not an existing directory.
+    """
+    proj = Path(path).expanduser()
+    if not proj.is_dir():
+        return {"error": f"not a directory: {path}"}
+    return collect(proj)
 
 
 @mcp.tool(
