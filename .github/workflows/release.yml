@@ -38,9 +38,21 @@ jobs:
     permissions:
       id-token: write # required for Trusted Publishing
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+      # Publish metadata to the official MCP Registry via the workflow OIDC token
+      # (id-token: write, granted above). server.json's version is stamped from
+      # the release tag so it matches the PyPI package the registry verifies against.
+      - name: Publish to MCP Registry
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          node -e "const fs=require('fs');const s=JSON.parse(fs.readFileSync('server.json'));s.version='${VERSION}';s.packages.forEach(p=>p.version='${VERSION}');fs.writeFileSync('server.json',JSON.stringify(s,null,2)+'\n')"
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish

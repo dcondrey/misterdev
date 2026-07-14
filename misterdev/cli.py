@@ -274,7 +274,20 @@ def main():
         help="Cap the number of tasks this run will plan/execute (bounds cost)",
     )
 
+    # 'mcp' — serve misterdev as an MCP server over stdio (same as the
+    # misterdev-mcp console script; exposed as a subcommand so runners like uvx
+    # can launch it with `misterdev mcp`).
+    subparsers.add_parser(
+        "mcp", help="Run misterdev as an MCP server over stdio (Claude, Cursor, ...)"
+    )
+
     args = parser.parse_args()
+
+    if args.command == "mcp":
+        from misterdev.mcp_server import main as run_mcp_server
+
+        run_mcp_server()
+        return
 
     orchestrator = ProjectOrchestrator()
 

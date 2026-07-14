@@ -1,3 +1,4 @@
+<!-- mcp-name: io.github.dcondrey/misterdev -->
 <p align="center">
   <img src="https://raw.githubusercontent.com/dcondrey/misterdev/main/assets/logo.gif" alt="misterdev" width="220">
 </p>
