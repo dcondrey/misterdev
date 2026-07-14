@@ -699,6 +699,112 @@ def test_worktree_healthcheck_flags_unhealthy_environment(caplog):
         assert caplog.text.count("ENVIRONMENT unhealthy for T-A") == 1
 
 
+def test_post_merge_healthcheck_reverts_broken_base_keeps_clean():
+    """A merged change that fails the base-branch gate is rolled back (base tree
+    restored, task returned unfinished); a clean merge is kept."""
+    import subprocess
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _worktree_repo(td)
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {"parallel_mode": "worktree", "max_workers": 1},
+            # top-level gate (no targets): the base is broken iff `.broken` exists
+            "typecheck_command": "test ! -f .broken",
+        }
+
+        class FakeExec:
+            def execute(self, task, proj, use_git_branch=True):
+                wt = Path(proj.path)
+                if task.id == "T-break":
+                    (wt / ".broken").write_text("boom\n")
+                else:
+                    (wt / f"ok-{task.id}.txt").write_text("ok\n")
+                subprocess.run(["git", "add", "-A"], cwd=wt, check=True)
+                subprocess.run(
+                    ["git", "commit", "-m", f"task {task.id}"],
+                    cwd=wt,
+                    check=True,
+                    capture_output=True,
+                )
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+            def _run_command(self, project, command, timeout=120, cwd=None):
+                p = subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=cwd or project.path,
+                    capture_output=True,
+                    text=True,
+                )
+                return p.returncode == 0, (p.stdout or "") + (p.stderr or "")
+
+        results = agent_mod.ProjectOrchestrator()._execute_parallel_worktrees(
+            [_mock_task("T-break"), _mock_task("T-ok")], FakeExec(), project
+        )
+
+        # Base branch is NOT left broken: the breaking merge was rolled back...
+        assert not (td / ".broken").exists()
+        # ...and the clean merge was kept.
+        assert (td / "ok-T-ok.txt").exists()
+
+        by_id = {t.id: (res, err) for t, res, err in results}
+        # The broken task is returned unfinished (no completed result, error set).
+        assert by_id["T-break"][0] is None and by_id["T-break"][1] is not None
+        # The clean task stays completed.
+        assert getattr(by_id["T-ok"][0], "status", None) == "completed"
+
+
+def test_post_merge_healthcheck_disabled_keeps_broken_merge():
+    """With orchestrator.post_merge_healthcheck false, a merge is never gated, so a
+    base-breaking change is kept (the opt-out path)."""
+    import subprocess
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _worktree_repo(td)
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {
+                "parallel_mode": "worktree",
+                "max_workers": 1,
+                "post_merge_healthcheck": False,
+            },
+            "typecheck_command": "test ! -f .broken",
+        }
+
+        class FakeExec:
+            def execute(self, task, proj, use_git_branch=True):
+                (Path(proj.path) / ".broken").write_text("boom\n")
+                subprocess.run(["git", "add", "-A"], cwd=proj.path, check=True)
+                subprocess.run(
+                    ["git", "commit", "-m", "break"],
+                    cwd=proj.path,
+                    check=True,
+                    capture_output=True,
+                )
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+            def _run_command(self, *a, **k):  # gate must not be consulted
+                raise AssertionError("post-merge gate ran while disabled")
+
+        agent_mod.ProjectOrchestrator()._execute_parallel_worktrees(
+            [_mock_task("T-break")], FakeExec(), project
+        )
+        assert (td / ".broken").exists()  # merge kept, no gate, no revert
+
+
 def test_worktree_healthcheck_command_resolution(tmp_path: Path):
     """Explicit config wins and "" disables; otherwise a node project auto-detects
     a toolchain probe (tsc when TS is used, else a dependency resolve) and a

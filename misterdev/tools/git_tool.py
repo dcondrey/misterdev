@@ -82,6 +82,14 @@ class GitTool(CommandTool):
     def checkout(self, project: Any, branch: str) -> Tuple[bool, str]:
         return super().execute(project, command=f"git checkout {shlex.quote(branch)}")
 
+    def reset_hard(self, project: Any, ref: str = "HEAD") -> Tuple[bool, str]:
+        """Hard-reset the current branch to ``ref`` (drops the commits after it).
+
+        Used to roll back a wave merge that broke the base branch: the merge is
+        ``--no-ff`` so it is the tip, and ``HEAD^`` is the pre-merge base tip.
+        """
+        return super().execute(project, command=f"git reset --hard {shlex.quote(ref)}")
+
     def status(self, project: Any) -> Tuple[bool, str]:
         return super().execute(project, command="git status")
 

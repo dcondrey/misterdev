@@ -2217,6 +2217,63 @@ class ProjectOrchestrator:
                 f"fault, NOT the task's code: {out[-200:]}"
             )
 
+    def _post_merge_healthcheck(
+        self,
+        project: Project,
+        executor: MarkdownPlanExecutor,
+        git,
+        task: Task,
+        timeout: int,
+    ) -> bool:
+        """Gate the base branch after a task's merge; roll the merge back if broken.
+
+        Runs the merged task's OWNING-target gate (typecheck/test, resolved via the
+        same routing the executor uses) on the base checkout. Returns True when the
+        base is healthy (or there is nothing to gate). On a real (non-infra)
+        failure the merge broke the base, so ``reset --hard HEAD^`` removes the
+        merge commit (it is the ``--no-ff`` tip) and returns False — the caller
+        then treats the task as unfinished. A transient/infra failure is NOT rolled
+        back: it is an environment fault, not a code break, so the merge stands.
+        """
+        from misterdev.core.planning.targets import select_target, target_commands
+        from misterdev.core.execution.infra import infra_failure
+
+        files = list(task.files_to_modify) + list(task.files_to_create)
+        targets = project.config.get("targets") or []
+        tgt = select_target(targets, files)
+        cmds = target_commands(tgt, project.config)
+        # Prefer the cheapest reliable signal (typecheck) so a per-merge gate is
+        # fast; fall back to test then build when the target declares no typecheck.
+        gate_cmd = (
+            cmds["typecheck_command"] or cmds["test_command"] or cmds["build_command"]
+        )
+        if not gate_cmd:
+            return True
+        tp = (tgt.get("path") or "").strip("/") if tgt else ""
+        run_dir = project.path / tp if tp else project.path
+        ok, out = executor._run_command(project, gate_cmd, timeout=timeout, cwd=run_dir)
+        if ok:
+            return True
+        infra = infra_failure(out)
+        if infra:
+            logger.warning(
+                f"Post-merge gate for {task.id} failed on an environment fault "
+                f"({infra}), not the code; leaving the merge in place: {out[-200:]}"
+            )
+            return True
+        logger.error(
+            f"Post-merge gate for {task.id} FAILED on the base branch "
+            f"({gate_cmd!r}): the merge broke the base. Rolling it back and "
+            f"re-queuing the task: {out[-200:]}"
+        )
+        rok, rout = git.reset_hard(project, "HEAD^")
+        if not rok:
+            logger.error(
+                f"Failed to roll back {task.id}'s merge; base may be left broken: "
+                f"{rout[-200:]}"
+            )
+        return False
+
     def _execute_parallel_worktrees(
         self, ready: list[Task], executor: MarkdownPlanExecutor, project: Project
     ) -> list:
@@ -2243,6 +2300,10 @@ class ProjectOrchestrator:
         )
         health_cmd = self._worktree_healthcheck_command(project)
         cmd_tool = CommandTool({}) if (setup_cmd or health_cmd) else None
+        post_merge_hc = get_setting(
+            project.config, "orchestrator", "post_merge_healthcheck"
+        )
+        gate_timeout = get_setting(project.config, "build", "test_timeout")
         results: list = []
         prepared: list = []
 
@@ -2316,6 +2377,19 @@ class ProjectOrchestrator:
                 if not merged:
                     logger.error(f"Worktree merge failed for {task.id}: {mout}")
                     error, result = RuntimeError(f"merge failed: {mout}"), None
+                elif post_merge_hc and not self._post_merge_healthcheck(
+                    project, executor, git, task, gate_timeout
+                ):
+                    # The merge broke the base branch and was rolled back; treat
+                    # the task as unfinished (not completed) so it is retried and
+                    # not recorded as done. The branch was already deleted by the
+                    # (successful) merge, so no extra cleanup is needed.
+                    error, result = (
+                        RuntimeError(
+                            "post-merge health gate failed; base merge rolled back"
+                        ),
+                        None,
+                    )
             # A successful merge already deleted the branch; drop any un-merged one so
             # no throwaway branch is left to accumulate or collide with a later run.
             if not merged:

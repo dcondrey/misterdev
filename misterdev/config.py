@@ -325,6 +325,13 @@ class OrchestratorSettings:
     # gates are run on the base branch for this decision (that would serialize and
     # contend); it rests purely on the content hash and the ledger.
     skip_satisfied_tasks: bool = True
+    # After each successful worktree merge into the base branch, run the merged
+    # task's owning-target gate (typecheck/test) on the base checkout. If it fails
+    # with a real (non-infra) error the merge broke the base, so roll it back
+    # (reset the merge commit) and treat the task as unfinished — the base branch
+    # is never left red at wave end. On by default; a transient/infra failure is
+    # NOT rolled back (it is an environment fault, not a code break).
+    post_merge_healthcheck: bool = True
     auto_detect_dependencies: bool = False
     # Optional MCP (Model Context Protocol) tool awareness: when on, the tools
     # discovered from the servers in the top-level ``mcp.servers`` list are
