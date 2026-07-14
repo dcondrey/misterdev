@@ -1749,6 +1749,12 @@ class ProjectOrchestrator:
 
         completed_ids = set(progress.completed)
         failed_ids: set[str] = set()
+        # Skip a ready task before spawning a worktree when it is already
+        # satisfied (content hash unchanged since a recorded completion). Default
+        # on; false forces every ready task to re-run.
+        skip_satisfied = get_setting(
+            project.config, "orchestrator", "skip_satisfied_tasks"
+        )
         consecutive_failures = 0
         aborted = False
         max_cost_per_task = get_setting(
@@ -1865,10 +1871,14 @@ class ProjectOrchestrator:
             still_waiting = []
             for task in remaining:
                 # Skip only if this exact task (id AND content hash) already
-                # completed. Hash-aware so a freshly decomposed plan that reuses
-                # generic ids (T-001...) from a prior build is not wrongly
-                # skipped against stale progress state.
-                if not progress.needs_rerun(
+                # completed — mark it done WITHOUT spawning a worktree, so an
+                # already-satisfied task doesn't pay a prime/install just to be
+                # re-recognized. Hash-aware so a freshly decomposed plan that
+                # reuses generic ids (T-001...) from a prior build is not wrongly
+                # skipped against stale progress state. Gated by
+                # skip_satisfied_tasks (default on); no gate is run on the base
+                # branch for this — it rests on the content hash plus the ledger.
+                if skip_satisfied and not progress.needs_rerun(
                     task.id, compute_task_hash(task, project.path)
                 ):
                     report.completed_tasks.append(task)

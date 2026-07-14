@@ -1341,6 +1341,114 @@ def test_per_task_cost_cap_reverts_and_defers_not_failure():
         assert any("per-task cost cap" in d for d in report.key_decisions)
 
 
+class _SkipExec:
+    """Executor stand-in that records every task it is asked to run, so a test can
+    assert an already-satisfied task never reaches execution (no worktree)."""
+
+    executed: list
+
+    def __init__(self, *a, **k):
+        pass
+
+    def execute(self, t, proj, *a, **k):
+        from unittest.mock import MagicMock
+
+        type(self).executed.append(t.id)
+        r = MagicMock()
+        r.status = "completed"
+        return r
+
+    def _run_command(self, *a, **k):
+        return True, ""
+
+    def find_task_commit(self, *a, **k):
+        return None
+
+
+def _run_execute_tasks(project, tasks):
+    from unittest.mock import patch
+    import misterdev.agent as agent_mod
+    from misterdev.core.modes import BuildFlags
+
+    _SkipExec.executed = []
+    # Patch the peripheral collaborators (as the other _execute_tasks tests do),
+    # but keep a REAL ProgressTracker so it loads the on-disk ledger this test
+    # pre-populated — that ledger is what the skip decision reads.
+    with (
+        patch.object(agent_mod, "MarkdownPlanExecutor", _SkipExec),
+        patch("misterdev.agent.Scratchpad"),
+        patch("misterdev.agent.RealTimeAligner"),
+        patch("misterdev.agent.ContractRegistry"),
+        patch("misterdev.agent.ChangeTracker"),
+        patch("misterdev.agent.StrategyOptimizer") as MockStrat,
+    ):
+        MockStrat.return_value.select_best_strategy.return_value = "iterative"
+        orch = agent_mod.ProjectOrchestrator()
+        report = _fresh_report()
+        orch._execute_tasks(tasks, project, BuildFlags(no_rollback=True), report)
+    return report, list(_SkipExec.executed)
+
+
+def test_satisfied_task_skipped_before_worktree():
+    """A ready task whose content hash matches its recorded completion is marked
+    done WITHOUT ever reaching the executor (so no worktree is spawned)."""
+    from misterdev.core.execution.progress import ProgressTracker, compute_task_hash
+
+    with tempfile.TemporaryDirectory() as td:
+        project = _budget_project(td)
+        task = _mock_task("T-done")
+        task.acceptance_criteria = ""  # a real str -> a deterministic hash
+        # Record a prior completion at the task's CURRENT content hash.
+        ProgressTracker(Path(td)).mark_completed(
+            task.id, compute_task_hash(task, Path(td))
+        )
+
+        report, executed = _run_execute_tasks(project, [task])
+
+        assert executed == []  # never dispatched -> no worktree
+        assert task in report.completed_tasks
+
+
+def test_changed_or_absent_hash_still_runs():
+    """A recorded completion at a STALE hash, and a task with no recorded
+    completion at all, both re-run — the skip keys on the content hash, not the id
+    alone."""
+    from misterdev.core.execution.progress import ProgressTracker
+
+    with tempfile.TemporaryDirectory() as td:
+        project = _budget_project(td)
+        stale = _mock_task("T-stale")
+        stale.acceptance_criteria = ""
+        absent = _mock_task("T-absent")
+        absent.acceptance_criteria = ""
+        # 'stale' is recorded completed but at a hash that no longer matches;
+        # 'absent' has no record. Neither may be skipped.
+        ProgressTracker(Path(td)).mark_completed("T-stale", "0000stalehash000")
+
+        _, executed = _run_execute_tasks(project, [stale, absent])
+
+        assert set(executed) == {"T-stale", "T-absent"}
+
+
+def test_skip_satisfied_tasks_flag_off_forces_rerun():
+    """With orchestrator.skip_satisfied_tasks false, even a hash-matched completion
+    re-runs (the skip is opt-out)."""
+    from misterdev.core.execution.progress import ProgressTracker, compute_task_hash
+
+    with tempfile.TemporaryDirectory() as td:
+        project = _budget_project(td)
+        project.config["orchestrator"]["skip_satisfied_tasks"] = False
+        task = _mock_task("T-done")
+        task.acceptance_criteria = ""
+        ProgressTracker(Path(td)).mark_completed(
+            task.id, compute_task_hash(task, Path(td))
+        )
+
+        _, executed = _run_execute_tasks(project, [task])
+
+        assert executed == ["T-done"]  # flag off -> re-run despite the match
+
+
 def test_budget_exhausted_before_wave_defers_gracefully():
     from unittest.mock import patch, MagicMock
     import misterdev.agent as agent_mod

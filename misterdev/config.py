@@ -317,6 +317,14 @@ class OrchestratorSettings:
     # auto-detects (e.g. ``npx tsc --version`` for a node/pnpm project); "" disables;
     # or set an explicit command. Cheap and bounded by ``worktree_setup_timeout``.
     worktree_healthcheck_command: Optional[str] = None
+    # Before dispatching a ready task, skip it (mark completed) when it is already
+    # satisfied — its content hash is unchanged since a recorded completion
+    # (compute_task_hash + the committed ledger). Avoids spawning a worktree and
+    # paying a full prime/install just to re-recognize done work. On by default;
+    # set false to force every ready task to re-run regardless of the ledger. No
+    # gates are run on the base branch for this decision (that would serialize and
+    # contend); it rests purely on the content hash and the ledger.
+    skip_satisfied_tasks: bool = True
     auto_detect_dependencies: bool = False
     # Optional MCP (Model Context Protocol) tool awareness: when on, the tools
     # discovered from the servers in the top-level ``mcp.servers`` list are
