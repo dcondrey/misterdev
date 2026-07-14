@@ -1,5 +1,6 @@
 import concurrent.futures
 import re
+import shlex
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -200,6 +201,11 @@ class ProjectOrchestrator:
         )
 
         run_parallel = get_setting(project.config, "orchestrator", "run_parallel")
+        # The branch a completed/failed task must return to; captured once so a
+        # task that strands HEAD (via an unhandled error) can be recovered instead
+        # of later tasks piling their merges onto the dead branch.
+        _bb = run_git("git rev-parse --abbrev-ref HEAD", project.path)
+        base_branch = _bb.stdout.strip() if _bb and _bb.returncode == 0 else None
         completed_ids = set(progress.completed)
         failed_ids: set[str] = set()
         deferred_ids: set[str] = set()
@@ -338,6 +344,7 @@ class ProjectOrchestrator:
                     logger.warning(f"Halting run: {e}")
                     aborted = True
                     break
+                self._recover_to_base_branch(project, base_branch)
                 for task, result, error in batch:
                     if isinstance(error, BudgetExceededError):
                         aborted = True
@@ -360,6 +367,7 @@ class ProjectOrchestrator:
                     except Exception as e:
                         logger.error(f"Task {task.id} raised: {e}")
                         result = None
+                    self._recover_to_base_branch(project, base_branch)
                     if apply_result(task, result):
                         aborted = True
                         break
@@ -387,6 +395,26 @@ class ProjectOrchestrator:
                 console.print(f"  [dim]{d['id']}[/] {d.get('reason', '')}")
             if len(deferrals) > 12:
                 console.print(f"  [dim]... and {len(deferrals) - 12} more[/]")
+
+    def _recover_to_base_branch(self, project, base_branch) -> None:
+        """Return HEAD to the run's base branch if a task stranded it.
+
+        The executor creates a ``task/<id>`` branch before running; on a clean
+        success or failure it merges/reverts back to base, but an UNHANDLED
+        exception can bypass that cleanup and leave HEAD on the dead task branch —
+        after which every later sequential task piles its merge onto that branch
+        instead of main. Called after each task, this is a no-op when HEAD is
+        already on base (the normal case) and a reset-to-base otherwise."""
+        if not base_branch:
+            return
+        proc = run_git("git rev-parse --abbrev-ref HEAD", project.path)
+        cur = proc.stdout.strip() if proc and proc.returncode == 0 else ""
+        if cur and cur != base_branch:
+            run_git("git reset --hard", project.path)
+            run_git(f"git checkout {shlex.quote(base_branch)}", project.path)
+            logger.warning(
+                f"Recovered HEAD from stranded branch '{cur}' back to '{base_branch}'."
+            )
 
     def _requirements_preflight(self, project, tasks, proceed: bool) -> bool:
         """Review the plan for user-supplied inputs up front. Writes REQUIREMENTS.md,

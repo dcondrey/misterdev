@@ -89,9 +89,14 @@ class ResultsMixin:
                 "effort — please review and confirm it is right, or tell me what "
                 "to change.",
             )
-        tail = ""
-        if error_logs and error_logs.strip():
-            tail = error_logs.strip().splitlines()[-1][:160]
+        # The last MEANINGFUL error line — skipping blank lines and markdown code
+        # fences, which otherwise made the parked question read "last error: ```".
+        meaningful = [
+            ln.strip()
+            for ln in (error_logs or "").splitlines()
+            if ln.strip() and not ln.strip().startswith("```")
+        ]
+        tail = meaningful[-1][:200] if meaningful else ""
         return (
             "could not complete after all attempts",
             f"I couldn't finish '{title}'"

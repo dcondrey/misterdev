@@ -33,19 +33,23 @@ _SIGNALS: Tuple[Tuple[re.Pattern, str], ...] = (
         "a Cloudflare account_id is required",
     ),
     # Credential-ish terms (env-var style ``_TOKEN`` / ``_KEY`` included) paired
-    # with a "needed" word — but NOT bare "token", so a parser's "unexpected
-    # token" / "invalid token" is not misread as a credential block.
+    # with an ABSENCE word only — never "invalid"/"expired", which are validation
+    # RESULTS a normal test emits ("expected api key to be valid, got invalid" is a
+    # feature test, not a missing-credential block; a genuinely bad credential
+    # surfaces as 401/unauthorized below). This keeps a task that IMPLEMENTS
+    # api-key issuance from being misread as needing an external key.
     (
         re.compile(
             r"(?:api[_ ]?key|api[_ ]?token|access[_ ]?token|auth[_ ]?token|"
             r"bearer\s+token|_token\b|_key\b|secret|credentials?)"
-            r".{0,30}(?:required|missing|not set|unset|undefined|invalid|empty|expired)|"
-            r"(?:required|missing|not set|unset|undefined|invalid|empty|expired)"
-            r".{0,30}(?:api[_ ]?key|api[_ ]?token|access[_ ]?token|auth[_ ]?token|"
-            r"_token\b|_key\b|secret|credentials?)",
+            r".{0,30}(?:is required|are required|required\b|missing(?!\s+from)|"
+            r"not set|not configured|not provided|unset|undefined)|"
+            r"(?:required|missing|no|unset|undefined|set the|provide (?:a|the|your))"
+            r"\s.{0,20}(?:api[_ ]?key|api[_ ]?token|access[_ ]?token|auth[_ ]?token|"
+            r"_token\b|_key\b|credentials?)",
             re.I,
         ),
-        "a required API key / token / secret is missing or invalid",
+        "a required API key / token / secret is missing",
     ),
     (
         re.compile(

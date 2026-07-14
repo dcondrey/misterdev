@@ -37,6 +37,26 @@ def test_blocked_reason_ignores_real_code_errors():
         assert blocked_reason(out) is None, out
 
 
+def test_blocked_reason_not_fooled_by_key_feature_tests():
+    # A task that IMPLEMENTS api-key issuance emits test text mentioning keys; a
+    # validation RESULT ("invalid") or a response-field assertion must NOT be
+    # misread as a missing external credential (the T018 false-positive).
+    for out in (
+        "expected api key to be valid, got invalid",
+        "test: issued key hash invalid",
+        "invalid api key rejected as expected",
+        "apiKey missing from response body",
+    ):
+        assert blocked_reason(out) is None, out
+    # A genuine environment-absence still blocks.
+    for out in (
+        "CLOUDFLARE_API_TOKEN is required",
+        "set the NPM_TOKEN env var",
+        "provide your API token",
+    ):
+        assert blocked_reason(out), out
+
+
 # --- NEEDS_INPUT model marker -------------------------------------------------
 
 
@@ -109,6 +129,40 @@ def test_deferral_reason_three_shapes():
     # Genuine inability with a gate.
     reason, q = e._deferral_reason(_task(), "boom: could not compile", has_gate=True)
     assert "could not complete" in reason and "How should I proceed" in q
+
+
+def test_deferral_reason_uses_meaningful_error_tail_not_fence():
+    e = MarkdownPlanExecutor()
+    # error_logs ending in a code fence must not make the question say "```".
+    logs = "Type error in src/x.ts:\n```\nTS2345: argument type mismatch\n```\n"
+    _, q = e._deferral_reason(_task(), logs, has_gate=True)
+    assert "TS2345: argument type mismatch" in q and "```" not in q
+
+
+def test_recover_to_base_branch_unstrands_head(tmp_path):
+    import subprocess
+
+    from misterdev.agent import ProjectOrchestrator
+
+    def git(*a):
+        subprocess.run(["git", *a], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-b", "main")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (tmp_path / "a.txt").write_text("1")
+    git("add", "-A")
+    git("commit", "-m", "init")
+    git("checkout", "-b", "task/T005")  # simulate a stranded task branch
+    project = SimpleNamespace(path=tmp_path)
+    ProjectOrchestrator()._recover_to_base_branch(project, "main")
+    head = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert head == "main"
 
 
 def test_defer_task_returns_deferred_status_with_questions():
