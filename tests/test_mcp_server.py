@@ -9,8 +9,8 @@ class _FakeOrch:
     last_build_succeeded = True
     calls: dict = {}
 
-    def build(self, path, args):
-        _FakeOrch.calls["build"] = (path, args)
+    def build(self, path, args, reference_dir=None):
+        _FakeOrch.calls["build"] = (path, args, reference_dir)
         return "REPORT-BODY"
 
     def scan_directory(self, directory):
@@ -60,20 +60,28 @@ def test_build_routes_and_composes_flags(monkeypatch):
     out = mcp_server.build(
         "/repo", "add rate limiting", budget=5.0, parallel=True, max_tasks=3
     )
-    path, args = _FakeOrch.calls["build"]
+    path, args, reference_dir = _FakeOrch.calls["build"]
     assert path == "/repo"
     assert "add rate limiting" in args
     assert "--budget 5.0" in args
     assert "--parallel" in args
     assert "--max-tasks 3" in args
+    assert reference_dir is None
     assert "succeeded" in out and "REPORT-BODY" in out
 
 
 def test_build_dry_run_flag(monkeypatch):
     _patch(monkeypatch)
     mcp_server.build("/repo", "fix tests", dry_run=True)
-    _, args = _FakeOrch.calls["build"]
+    _, args, _ = _FakeOrch.calls["build"]
     assert "--dry-run" in args
+
+
+def test_build_forwards_reference_dir(monkeypatch):
+    _patch(monkeypatch)
+    mcp_server.build("/repo", "port it", reference_dir="/donor/impl")
+    _, _, reference_dir = _FakeOrch.calls["build"]
+    assert reference_dir == "/donor/impl"
 
 
 def test_build_reports_failure(monkeypatch):

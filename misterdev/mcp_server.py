@@ -209,6 +209,19 @@ def build(
             ge=1,
         ),
     ] = None,
+    reference_dir: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Absolute path to a reference implementation to port from (often "
+                "in another language). Its module/symbol map is extracted "
+                "READ-ONLY and given to the planner so the build reproduces the "
+                "reference's design idiomatically. Omit when not porting. "
+                "Example: '/Users/me/code/donor-impl'."
+            ),
+            examples=["/Users/me/code/donor-impl"],
+        ),
+    ] = None,
 ) -> str:
     """Autonomously plan AND execute a goal in a project, from scratch.
 
@@ -218,6 +231,8 @@ def build(
     regresses. Do NOT use when: a task plan already exists and you just want to
     execute it (use ``run``), or the working tree is dirty (commit/stash first).
     Related: ``run`` (execute an existing plan), ``status`` (inspect tasks).
+    Pass ``reference_dir`` to port from an existing implementation: its
+    module/symbol map is extracted read-only and guides the plan.
 
     DESTRUCTIVE side effects: edits files and makes git commits, and calls an
     external LLM provider (open-world, non-idempotent). It refuses to run on a
@@ -234,7 +249,7 @@ def build(
         parts.append("--parallel")
     if max_tasks is not None:
         parts += ["--max-tasks", str(max_tasks)]
-    report = orch.build(path, " ".join(parts))
+    report = orch.build(path, " ".join(parts), reference_dir=reference_dir)
     outcome = "succeeded" if orch.last_build_succeeded else "did not fully succeed"
     return f"Build {outcome}.\n\n{report}"
 

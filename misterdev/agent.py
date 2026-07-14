@@ -58,6 +58,7 @@ from misterdev.analyzers.project_analyzer.detection import (
     detect_lint_command,
     detect_typecheck_command,
 )
+from misterdev.analyzers.reference_digest import build_reference_digest
 from misterdev.core.planning.advisor import recommend_work
 from misterdev.llm.client import BudgetExceededError
 from misterdev.task_executors.markdown_plan_executor import (
@@ -565,7 +566,12 @@ class ProjectOrchestrator:
             logger.error(f"Task {task_id} raised: {e}")
             project.task_manager.update_task_status(task_id, "failed")
 
-    def build(self, project_path: str | Path, args: str = "") -> str:
+    def build(
+        self,
+        project_path: str | Path,
+        args: str = "",
+        reference_dir: str | None = None,
+    ) -> str:
         project = self._get_or_register(project_path)
         if not project:
             return "Error: could not load project"
@@ -574,6 +580,20 @@ class ProjectOrchestrator:
         remaining, flags = parse_flags(arg_list)
         prompt = " ".join(remaining)
         mode = resolve_mode(prompt, project.path)
+
+        # Optional reference implementation to port from. Validate the path up
+        # front (fail fast, like the dirty-tree check) rather than planning
+        # against nothing; the digest itself is read-only and offline.
+        reference_digest = ""
+        if reference_dir:
+            try:
+                reference_digest = build_reference_digest(
+                    reference_dir,
+                    cache_dir=project.path / ".orchestrator",
+                )
+            except (ValueError, OSError) as e:
+                logger.error(f"Reference analysis failed: {e}")
+                return f"Error: reference dir unusable ({e})."
 
         logger.info(f"Build started: mode={mode.value}, flags={flags}")
         start_time = datetime.now(timezone.utc)
@@ -622,7 +642,14 @@ class ProjectOrchestrator:
             _warn_if_test_gate_is_noop(assessment, report)
 
             return self._run_pipeline(
-                project, prompt, mode, flags, assessment, env_activate, report
+                project,
+                prompt,
+                mode,
+                flags,
+                assessment,
+                env_activate,
+                report,
+                reference_digest=reference_digest,
             )
         except BudgetExceededError as e:
             return self._halt_on_budget(project, report, e)
@@ -817,6 +844,7 @@ class ProjectOrchestrator:
         env_activate: Optional[str],
         report: BuildReport,
         confirm_plan: bool = False,
+        reference_digest: str = "",
     ) -> str:
         """Phases 1.5-6: probes, spec, decompose, (confirm), execute, validate.
 
@@ -887,6 +915,12 @@ class ProjectOrchestrator:
         spec = self._generate_spec(
             mode, prompt, assessment, project, facts=verified_facts
         )
+
+        # Prepend the reference-implementation digest (when porting from one) so
+        # decomposition and every task see the reference's real module/symbol map
+        # alongside the spec. Read-only and offline; empty when no --reference.
+        if reference_digest:
+            spec = f"{reference_digest}\n\n{spec}"
 
         # Sovereign enhancements (metacognition, AB-MCTS) are best-effort: they
         # refine the spec but must not crash the build, so each degrades to the

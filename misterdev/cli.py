@@ -273,6 +273,13 @@ def main():
         default=None,
         help="Cap the number of tasks this run will plan/execute (bounds cost)",
     )
+    build_parser.add_argument(
+        "--reference",
+        type=str,
+        default=None,
+        help="Path to a reference implementation to port from (analyzed "
+        "read-only; its module/symbol map guides the plan)",
+    )
 
     # 'mcp' — serve misterdev as an MCP server over stdio (same as the
     # misterdev-mcp console script; exposed as a subcommand so runners like uvx
@@ -375,7 +382,9 @@ def main():
         if args.max_tasks is not None:
             build_args.extend(["--max-tasks", str(args.max_tasks)])
 
-        report = orchestrator.build(args.project_path, " ".join(build_args))
+        report = orchestrator.build(
+            args.project_path, " ".join(build_args), reference_dir=args.reference
+        )
         console.print("\n")
         if orchestrator.last_build_succeeded:
             console.print(
