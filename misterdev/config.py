@@ -311,6 +311,12 @@ class OrchestratorSettings:
     # explicit command. Do NOT symlink node_modules to skip this — it breaks pnpm.
     worktree_setup_command: Optional[str] = None
     worktree_setup_timeout: int = 600
+    # Fast sanity probe run right after priming to confirm the worktree's
+    # toolchain actually resolves — a broken/partial install (a killed download,
+    # a locked store) otherwise masquerades as a code failure in the gate. None
+    # auto-detects (e.g. ``npx tsc --version`` for a node/pnpm project); "" disables;
+    # or set an explicit command. Cheap and bounded by ``worktree_setup_timeout``.
+    worktree_healthcheck_command: Optional[str] = None
     auto_detect_dependencies: bool = False
     # Optional MCP (Model Context Protocol) tool awareness: when on, the tools
     # discovered from the servers in the top-level ``mcp.servers`` list are

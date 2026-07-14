@@ -579,6 +579,150 @@ def test_execute_parallel_worktrees_primes_deps_before_gate():
         assert seen == {"T-A": True, "T-B": True}
 
 
+def _worktree_repo(td: Path):
+    """A minimal committed git repo usable as a parallel-worktree base."""
+    _git(td, "init")
+    _git(td, "config", "user.email", "t@t.t")
+    _git(td, "config", "user.name", "t")
+    (td / "base.txt").write_text("base\n")
+    _git(td, "add", "-A")
+    _git(td, "commit", "-m", "init")
+
+
+def test_worktree_healthcheck_probes_after_prime():
+    """The health probe runs INSIDE each primed worktree; a passing probe lets the
+    task proceed and leaves its marker behind."""
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _worktree_repo(td)
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {
+                "parallel_mode": "worktree",
+                "max_workers": 2,
+                "worktree_setup_command": "touch .primed",
+                # passes only if priming ran first, and records that it ran
+                "worktree_healthcheck_command": "test -f .primed && touch .probed",
+            }
+        }
+
+        seen = {}
+
+        class FakeExec:
+            def execute(self, task, proj, use_git_branch=True):
+                seen[task.id] = (Path(proj.path) / ".probed").exists()
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+        agent_mod.ProjectOrchestrator()._execute_parallel_worktrees(
+            [_mock_task("T-A")], FakeExec(), project
+        )
+        assert seen == {"T-A": True}  # probe ran (and passed) before the task body
+
+
+def test_worktree_healthcheck_reprimes_once_on_failure():
+    """A failing probe re-primes the deps exactly once and re-probes; a probe that
+    then passes lets the task run without flagging the environment."""
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _worktree_repo(td)
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {
+                "parallel_mode": "worktree",
+                "max_workers": 1,
+                # each prime appends one line; the probe passes only after TWO primes
+                "worktree_setup_command": "echo x >> .primes",
+                "worktree_healthcheck_command": "test $(wc -l < .primes) -ge 2",
+            }
+        }
+
+        primes = {}
+
+        class FakeExec:
+            def execute(self, task, proj, use_git_branch=True):
+                primes[task.id] = (Path(proj.path) / ".primes").read_text().count("x")
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+        agent_mod.ProjectOrchestrator()._execute_parallel_worktrees(
+            [_mock_task("T-A")], FakeExec(), project
+        )
+        # Primed exactly twice: the initial prime plus one re-prime after the
+        # probe failed. A third prime would mean the "once" bound was violated.
+        assert primes == {"T-A": 2}
+
+
+def test_worktree_healthcheck_flags_unhealthy_environment(caplog):
+    """A probe that stays red after the single re-prime logs the worktree as an
+    ENVIRONMENT fault (not the code), and does not re-prime more than once."""
+    import logging
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _worktree_repo(td)
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {
+                "parallel_mode": "worktree",
+                "max_workers": 1,
+                "worktree_setup_command": "echo x >> .primes",
+                "worktree_healthcheck_command": "false",  # never resolves
+            }
+        }
+
+        class FakeExec:
+            def execute(self, task, proj, use_git_branch=True):
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+        with caplog.at_level(logging.WARNING, logger="project_orchestrator"):
+            agent_mod.ProjectOrchestrator()._execute_parallel_worktrees(
+                [_mock_task("T-A")], FakeExec(), project
+            )
+        # Exactly one re-prime attempt (the "once" bound) and one unhealthy report.
+        assert caplog.text.count("re-priming deps once") == 1
+        assert caplog.text.count("ENVIRONMENT unhealthy for T-A") == 1
+
+
+def test_worktree_healthcheck_command_resolution(tmp_path: Path):
+    """Explicit config wins and "" disables; otherwise a node project auto-detects
+    a toolchain probe (tsc when TS is used, else a dependency resolve) and a
+    non-node project has no probe."""
+    from misterdev.agent_helpers import worktree_healthcheck_command
+
+    assert worktree_healthcheck_command({}, tmp_path) is None  # non-node: no probe
+    cfg = {"orchestrator": {"worktree_healthcheck_command": "make check"}}
+    assert worktree_healthcheck_command(cfg, tmp_path) == "make check"
+    off = {"orchestrator": {"worktree_healthcheck_command": ""}}
+    (tmp_path / "package.json").write_text('{"dependencies":{"hono":"^4"}}')
+    assert worktree_healthcheck_command(off, tmp_path) is None  # "" disables
+    # package.json with a dependency but no tsconfig -> resolve the first dep.
+    assert (
+        worktree_healthcheck_command({}, tmp_path)
+        == "node -e \"require.resolve('hono')\""
+    )
+    # tsconfig.json present -> prefer the TypeScript toolchain probe.
+    (tmp_path / "tsconfig.json").write_text("{}")
+    assert (
+        worktree_healthcheck_command({}, tmp_path) == "npx --no-install tsc --version"
+    )
+
+
 # --- streaming with early abort (028) ---------------------------------------
 
 

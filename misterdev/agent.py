@@ -78,6 +78,7 @@ from misterdev.agent_helpers import (
     _warn_if_baseline_broken,
     _warn_if_no_test_gate,
     _warn_if_test_gate_is_noop,
+    worktree_healthcheck_command,
     worktree_setup_command,
 )
 from misterdev.config import get_setting
@@ -2164,6 +2165,48 @@ class ProjectOrchestrator:
         the per-gate infra-reprime helper agree on one command."""
         return worktree_setup_command(project.config, project.path)
 
+    def _worktree_healthcheck_command(self, project: Project) -> Optional[str]:
+        """The fast probe that confirms a primed worktree's toolchain resolves, or
+        None to skip. Delegates to the shared resolver (auto-detected for node/pnpm
+        projects; overridable via ``orchestrator.worktree_healthcheck_command``)."""
+        return worktree_healthcheck_command(project.config, project.path)
+
+    def _worktree_healthcheck(
+        self, project, task, wt_path, setup_cmd, health_cmd, timeout, cmd_tool
+    ) -> None:
+        """Confirm the primed worktree's toolchain resolves; heal once or flag it.
+
+        Runs the cheap probe right after priming. On failure, a broken/partial
+        install is the likely cause, so re-prime the deps ONCE and re-probe. If it
+        still fails, log clearly that THIS WORKTREE's environment is unhealthy —
+        not the task's code — so a downstream gate failure here is read as an
+        environment fault, not attributed to the task. Best-effort: never raises
+        and never drops the task; the gate's own infra self-heal is the backstop.
+        """
+        if not health_cmd or cmd_tool is None:
+            return
+        ok, out = cmd_tool.execute(
+            project, health_cmd, cwd=str(wt_path), timeout=timeout
+        )
+        if ok:
+            return
+        logger.warning(
+            f"Worktree health probe failed for {task.id} ({health_cmd!r}); "
+            f"re-priming deps once and re-probing: {out[-200:]}"
+        )
+        if setup_cmd:
+            cmd_tool.execute(project, setup_cmd, cwd=str(wt_path), timeout=timeout)
+        ok, out = cmd_tool.execute(
+            project, health_cmd, cwd=str(wt_path), timeout=timeout
+        )
+        if not ok:
+            logger.error(
+                f"Worktree ENVIRONMENT unhealthy for {task.id} after re-prime "
+                f"({health_cmd!r}): the toolchain does not resolve in this "
+                f"worktree. Downstream gate failures here are an environment "
+                f"fault, NOT the task's code: {out[-200:]}"
+            )
+
     def _execute_parallel_worktrees(
         self, ready: list[Task], executor: MarkdownPlanExecutor, project: Project
     ) -> list:
@@ -2188,7 +2231,8 @@ class ProjectOrchestrator:
         setup_timeout = get_setting(
             project.config, "orchestrator", "worktree_setup_timeout"
         )
-        cmd_tool = CommandTool({}) if setup_cmd else None
+        health_cmd = self._worktree_healthcheck_command(project)
+        cmd_tool = CommandTool({}) if (setup_cmd or health_cmd) else None
         results: list = []
         prepared: list = []
 
@@ -2210,7 +2254,7 @@ class ProjectOrchestrator:
             # Prime deps ONCE here (serially, off the parallel gate path) so the gate
             # tests code, not install speed. Best-effort: if it fails, the gate's own
             # implicit install is the fallback — never drop the task over setup.
-            if cmd_tool is not None:
+            if cmd_tool is not None and setup_cmd:
                 sok, sout = cmd_tool.execute(
                     project, setup_cmd, cwd=str(wt_path), timeout=setup_timeout
                 )
@@ -2219,6 +2263,12 @@ class ProjectOrchestrator:
                         f"Worktree dep prep failed for {task.id} "
                         f"(gate will fall back to its own install): {sout[-200:]}"
                     )
+            # Sanity-check that the primed toolchain actually resolves, so a
+            # broken/partial install surfaces as an ENVIRONMENT fault here rather
+            # than a misattributed code failure in the parallel gate.
+            self._worktree_healthcheck(
+                project, task, wt_path, setup_cmd, health_cmd, setup_timeout, cmd_tool
+            )
             prepared.append((task, wt_path, branch))
 
         def run_one(item):
