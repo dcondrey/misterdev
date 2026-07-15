@@ -311,6 +311,12 @@ class OrchestratorSettings:
     # explicit command. Do NOT symlink node_modules to skip this — it breaks pnpm.
     worktree_setup_command: Optional[str] = None
     worktree_setup_timeout: int = 600
+    # Prime a worktree by CLONING the base checkout's node_modules (copy-on-write:
+    # APFS clonefile / Linux hardlinks) instead of reinstalling — near-instant vs a
+    # full ``pnpm install``. On by default; automatically falls back to the setup
+    # command on a non-CoW filesystem (e.g. HFS+) or if the clone fails the P3
+    # sanity probe, so it is always safe. Set false to force a plain install.
+    worktree_clone_deps: bool = True
     # Fast sanity probe run right after priming to confirm the worktree's
     # toolchain actually resolves — a broken/partial install (a killed download,
     # a locked store) otherwise masquerades as a code failure in the gate. None

@@ -2362,6 +2362,38 @@ class ProjectOrchestrator:
                 f"fault, NOT the task's code: {out[-200:]}"
             )
 
+    def _prime_worktree_by_clone(
+        self, project, task, wt_path, health_cmd, timeout, cmd_tool
+    ) -> bool:
+        """Prime a worktree by copy-on-write cloning the base node_modules.
+
+        Returns True only when the clone succeeded AND the cloned toolchain passes
+        the P3 sanity probe (so a cloned-but-broken tree falls back to install).
+        Requires a probe command (``health_cmd``) to verify with; without one we
+        cannot confirm the clone, so we decline and let the install path run.
+        """
+        from misterdev.core.execution.dep_clone import clone_dependencies
+
+        if not health_cmd or cmd_tool is None:
+            return False
+        cloned, dirs = clone_dependencies(project.path, wt_path)
+        if not cloned:
+            return False
+        ok, out = cmd_tool.execute(
+            project, health_cmd, cwd=str(wt_path), timeout=timeout
+        )
+        if not ok:
+            logger.info(
+                f"Cloned deps for {task.id} failed the sanity probe "
+                f"({health_cmd!r}); falling back to install: {out[-200:]}"
+            )
+            return False
+        logger.info(
+            f"Primed {task.id} by cloning {len(dirs)} node_modules dir(s) from the "
+            "base checkout (copy-on-write, no install)."
+        )
+        return True
+
     def _post_merge_healthcheck(
         self,
         project: Project,
@@ -2449,6 +2481,17 @@ class ProjectOrchestrator:
             project.config, "orchestrator", "post_merge_healthcheck"
         )
         gate_timeout = get_setting(project.config, "build", "test_timeout")
+        # Prefer a copy-on-write clone of the base node_modules over reinstalling.
+        # Resolve FS support ONCE (it is the same for every worktree); a non-CoW
+        # filesystem (e.g. HFS+) or a missing probe transparently falls back below.
+        from misterdev.core.execution.dep_clone import clone_supported
+
+        clone_deps = (
+            get_setting(project.config, "orchestrator", "worktree_clone_deps")
+            and bool(setup_cmd)
+            and bool(health_cmd)
+            and clone_supported(project.path)
+        )
         results: list = []
         prepared: list = []
 
@@ -2468,9 +2511,17 @@ class ProjectOrchestrator:
                 )
                 continue
             # Prime deps ONCE here (serially, off the parallel gate path) so the gate
-            # tests code, not install speed. Best-effort: if it fails, the gate's own
-            # implicit install is the fallback — never drop the task over setup.
-            if cmd_tool is not None and setup_cmd:
+            # tests code, not install speed. Prefer a near-instant CoW clone of the
+            # base node_modules; that path self-verifies with the sanity probe.
+            primed = False
+            if clone_deps:
+                primed = self._prime_worktree_by_clone(
+                    project, task, wt_path, health_cmd, setup_timeout, cmd_tool
+                )
+            # Install fallback: clone unavailable/declined or it failed the probe.
+            # Best-effort — if it fails, the gate's own implicit install is the
+            # backstop; never drop the task over setup.
+            if not primed and cmd_tool is not None and setup_cmd:
                 sok, sout = cmd_tool.execute(
                     project, setup_cmd, cwd=str(wt_path), timeout=setup_timeout
                 )
@@ -2479,12 +2530,19 @@ class ProjectOrchestrator:
                         f"Worktree dep prep failed for {task.id} "
                         f"(gate will fall back to its own install): {sout[-200:]}"
                     )
-            # Sanity-check that the primed toolchain actually resolves, so a
-            # broken/partial install surfaces as an ENVIRONMENT fault here rather
-            # than a misattributed code failure in the parallel gate.
-            self._worktree_healthcheck(
-                project, task, wt_path, setup_cmd, health_cmd, setup_timeout, cmd_tool
-            )
+            # A clone already passed the sanity probe; only the install path needs
+            # the re-prime-once healthcheck, which surfaces a broken/partial install
+            # as an ENVIRONMENT fault rather than a misattributed code failure.
+            if not primed:
+                self._worktree_healthcheck(
+                    project,
+                    task,
+                    wt_path,
+                    setup_cmd,
+                    health_cmd,
+                    setup_timeout,
+                    cmd_tool,
+                )
             prepared.append((task, wt_path, branch))
 
         def run_one(item):
