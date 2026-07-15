@@ -1765,6 +1765,132 @@ def test_adaptive_backoff_applies_to_next_wave():
         assert get_setting(project.config, "orchestrator", "max_workers") == 4
 
 
+# --- escalation ladder (P10) ------------------------------------------------
+def test_escalation_rung_reads_config_thresholds():
+    from unittest.mock import MagicMock
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+
+    ex = MarkdownPlanExecutor()
+    project = MagicMock()
+    project.config = {
+        "orchestrator": {
+            "escalation_widen_after": 2,
+            "escalation_model_after": 3,
+            "escalation_decompose_after": 4,
+        }
+    }
+    assert ex._escalation_rung(project, 1) == "normal"
+    assert ex._escalation_rung(project, 2) == "widen_context"
+    assert ex._escalation_rung(project, 3) == "stronger_model"
+    assert ex._escalation_rung(project, 4) == "decompose"
+
+
+def test_decompose_substeps_from_acceptance_then_fallback():
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+    from misterdev.core.models import Task
+
+    structured = Task(
+        id="T",
+        description="d",
+        project_ref="p",
+        acceptance_criteria="- endpoint returns 200\n- writes an audit row\n",
+    )
+    steps = MarkdownPlanExecutor._decompose_substeps(structured)
+    assert len(steps) == 2
+    assert all(s.startswith("Implement and verify:") for s in steps)
+
+    # No structured criteria -> a generic isolate-then-extend split naming the task.
+    bare = Task(
+        id="T2", description="build the widget", project_ref="p", title="Widget"
+    )
+    generic = MarkdownPlanExecutor._decompose_substeps(bare)
+    assert len(generic) == 2
+    assert "Widget" in generic[0]
+
+
+def test_escalation_spec_block_contains_verbatim_spec():
+    from unittest.mock import MagicMock
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+    from misterdev.core.models import Task
+
+    t = Task(
+        id="T",
+        description="Add rate limiting to the API",
+        project_ref="p",
+        acceptance_criteria="429 after 100 req/min",
+    )
+    block = MarkdownPlanExecutor()._escalation_spec_block(
+        MagicMock(), t, ["src/middleware.ts"]
+    )
+    assert "Add rate limiting to the API" in block  # objective verbatim
+    assert "429 after 100 req/min" in block  # acceptance verbatim
+    assert "src/middleware.ts" in block  # target file
+
+
+def test_escalate_decompose_returns_deferred_with_named_substeps():
+    from unittest.mock import MagicMock
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+    from misterdev.core.models import Task
+
+    t = Task(
+        id="T",
+        description="big task",
+        project_ref="p",
+        title="Big",
+        acceptance_criteria="- part a does X\n- part b does Y\n",
+    )
+    res = MarkdownPlanExecutor()._escalate_decompose(MagicMock(), t, "last error")
+    assert res.status == "deferred"
+    assert len(res.questions) >= 2  # named sub-steps surfaced as the decomposition
+    assert t.processor_data["_escalation_decomposed"] is True
+    assert t.processor_data["escalation_substeps"] == res.questions
+
+
+def test_deferred_result_routed_to_deferred_not_failed():
+    """A deferred task (walk-away input, or escalated to decomposition) lands in
+    report.deferred_tasks — NOT failed_tasks — and is not recorded as a terminal
+    progress failure, so a later run retries it."""
+    from unittest.mock import patch, MagicMock
+    import misterdev.agent as agent_mod
+    from misterdev.core.modes import BuildFlags
+
+    with tempfile.TemporaryDirectory() as td:
+        project = _budget_project(td)
+        task = _mock_task("T-def")
+
+        class _Exec:
+            def __init__(self, *a, **k):
+                pass
+
+            def execute(self, t, proj):
+                r = MagicMock()
+                r.status = "deferred"
+                return r
+
+            def _run_command(self, *a, **k):
+                return True, ""
+
+        with (
+            patch.object(agent_mod, "MarkdownPlanExecutor", _Exec),
+            patch("misterdev.agent.Scratchpad"),
+            patch("misterdev.agent.RealTimeAligner"),
+            patch("misterdev.agent.ContractRegistry"),
+            patch("misterdev.agent.ChangeTracker"),
+            patch("misterdev.agent.StrategyOptimizer") as MS,
+            patch("misterdev.agent.ProgressTracker") as MP,
+        ):
+            MS.return_value.select_best_strategy.return_value = "iterative"
+            MP.return_value.completed = []
+            MP.return_value.needs_rerun.return_value = True
+            orch = agent_mod.ProjectOrchestrator()
+            report = _fresh_report()
+            orch._execute_tasks([task], project, BuildFlags(no_rollback=True), report)
+
+        assert task in report.deferred_tasks
+        assert task not in report.failed_tasks
+        MP.return_value.mark_failed.assert_not_called()  # deferred != terminal fail
+
+
 def test_budget_exhausted_before_wave_defers_gracefully():
     from unittest.mock import patch, MagicMock
     import misterdev.agent as agent_mod

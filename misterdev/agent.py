@@ -2133,6 +2133,16 @@ class ProjectOrchestrator:
                         changes.record_task_changes(task.id, modified)
                     if task.complexity == "architectural":
                         aligner.certify_decision(task.title, task.description)
+                elif result.status == "deferred":
+                    # Parked (walk-away input needed, or escalated to decomposition)
+                    # — NOT a code failure, so it must not trip the consecutive-
+                    # failure abort or be recorded as terminally failed (a re-run
+                    # retries it). It still blocks dependents and feeds the
+                    # convergence loop's re-decomposition, like a non-success.
+                    task.execution_history.append(result)
+                    failed_ids.add(task.id)
+                    report.deferred_tasks.append(task)
+                    consecutive_failures = 0
                 else:
                     task.execution_history.append(result)
                     failed_ids.add(task.id)

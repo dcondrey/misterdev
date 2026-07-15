@@ -13,6 +13,10 @@ from misterdev.core.execution.error_resolver import ErrorResolver
 from misterdev.core.execution.error_classifier import (
     format_classified_error,
 )
+from misterdev.core.execution.escalation import (
+    choose_rung,
+    should_count_failure,
+)
 from misterdev.llm.client import CACHE_BREAKPOINT, SYSTEM_CACHE_SPLIT
 from misterdev.llm.prompt_manager import PromptManager
 from misterdev.config import get_setting
@@ -303,11 +307,38 @@ class ExecuteMixin:
         attempt_cap = max_retries
         no_output_forgiven = 0
         forgiveness_cap = 2
+        # Escalation ladder: count only NON-infra (real code) gate failures, and
+        # climb widen_context -> stronger_model -> decompose as they accumulate.
+        # Infra faults self-heal and must never advance the ladder. Off -> the
+        # counter stays 0 and every attempt is the plain "normal" rung.
+        escalation_on = get_setting(
+            project.config, "orchestrator", "escalation_enabled"
+        )
+        code_failures = 0
         while True:
             attempt += 1
             if attempt >= attempt_cap:
                 break
             logger.info(f"Attempt {attempt + 1}/{attempt_cap} for task {task.id}")
+            # Pick this attempt's rung from the code-failure count so far. On the
+            # decompose rung, stop retrying the whole task and request a split into
+            # named sub-steps instead of burning the remaining attempts.
+            rung = (
+                self._escalation_rung(project, code_failures)
+                if escalation_on
+                else "normal"
+            )
+            if rung == "decompose":
+                logger.info(
+                    f"Task {task.id} escalated to DECOMPOSE after {code_failures} "
+                    "code failure(s); requesting a split into sub-steps."
+                )
+                self._abort_task(
+                    project, branch_name, base_branch, snapshot, untracked_before
+                )
+                return self._escalate_decompose(project, task, error_logs)
+            widen_context = rung in ("widen_context", "stronger_model")
+            force_stronger = rung == "stronger_model"
             # Diagnostic: sizes of the context that ACCUMULATES across attempts,
             # so growth (or a runaway component) is visible per retry.
             logger.debug(
@@ -455,6 +486,14 @@ class ExecuteMixin:
                 full_code_context += mcp_gathered
             if runtime_tool_ctx:
                 full_code_context += runtime_tool_ctx
+            # Escalation: at the widen rung, re-anchor the model on the FULL,
+            # verbatim task spec (description + acceptance) and the exact target
+            # files and their dependents, so a fix that kept missing the point
+            # under a truncated/partial view sees the whole picture.
+            if widen_context:
+                full_code_context += self._escalation_spec_block(
+                    project, task, target_files
+                )
             full_code_context += self._mcp_awareness(project)
 
             guidance_context = " ".join(
@@ -542,6 +581,19 @@ class ExecuteMixin:
             routed_model = self._select_model(
                 project, task, strategy, attempt, attempt_cap
             )
+            # Escalation: at the stronger-model rung, override the routed model
+            # with the configured stronger one (if any) — the cheap/default model
+            # has failed on real code repeatedly, so pay for a more capable one.
+            if force_stronger:
+                stronger = get_setting(
+                    project.config, "orchestrator", "escalation_model"
+                )
+                if stronger:
+                    logger.info(
+                        f"Escalation: routing {task.id} to stronger model "
+                        f"{stronger} after {code_failures} code failure(s)."
+                    )
+                    routed_model = stronger
             try:
                 with project.llm_client.track_task(task.id):
                     llm_response, aborted, pending_attempt = self._invoke_routed(
@@ -766,6 +818,8 @@ class ExecuteMixin:
                 )
                 if not success:
                     logger.warning(f"Build failed on attempt {attempt + 1}")
+                    if should_count_failure(output):
+                        code_failures += 1
                     locations = resolver.resolve_errors(output)
                     attributed_error = resolver.format_for_llm(locations)
                     classified = format_classified_error(output)
@@ -789,6 +843,8 @@ class ExecuteMixin:
                 )
                 if not success:
                     logger.warning(f"Type check failed on attempt {attempt + 1}")
+                    if should_count_failure(output):
+                        code_failures += 1
                     locations = resolver.resolve_errors(output)
                     attributed_error = resolver.format_for_llm(locations)
                     classified = format_classified_error(output)
@@ -852,6 +908,8 @@ class ExecuteMixin:
                         logger.warning(
                             f"Acceptance criteria not met on attempt {attempt + 1}."
                         )
+                        if should_count_failure(acc_output):
+                            code_failures += 1
                         classified = format_classified_error(acc_output)
                         error_logs = self._build_acceptance_error_context(
                             prior_errors, attempt, task, classified
@@ -914,6 +972,8 @@ class ExecuteMixin:
                     )
                 else:
                     logger.warning(f"Tests failed on attempt {attempt + 1}.")
+                    if should_count_failure(output):
+                        code_failures += 1
                     locations = resolver.resolve_errors(output)
                     attributed_error = resolver.format_for_llm(locations)
                     classified = format_classified_error(output)
@@ -958,6 +1018,8 @@ class ExecuteMixin:
                     logger.warning(
                         f"Acceptance criteria not met on attempt {attempt + 1}."
                     )
+                    if should_count_failure(acc_output):
+                        code_failures += 1
                     classified = format_classified_error(acc_output)
                     error_logs = self._build_acceptance_error_context(
                         prior_errors, attempt, task, classified
@@ -1054,3 +1116,75 @@ class ExecuteMixin:
             f"Task failed after {max_retries} attempts + escalation.",
             error_logs,
         )
+
+    def _escalation_rung(self, project: Project, code_failures: int) -> str:
+        """The escalation rung for the next attempt, from the config thresholds."""
+        return choose_rung(
+            code_failures,
+            widen_after=get_setting(
+                project.config, "orchestrator", "escalation_widen_after"
+            ),
+            model_after=get_setting(
+                project.config, "orchestrator", "escalation_model_after"
+            ),
+            decompose_after=get_setting(
+                project.config, "orchestrator", "escalation_decompose_after"
+            ),
+        )
+
+    def _escalation_spec_block(self, project: Project, task: Task, target_files) -> str:
+        """The verbatim task spec injected at the widen rung.
+
+        A repeatedly-failing attempt was likely editing against a truncated view
+        or drifting from the goal, so re-anchor it on the FULL objective and
+        acceptance criteria plus the exact target files (shown in full above)."""
+        parts = ["\n\n## Escalation — full task spec (re-read; do not deviate)"]
+        if task.description:
+            parts.append(f"### Objective\n{task.description}")
+        criteria = (getattr(task, "acceptance_criteria", "") or "").strip()
+        if criteria:
+            parts.append(f"### Acceptance criteria (must be satisfied)\n{criteria}")
+        if target_files:
+            listed = "\n".join(f"- {f}" for f in target_files)
+            parts.append(
+                "### Target files (edit ONLY these; they are shown in full above "
+                f"and their call sites are listed)\n{listed}"
+            )
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _decompose_substeps(task: Task) -> list:
+        """Named sub-steps to split a stuck task into. Prefers the task's own
+        acceptance criteria (each line becomes a sub-step); falls back to a generic
+        isolate-then-extend split when there is nothing structured to lean on."""
+        criteria = (getattr(task, "acceptance_criteria", "") or "").strip()
+        items = []
+        for line in criteria.splitlines():
+            s = line.strip().lstrip("-*0123456789.) ").strip()
+            if len(s) > 8:
+                items.append(f"Implement and verify: {s}")
+        if len(items) >= 2:
+            return items[:5]
+        label = task.title or (task.description or "")[:60] or task.id
+        return [
+            f"Isolate the smallest failing part of '{label}' and make it pass alone",
+            f"Wire the remaining behavior of '{label}' on top, keeping the suite green",
+        ]
+
+    def _escalate_decompose(self, project: Project, task: Task, error_logs):
+        """Top escalation rung: stop retrying and request a decomposition.
+
+        Records named sub-steps on the task and parks it (deferred) with a
+        decomposition request, so the convergence loop re-decomposes it into
+        runnable sub-tasks instead of the run dead-ending on an over-large task.
+        The caller has already reverted this task's work, so nothing is left behind.
+        """
+        substeps = self._decompose_substeps(task)
+        task.processor_data["_escalation_decomposed"] = True
+        task.processor_data["escalation_substeps"] = substeps
+        reason = (
+            f"escalated to decomposition: '{task.title or task.id}' failed "
+            "repeatedly and is too large to land in one edit. Split it into the "
+            "sub-steps below and run them."
+        )
+        return self._defer_task(project, task, reason, substeps, error_logs)

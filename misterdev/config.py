@@ -336,6 +336,17 @@ class OrchestratorSettings:
     # (serially) so their worktree merges can't race or clobber; disjoint tasks
     # stay parallel. On by default. Set false to run every ready task in one wave.
     serialize_conflicting_tasks: bool = True
+    # Escalation ladder for a task that keeps failing (real code failures only —
+    # infra faults self-heal and never advance it). After N non-infra failures the
+    # executor climbs: widen context -> stronger model -> request decomposition.
+    # Bounded and config-driven; thresholds are cumulative code-failure counts.
+    escalation_enabled: bool = True
+    escalation_widen_after: int = 1
+    escalation_model_after: int = 2
+    escalation_decompose_after: int = 3
+    # The stronger model id to route generation to at the model rung (None -> keep
+    # the routed/default model, i.e. that rung only widens context).
+    escalation_model: Optional[str] = None
     # After each successful worktree merge into the base branch, run the merged
     # task's owning-target gate (typecheck/test) on the base checkout. If it fails
     # with a real (non-infra) error the merge broke the base, so roll it back
