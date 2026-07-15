@@ -1555,6 +1555,109 @@ def test_skip_satisfied_tasks_flag_off_forces_rerun():
         assert executed == ["T-done"]  # flag off -> re-run despite the match
 
 
+def test_wave_infra_count_counts_only_unrecovered_infra_failures():
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    def _res(status, logs=""):
+        r = MagicMock()
+        r.status = status
+        r.logs = logs
+        r.message = ""
+        return r
+
+    results = [
+        (_mock_task("A"), _res("failed", "Command timed out after 120s"), None),
+        (_mock_task("B"), _res("completed", "Command timed out after 120s"), None),
+        (_mock_task("C"), _res("failed", "AssertionError: 1 != 2"), None),
+        (_mock_task("D"), None, RuntimeError("waiting for the lock on the store")),
+    ]
+    # A (infra, failed) and D (infra, in the raised error) count; B completed
+    # (self-healed) and C (a real code error) do not.
+    assert agent_mod.ProjectOrchestrator._wave_infra_count(results) == 2
+
+
+def test_apply_wave_tuning_scales_config_from_base():
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+    from misterdev.core.execution.adaptive import WaveTuning
+
+    project = MagicMock()
+    project.config = {"orchestrator": {}, "build": {}}
+    base = {"workers": 8, "setup": 600, "build": 120, "test": 180}
+    agent_mod.ProjectOrchestrator()._apply_wave_tuning(
+        project, WaveTuning(2, 2.0), base
+    )
+    assert project.config["orchestrator"]["max_workers"] == 2
+    assert project.config["orchestrator"]["worktree_setup_timeout"] == 1200
+    assert project.config["build"]["build_timeout"] == 240
+    assert project.config["build"]["test_timeout"] == 360
+
+
+def test_adaptive_backoff_applies_to_next_wave():
+    """An infra failure in wave 1 backs off concurrency for wave 2: the wave-2
+    task sees a halved max_workers and a doubled timeout in the live config."""
+    from unittest.mock import patch, MagicMock
+    import misterdev.agent as agent_mod
+    from misterdev.core.modes import BuildFlags
+    from misterdev.config import get_setting
+
+    with tempfile.TemporaryDirectory() as td:
+        project = _budget_project(td)
+        project.config["orchestrator"].update(
+            {
+                "max_workers": 4,
+                "adaptive_infra_threshold": 0,  # any infra fault triggers backoff
+            }
+        )
+        # A fails on infra; B completes (wave 1). C depends on B (wave 2).
+        a = _mock_task("A")
+        b = _mock_task("B")
+        c = _mock_task("C", deps=["B"])
+
+        seen_workers = {}
+
+        class _Exec:
+            def __init__(self, *a, **k):
+                pass
+
+            def execute(self, t, proj):
+                seen_workers[t.id] = get_setting(
+                    proj.config, "orchestrator", "max_workers"
+                )
+                r = MagicMock()
+                if t.id == "A":
+                    r.status = "failed"
+                    r.logs = "Command timed out after 120s"
+                else:
+                    r.status = "completed"
+                    r.logs = ""
+                r.message = ""
+                return r
+
+            def _run_command(self, *a, **k):
+                return True, ""
+
+        with (
+            patch.object(agent_mod, "MarkdownPlanExecutor", _Exec),
+            patch("misterdev.agent.Scratchpad"),
+            patch("misterdev.agent.RealTimeAligner"),
+            patch("misterdev.agent.ContractRegistry"),
+            patch("misterdev.agent.ChangeTracker"),
+            patch("misterdev.agent.StrategyOptimizer") as MockStrat,
+        ):
+            MockStrat.return_value.select_best_strategy.return_value = "iterative"
+            orch = agent_mod.ProjectOrchestrator()
+            orch._execute_tasks(
+                [a, b, c], project, BuildFlags(no_rollback=True), _fresh_report()
+            )
+
+        assert seen_workers["A"] == 4  # wave 1: full concurrency
+        assert seen_workers["C"] == 2  # wave 2: halved after the infra fault
+        # Config is restored to the configured base after the run.
+        assert get_setting(project.config, "orchestrator", "max_workers") == 4
+
+
 def test_budget_exhausted_before_wave_defers_gracefully():
     from unittest.mock import patch, MagicMock
     import misterdev.agent as agent_mod

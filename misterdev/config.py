@@ -332,6 +332,16 @@ class OrchestratorSettings:
     # is never left red at wave end. On by default; a transient/infra failure is
     # NOT rolled back (it is an environment fault, not a code break).
     post_merge_healthcheck: bool = True
+    # Adapt concurrency/timeouts to ENVIRONMENT faults between waves: when a wave's
+    # infra-failure count exceeds ``adaptive_infra_threshold``, the NEXT wave halves
+    # effective max_workers (floor 1) and multiplies gate/setup timeouts by
+    # ``adaptive_timeout_factor`` (bounded by ``adaptive_max_timeout_factor``);
+    # clean waves recover gradually toward the configured values. On by default —
+    # it only engages under sustained contention and is otherwise a no-op.
+    adaptive_concurrency: bool = True
+    adaptive_infra_threshold: int = 1
+    adaptive_timeout_factor: float = 2.0
+    adaptive_max_timeout_factor: float = 4.0
     auto_detect_dependencies: bool = False
     # Optional MCP (Model Context Protocol) tool awareness: when on, the tools
     # discovered from the servers in the top-level ``mcp.servers`` list are

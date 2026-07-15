@@ -1727,6 +1727,52 @@ class ProjectOrchestrator:
                 break
         return reverted
 
+    @staticmethod
+    def _wave_infra_count(results: list) -> int:
+        """How many of a wave's tasks FAILED on an ENVIRONMENT fault (not code).
+
+        Scans each unsuccessful task's error/logs for an infra signature (timeout,
+        locked store, OOM, ...). A completed task never counts — a transient fault
+        it self-healed past is not contention worth backing off for. Only an
+        UN-recovered infra failure, the exact signal that concurrency is too high,
+        is counted.
+        """
+        from misterdev.core.execution.infra import infra_failure
+
+        count = 0
+        for _task, result, error in results:
+            if result is not None and getattr(result, "status", None) == "completed":
+                continue
+            text = ""
+            if error is not None:
+                text += str(error)
+            if result is not None:
+                text += " " + str(getattr(result, "logs", "") or "")
+                text += " " + str(getattr(result, "message", "") or "")
+            if infra_failure(text):
+                count += 1
+        return count
+
+    def _apply_wave_tuning(self, project: Project, tuning, base: dict) -> None:
+        """Apply a wave's tuning by scaling the config the deep gate paths read.
+
+        max_workers and the gate/setup timeouts are resolved via ``get_setting``
+        throughout the executor and worktree code, so the one central way to make
+        an adapted value reach all of them is to set it on the config for the
+        wave. Always computed from the captured ``base`` (never the last wave's
+        already-scaled value) so repeated application cannot drift. Safe between
+        waves: the wave loop is serial here, and each wave's workers read the value
+        once before the parallel section starts.
+        """
+        orch = project.config.setdefault("orchestrator", {})
+        orch["max_workers"] = tuning.max_workers
+        orch["worktree_setup_timeout"] = int(
+            round(base["setup"] * tuning.timeout_factor)
+        )
+        build = project.config.setdefault("build", {})
+        build["build_timeout"] = int(round(base["build"] * tuning.timeout_factor))
+        build["test_timeout"] = int(round(base["test"] * tuning.timeout_factor))
+
     def _execute_tasks(
         self,
         tasks: list[Task],
@@ -1755,6 +1801,21 @@ class ProjectOrchestrator:
         skip_satisfied = get_setting(
             project.config, "orchestrator", "skip_satisfied_tasks"
         )
+        # Adaptive concurrency/timeout backoff: capture the CONFIGURED values as the
+        # recovery ceiling, start each run at full concurrency (factor 1.0), and
+        # re-tune between waves from each wave's infra-failure count.
+        from misterdev.core.execution.adaptive import WaveTuning, next_wave_tuning
+
+        adaptive = get_setting(project.config, "orchestrator", "adaptive_concurrency")
+        adaptive_base = {
+            "workers": get_setting(project.config, "orchestrator", "max_workers"),
+            "setup": get_setting(
+                project.config, "orchestrator", "worktree_setup_timeout"
+            ),
+            "build": get_setting(project.config, "build", "build_timeout"),
+            "test": get_setting(project.config, "build", "test_timeout"),
+        }
+        wave_tuning = WaveTuning(int(adaptive_base["workers"]), 1.0)
         consecutive_failures = 0
         aborted = False
         max_cost_per_task = get_setting(
@@ -1940,6 +2001,12 @@ class ProjectOrchestrator:
                 remaining = still_waiting
                 continue
 
+            # Apply this wave's adapted concurrency/timeouts (a no-op at full
+            # tuning) before dispatch, so the worktree/gate code reads the backed-
+            # off values under contention.
+            if adaptive:
+                self._apply_wave_tuning(project, wave_tuning, adaptive_base)
+
             # Execute: parallel or sequential
             wave_completed: list[Task] = []
             if flags.parallel and len(ready) > 1:
@@ -2075,7 +2142,41 @@ class ProjectOrchestrator:
                 if reverted and consecutive_failures >= max_consecutive_failures:
                     aborted = True
 
+            # Re-tune concurrency/timeouts for the NEXT wave from THIS wave's infra
+            # faults: back off under contention, recover gradually when clean.
+            if adaptive:
+                infra_count = self._wave_infra_count(results)
+                nxt = next_wave_tuning(
+                    infra_count,
+                    wave_tuning,
+                    base_workers=int(adaptive_base["workers"]),
+                    threshold=get_setting(
+                        project.config, "orchestrator", "adaptive_infra_threshold"
+                    ),
+                    timeout_factor=get_setting(
+                        project.config, "orchestrator", "adaptive_timeout_factor"
+                    ),
+                    max_timeout_factor=get_setting(
+                        project.config, "orchestrator", "adaptive_max_timeout_factor"
+                    ),
+                )
+                if nxt != wave_tuning:
+                    logger.info(
+                        f"Adaptive tuning: {infra_count} infra fault(s) this wave; "
+                        f"next wave workers {wave_tuning.max_workers}->"
+                        f"{nxt.max_workers}, timeout x{wave_tuning.timeout_factor:g}"
+                        f"->x{nxt.timeout_factor:g}."
+                    )
+                wave_tuning = nxt
+
             remaining = still_waiting
+
+        # Restore the configured concurrency/timeouts so nothing downstream sees a
+        # backed-off value left over from an infra-heavy wave.
+        if adaptive:
+            self._apply_wave_tuning(
+                project, WaveTuning(int(adaptive_base["workers"]), 1.0), adaptive_base
+            )
 
         # Defer any unprocessed tasks
         processed_ids = (
