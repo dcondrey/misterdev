@@ -50,6 +50,7 @@ from misterdev.core.context.change_tracker import ChangeTracker
 from misterdev.core.reporting.report import BuildReport
 from misterdev.core.execution.project import Project
 from misterdev.core.execution.deferral import DeferralBook
+from misterdev.core.execution.env_learnings import EnvLearnings
 from misterdev.core.models import Task
 from misterdev.analyzers.project_analyzer import (
     analyze_project,
@@ -742,6 +743,34 @@ class ProjectOrchestrator:
         except Exception as e:
             logger.warning(f"Solved-task indexing failed (non-fatal): {e}")
             report.degraded_subsystems.append(f"Solved-task indexing: {e}")
+        try:
+            self._record_env_learnings(project)
+        except Exception as e:
+            logger.warning(f"Env-memory persist failed (non-fatal): {e}")
+            report.degraded_subsystems.append(f"Env-memory persist: {e}")
+
+    def _record_env_learnings(self, project: Project) -> None:
+        """Record this run's durable environment facts for the next run.
+
+        Loads the existing ledger and refreshes: the effective worktree
+        setup/healthcheck commands (resolved from the current config), and a
+        learned max_workers — persisted ONLY when the adaptive loop settled BELOW
+        the configured base (a real, contention-driven reduction). A run that held
+        or recovered to full concurrency clears any stale reduction, so a single
+        bad run never pins the project low forever.
+        """
+        learnings = EnvLearnings.load(project.path)
+        setup = worktree_setup_command(project.config, project.path)
+        if setup:
+            learnings.worktree_setup_command = setup
+        health = worktree_healthcheck_command(project.config, project.path)
+        if health:
+            learnings.worktree_healthcheck_command = health
+        settled = getattr(project, "env_settled_workers", None)
+        base = getattr(project, "env_base_workers", None)
+        if settled is not None and base is not None:
+            learnings.max_workers = settled if settled < base else None
+        learnings.save(project.path)
 
     def propose_plan(self, project_path: str | Path, args: str = "") -> Dict[str, Any]:
         """Analyze the project and persist ranked work proposals for approval.
@@ -932,6 +961,17 @@ class ProjectOrchestrator:
         task executes.
         """
         _check_golden_config(project.config)
+        # Cross-run env memory: pre-tune this run from durable facts learned in
+        # prior runs (effective setup/healthcheck command, a backed-off max_workers)
+        # WITHOUT overriding any explicit project.yaml value. Best-effort: a missing
+        # or unreadable ledger just means no pre-tuning. Applied here, before any
+        # gate/worktree code reads the config.
+        try:
+            applied = EnvLearnings.load(project.path).apply_to_config(project.config)
+            for a in applied:
+                logger.info(f"Env-memory: pre-tuned {a} from a prior run")
+        except Exception as e:
+            logger.debug(f"Env-memory pre-tune skipped (non-fatal): {e}")
         # Make the analysis baseline failure count available to the per-task test
         # gate so a RED baseline doesn't reject every task: the gate then accepts a
         # task that leaves the suite no worse, letting a multi-failure project be
@@ -2172,8 +2212,12 @@ class ProjectOrchestrator:
             remaining = still_waiting
 
         # Restore the configured concurrency/timeouts so nothing downstream sees a
-        # backed-off value left over from an infra-heavy wave.
+        # backed-off value left over from an infra-heavy wave. Expose the value the
+        # run settled on (and the base it started from) so the cross-run env memory
+        # can persist a contention-driven reduction for the next run.
         if adaptive:
+            project.env_settled_workers = wave_tuning.max_workers
+            project.env_base_workers = int(adaptive_base["workers"])
             self._apply_wave_tuning(
                 project, WaveTuning(int(adaptive_base["workers"]), 1.0), adaptive_base
             )
