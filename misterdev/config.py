@@ -331,6 +331,11 @@ class OrchestratorSettings:
     # gates are run on the base branch for this decision (that would serialize and
     # contend); it rests purely on the content hash and the ledger.
     skip_satisfied_tasks: bool = True
+    # Split a parallel wave into conflict-free sub-waves: tasks that DECLARE a
+    # shared file (env.ts, a route registry, a schema) run in different sub-waves
+    # (serially) so their worktree merges can't race or clobber; disjoint tasks
+    # stay parallel. On by default. Set false to run every ready task in one wave.
+    serialize_conflicting_tasks: bool = True
     # After each successful worktree merge into the base branch, run the merged
     # task's owning-target gate (typecheck/test) on the base checkout. If it fails
     # with a real (non-infra) error the merge broke the base, so roll it back

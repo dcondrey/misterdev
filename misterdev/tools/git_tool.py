@@ -60,12 +60,21 @@ class GitTool(CommandTool):
         return super().execute(project, command="git worktree prune")
 
     def merge_worktree(self, project: Any, branch: str) -> Tuple[bool, str]:
-        """Merge a worktree's branch into the current branch, then delete it."""
+        """Merge a worktree's branch into the current branch, then delete it.
+
+        A conflicting or otherwise failed merge leaves the tree mid-merge
+        (``MERGE_HEAD`` set, conflict markers written), which would block the next
+        merge and leave the base branch dirty. So on failure we ``git merge
+        --abort`` to restore the pre-merge base cleanly and never force-merge — the
+        caller re-queues the task instead. The abort is best-effort (a no-op if no
+        merge was actually started)."""
         success, out = super().execute(
             project, command=f"git merge --no-ff {shlex.quote(branch)} --no-edit"
         )
         if success:
             super().execute(project, command=f"git branch -d {shlex.quote(branch)}")
+        else:
+            super().execute(project, command="git merge --abort")
         return success, out
 
     def branch_create(self, project: Any, branch: str) -> Tuple[bool, str]:

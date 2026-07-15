@@ -51,6 +51,7 @@ from misterdev.core.reporting.report import BuildReport
 from misterdev.core.execution.project import Project
 from misterdev.core.execution.deferral import DeferralBook
 from misterdev.core.execution.env_learnings import EnvLearnings
+from misterdev.core.execution.wave_partition import partition_parallel_safe
 from misterdev.core.models import Task
 from misterdev.analyzers.project_analyzer import (
     analyze_project,
@@ -2493,57 +2494,7 @@ class ProjectOrchestrator:
             and clone_supported(project.path)
         )
         results: list = []
-        prepared: list = []
-
-        for task in ready:
-            # A run-unique branch name (never a bare ``task/<id>``): a leftover branch
-            # from a prior failed run must not collide with this run's ``-b`` create,
-            # which would fail the worktree and the task. The unique branch is always
-            # cut fresh from the current HEAD, so it carries the latest committed work.
-            run_id = uuid.uuid4().hex[:6]
-            branch = f"task/{task.id}-{run_id}"
-            wt_path = wt_root / f"{task.id}-{run_id}"
-            ok, out = git.worktree_add(project, str(wt_path), branch, new_branch=True)
-            if not ok:
-                logger.error(f"Worktree add failed for {task.id}: {out}")
-                results.append(
-                    (task, None, RuntimeError(f"worktree add failed: {out}"))
-                )
-                continue
-            # Prime deps ONCE here (serially, off the parallel gate path) so the gate
-            # tests code, not install speed. Prefer a near-instant CoW clone of the
-            # base node_modules; that path self-verifies with the sanity probe.
-            primed = False
-            if clone_deps:
-                primed = self._prime_worktree_by_clone(
-                    project, task, wt_path, health_cmd, setup_timeout, cmd_tool
-                )
-            # Install fallback: clone unavailable/declined or it failed the probe.
-            # Best-effort — if it fails, the gate's own implicit install is the
-            # backstop; never drop the task over setup.
-            if not primed and cmd_tool is not None and setup_cmd:
-                sok, sout = cmd_tool.execute(
-                    project, setup_cmd, cwd=str(wt_path), timeout=setup_timeout
-                )
-                if not sok:
-                    logger.warning(
-                        f"Worktree dep prep failed for {task.id} "
-                        f"(gate will fall back to its own install): {sout[-200:]}"
-                    )
-            # A clone already passed the sanity probe; only the install path needs
-            # the re-prime-once healthcheck, which surfaces a broken/partial install
-            # as an ENVIRONMENT fault rather than a misattributed code failure.
-            if not primed:
-                self._worktree_healthcheck(
-                    project,
-                    task,
-                    wt_path,
-                    setup_cmd,
-                    health_cmd,
-                    setup_timeout,
-                    cmd_tool,
-                )
-            prepared.append((task, wt_path, branch))
+        max_workers = get_setting(project.config, "orchestrator", "max_workers")
 
         def run_one(item):
             task, wt_path, branch = item
@@ -2559,45 +2510,125 @@ class ProjectOrchestrator:
             except Exception as e:
                 return (task, None, e, wt_path, branch)
 
-        max_workers = get_setting(project.config, "orchestrator", "max_workers")
-        raw = []
-        if prepared:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=min(len(prepared), max_workers)
-            ) as pool:
-                futures = [pool.submit(run_one, item) for item in prepared]
-                raw = [f.result() for f in concurrent.futures.as_completed(futures)]
+        # Split the wave so tasks that DECLARE a shared file run in different
+        # sub-waves (serially): parallel worktrees editing the same file would
+        # race and clobber or conflict on merge. Disjoint tasks stay in one batch.
+        # Sub-waves run in order, so a later batch's worktrees are cut from HEAD
+        # AFTER the earlier batch merged — it builds on that work, not around it.
+        if get_setting(project.config, "orchestrator", "serialize_conflicting_tasks"):
+            batches = partition_parallel_safe(
+                [(t, self._task_file_set(t)) for t in ready]
+            )
+        else:
+            batches = [list(ready)]
+        if len(batches) > 1:
+            logger.info(
+                f"Wave split into {len(batches)} conflict-free sub-wave(s) by "
+                f"declared file overlap ({[len(b) for b in batches]} task(s) each)."
+            )
 
-        for task, result, error, wt_path, branch in raw:
-            # Remove the worktree BEFORE merging/deleting the branch: git refuses to
-            # delete a branch still checked out in a worktree, which otherwise leaks
-            # even merged branches. The task's commits live on the branch ref, so the
-            # merge below still sees them after the working directory is gone.
-            git.worktree_remove(project, str(wt_path))
-            merged = False
-            if result is not None and getattr(result, "status", None) == "completed":
-                merged, mout = git.merge_worktree(project, branch)
-                if not merged:
-                    logger.error(f"Worktree merge failed for {task.id}: {mout}")
-                    error, result = RuntimeError(f"merge failed: {mout}"), None
-                elif post_merge_hc and not self._post_merge_healthcheck(
-                    project, executor, git, task, gate_timeout
-                ):
-                    # The merge broke the base branch and was rolled back; treat
-                    # the task as unfinished (not completed) so it is retried and
-                    # not recorded as done. The branch was already deleted by the
-                    # (successful) merge, so no extra cleanup is needed.
-                    error, result = (
-                        RuntimeError(
-                            "post-merge health gate failed; base merge rolled back"
-                        ),
-                        None,
+        for batch in batches:
+            prepared: list = []
+            for task in batch:
+                # A run-unique branch name (never a bare ``task/<id>``): a leftover
+                # branch from a prior failed run must not collide with this run's
+                # ``-b`` create, which would fail the worktree and the task. The
+                # unique branch is always cut fresh from the current HEAD, so it
+                # carries the latest committed work (including earlier sub-waves).
+                run_id = uuid.uuid4().hex[:6]
+                branch = f"task/{task.id}-{run_id}"
+                wt_path = wt_root / f"{task.id}-{run_id}"
+                ok, out = git.worktree_add(
+                    project, str(wt_path), branch, new_branch=True
+                )
+                if not ok:
+                    logger.error(f"Worktree add failed for {task.id}: {out}")
+                    results.append(
+                        (task, None, RuntimeError(f"worktree add failed: {out}"))
                     )
-            # A successful merge already deleted the branch; drop any un-merged one so
-            # no throwaway branch is left to accumulate or collide with a later run.
-            if not merged:
-                git.branch_delete(project, branch)
-            results.append((task, result, error))
+                    continue
+                # Prime deps ONCE here (serially, off the parallel gate path) so the
+                # gate tests code, not install speed. Prefer a near-instant CoW clone
+                # of the base node_modules; that path self-verifies with the probe.
+                primed = False
+                if clone_deps:
+                    primed = self._prime_worktree_by_clone(
+                        project, task, wt_path, health_cmd, setup_timeout, cmd_tool
+                    )
+                # Install fallback: clone unavailable/declined or it failed the
+                # probe. Best-effort — if it fails, the gate's own implicit install
+                # is the backstop; never drop the task over setup.
+                if not primed and cmd_tool is not None and setup_cmd:
+                    sok, sout = cmd_tool.execute(
+                        project, setup_cmd, cwd=str(wt_path), timeout=setup_timeout
+                    )
+                    if not sok:
+                        logger.warning(
+                            f"Worktree dep prep failed for {task.id} "
+                            f"(gate will fall back to its own install): {sout[-200:]}"
+                        )
+                # A clone already passed the sanity probe; only the install path
+                # needs the re-prime-once healthcheck, which surfaces a broken/
+                # partial install as an ENVIRONMENT fault rather than a code failure.
+                if not primed:
+                    self._worktree_healthcheck(
+                        project,
+                        task,
+                        wt_path,
+                        setup_cmd,
+                        health_cmd,
+                        setup_timeout,
+                        cmd_tool,
+                    )
+                prepared.append((task, wt_path, branch))
+
+            raw = []
+            if prepared:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(len(prepared), max_workers)
+                ) as pool:
+                    futures = [pool.submit(run_one, item) for item in prepared]
+                    raw = [f.result() for f in concurrent.futures.as_completed(futures)]
+
+            for task, result, error, wt_path, branch in raw:
+                # Remove the worktree BEFORE merging/deleting the branch: git refuses
+                # to delete a branch still checked out in a worktree, which otherwise
+                # leaks even merged branches. The task's commits live on the branch
+                # ref, so the merge below still sees them after the dir is gone.
+                git.worktree_remove(project, str(wt_path))
+                merged = False
+                if (
+                    result is not None
+                    and getattr(result, "status", None) == "completed"
+                ):
+                    merged, mout = git.merge_worktree(project, branch)
+                    if not merged:
+                        # merge_worktree already aborted the conflicted merge, so the
+                        # base is clean; re-queue the task (unfinished) rather than
+                        # force-merging over another task's shared-file change.
+                        logger.error(
+                            f"Worktree merge conflicted for {task.id}; aborted and "
+                            f"re-queuing (not force-merged): {mout[-200:]}"
+                        )
+                        error, result = RuntimeError(f"merge conflict: {mout}"), None
+                    elif post_merge_hc and not self._post_merge_healthcheck(
+                        project, executor, git, task, gate_timeout
+                    ):
+                        # The merge broke the base branch and was rolled back; treat
+                        # the task as unfinished (not completed) so it is retried and
+                        # not recorded as done. The branch was already deleted by the
+                        # (successful) merge, so no extra cleanup is needed.
+                        error, result = (
+                            RuntimeError(
+                                "post-merge health gate failed; base merge rolled back"
+                            ),
+                            None,
+                        )
+                # A successful merge already deleted the branch; drop any un-merged
+                # one so no throwaway branch accumulates or collides with a later run.
+                if not merged:
+                    git.branch_delete(project, branch)
+                results.append((task, result, error))
         return results
 
     def _interactive_prompt(self, task: Task, strategy: str = "iterative") -> str:

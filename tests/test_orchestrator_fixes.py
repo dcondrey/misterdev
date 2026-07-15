@@ -805,6 +805,113 @@ def test_post_merge_healthcheck_disabled_keeps_broken_merge():
         assert (td / ".broken").exists()  # merge kept, no gate, no revert
 
 
+class _SharedFileExec:
+    """FakeExec whose tasks all append to the SAME file and commit in their
+    worktree — so two run in parallel would race and conflict on merge."""
+
+    def execute(self, task, proj, use_git_branch=True):
+        import subprocess
+        from unittest.mock import MagicMock
+
+        wt = Path(proj.path)
+        f = wt / "shared.txt"
+        f.write_text(f.read_text() + f"{task.id}\n")
+        subprocess.run(["git", "add", "-A"], cwd=wt, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", f"task {task.id}"],
+            cwd=wt,
+            check=True,
+            capture_output=True,
+        )
+        r = MagicMock()
+        r.status = "completed"
+        return r
+
+
+def _shared_file_repo(td: Path):
+    _git(td, "init")
+    _git(td, "config", "user.email", "t@t.t")
+    _git(td, "config", "user.name", "t")
+    (td / "shared.txt").write_text("line0\n")
+    _git(td, "add", "-A")
+    _git(td, "commit", "-m", "init")
+
+
+def test_conflicting_wave_serialized_completes_without_conflict():
+    """Two tasks that DECLARE the same file are split into separate sub-waves, so
+    the second builds on the first's merge and neither conflicts — both complete
+    and the shared file carries both edits."""
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _shared_file_repo(td)
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {"parallel_mode": "worktree", "max_workers": 4}
+        }
+
+        a, b = _mock_task("T-A"), _mock_task("T-B")
+        a.files_to_modify = ["shared.txt"]
+        b.files_to_modify = ["shared.txt"]
+
+        results = agent_mod.ProjectOrchestrator()._execute_parallel_worktrees(
+            [a, b], _SharedFileExec(), project
+        )
+        by_id = {t.id: (res, err) for t, res, err in results}
+        assert getattr(by_id["T-A"][0], "status", None) == "completed"
+        assert getattr(by_id["T-B"][0], "status", None) == "completed"
+        # Both edits landed serially on the shared file — no conflict, no clobber.
+        text = (td / "shared.txt").read_text()
+        assert "T-A" in text and "T-B" in text
+        assert "<<<<<<<" not in text  # no conflict markers
+
+
+def test_unserialized_conflict_aborts_cleanly_and_requeues():
+    """With serialization off, two tasks editing the same file race: one merges,
+    the other conflicts. The conflicted merge is ABORTED (base left clean, not
+    mid-merge) and that task is returned unfinished for re-queue."""
+    import subprocess
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _shared_file_repo(td)
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {
+                "parallel_mode": "worktree",
+                "max_workers": 4,
+                "serialize_conflicting_tasks": False,  # force the race
+            }
+        }
+
+        a, b = _mock_task("T-A"), _mock_task("T-B")
+        a.files_to_modify = ["shared.txt"]
+        b.files_to_modify = ["shared.txt"]
+
+        results = agent_mod.ProjectOrchestrator()._execute_parallel_worktrees(
+            [a, b], _SharedFileExec(), project
+        )
+        statuses = [getattr(res, "status", None) for _t, res, _e in results]
+        errors = [err for _t, _res, err in results]
+        # Exactly one merged; the other conflicted and was returned unfinished.
+        assert statuses.count("completed") == 1
+        assert sum(1 for e in errors if e is not None) == 1
+
+        # The base is CLEAN: the conflicted merge was aborted, not left mid-merge.
+        assert not (td / ".git" / "MERGE_HEAD").exists()
+        porcelain = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=td, capture_output=True, text=True
+        ).stdout
+        assert porcelain.strip() == ""  # no conflict markers / unmerged paths
+        assert "<<<<<<<" not in (td / "shared.txt").read_text()
+
+
 def test_worktree_healthcheck_command_resolution(tmp_path: Path):
     """Explicit config wins and "" disables; otherwise a node project auto-detects
     a toolchain probe (tsc when TS is used, else a dependency resolve) and a
