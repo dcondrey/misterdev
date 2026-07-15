@@ -1,4 +1,5 @@
 import concurrent.futures
+import json
 import re
 import shlex
 import subprocess
@@ -52,6 +53,7 @@ from misterdev.core.execution.project import Project
 from misterdev.core.execution.deferral import DeferralBook
 from misterdev.core.execution.env_learnings import EnvLearnings
 from misterdev.core.execution.wave_partition import partition_parallel_safe
+from misterdev.utils.file_utils import atomic_write, orchestrator_state_file
 from misterdev.core.models import Task
 from misterdev.analyzers.project_analyzer import (
     analyze_project,
@@ -749,6 +751,69 @@ class ProjectOrchestrator:
         except Exception as e:
             logger.warning(f"Env-memory persist failed (non-fatal): {e}")
             report.degraded_subsystems.append(f"Env-memory persist: {e}")
+        try:
+            self._write_run_summary(project, report)
+        except Exception as e:
+            logger.warning(f"Run summary write failed (non-fatal): {e}")
+            report.degraded_subsystems.append(f"Run summary: {e}")
+
+    @staticmethod
+    def _task_failure_text(task) -> str:
+        """The best-available failure text for a terminal non-success task: the
+        error stashed on the error path, else the last execution result's message
+        and logs. '' when nothing is recorded."""
+        stored = (getattr(task, "processor_data", None) or {}).get("failure_text")
+        if stored:
+            return str(stored)
+        hist = getattr(task, "execution_history", None) or []
+        if hist:
+            last = hist[-1]
+            return f"{getattr(last, 'message', '') or ''}\n{getattr(last, 'logs', '') or ''}"
+        return ""
+
+    def _write_run_summary(self, project: Project, report: BuildReport) -> None:
+        """Classify the run's failures and write a one-glance summary to the
+        console and ``.orchestrator/run_summary.json`` (feeds P7/P10 and answers
+        "why did this run underperform" at a glance)."""
+        from misterdev.core.execution.failure_taxonomy import build_run_summary
+
+        end = report.end_time or datetime.now(timezone.utc)
+        elapsed = (end - report.start_time).total_seconds()
+        failed_items = [(t.id, self._task_failure_text(t)) for t in report.failed_tasks]
+        deferred_items = [
+            (t.id, self._task_failure_text(t)) for t in report.deferred_tasks
+        ]
+        summary = build_run_summary(
+            len(report.completed_tasks), failed_items, deferred_items, elapsed
+        )
+        atomic_write(
+            orchestrator_state_file(project.path, "run_summary.json"),
+            json.dumps(summary, indent=2),
+        )
+        # Concise console line — the whole point is one-glance readability.
+        mins, secs = divmod(int(summary["elapsed_seconds"]), 60)
+        parts = [f"[green]{summary['completed']} done[/]"]
+        if summary["deferred"]:
+            parts.append(f"[yellow]{summary['deferred']} deferred[/]")
+        if summary["failed"]:
+            parts.append(f"[red]{summary['failed']} failed[/]")
+        console.print(
+            "[bold]Run summary[/] · "
+            + " · ".join(parts)
+            + f" · [dim]{mins}m {secs}s[/]"
+        )
+        if summary["failure_breakdown"]:
+            brk = ", ".join(
+                f"{cat} {n}" for cat, n in summary["failure_breakdown"].items()
+            )
+            console.print(f"  [dim]failures:[/] {brk}")
+            top = summary["top_obstacle"]
+            if top:
+                ex = summary["exemplars"].get(top, "")
+                console.print(
+                    f"  [dim]top obstacle:[/] {top}"
+                    + (f" [dim]— {ex[:120]}[/]" if ex else "")
+                )
 
     def _record_env_learnings(self, project: Project) -> None:
         """Record this run's durable environment facts for the next run.
@@ -2108,6 +2173,11 @@ class ProjectOrchestrator:
                     continue
                 if error:
                     logger.error(f"Task {task.id} raised: {error}")
+                    # Preserve the failure text (merge conflict, worktree add, a
+                    # raised exception) so the end-of-run taxonomy can classify it;
+                    # this path records no ExecutionResult to read it back from.
+                    if isinstance(getattr(task, "processor_data", None), dict):
+                        task.processor_data["failure_text"] = str(error)
                     failed_ids.add(task.id)
                     progress.mark_failed(task.id)
                     report.failed_tasks.append(task)

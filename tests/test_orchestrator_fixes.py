@@ -1765,6 +1765,57 @@ def test_adaptive_backoff_applies_to_next_wave():
         assert get_setting(project.config, "orchestrator", "max_workers") == 4
 
 
+# --- run summary / failure taxonomy (P11) -----------------------------------
+def test_write_run_summary_writes_json_and_classifies():
+    import json
+    from datetime import datetime, timezone
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+    from misterdev.core.models import Task, ExecutionResult
+    from misterdev.utils.file_utils import orchestrator_state_file
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        report = _fresh_report()
+        report.start_time = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        report.end_time = datetime(2026, 1, 1, 0, 1, 30, tzinfo=timezone.utc)  # 90s
+        report.completed_tasks = [
+            Task(id="C1", description="d", project_ref="p"),
+            Task(id="C2", description="d", project_ref="p"),
+        ]
+        # A code failure (result logs) and a merge conflict (error stashed).
+        code_fail = Task(id="F1", description="d", project_ref="p")
+        code_fail.execution_history.append(
+            ExecutionResult(status="failed", message="x", logs="error TS2345: bad")
+        )
+        merge_fail = Task(id="F2", description="d", project_ref="p")
+        merge_fail.processor_data["failure_text"] = "merge conflict: CONFLICT in env.ts"
+        report.failed_tasks = [code_fail, merge_fail]
+        # A parked task needing input.
+        parked = Task(id="D1", description="d", project_ref="p")
+        parked.execution_history.append(
+            ExecutionResult(
+                status="deferred", message="clarify the requirement", logs=""
+            )
+        )
+        report.deferred_tasks = [parked]
+
+        project = MagicMock()
+        project.path = td
+        agent_mod.ProjectOrchestrator()._write_run_summary(project, report)
+
+        data = json.loads(orchestrator_state_file(td, "run_summary.json").read_text())
+        assert data["completed"] == 2
+        assert data["failed"] == 2
+        assert data["deferred"] == 1
+        assert data["elapsed_seconds"] == 90.0
+        assert data["failure_breakdown"] == {
+            "merge-conflict": 1,
+            "genuine-code-failure": 1,
+            "deferred-needs-input": 1,
+        }
+
+
 # --- escalation ladder (P10) ------------------------------------------------
 def test_escalation_rung_reads_config_thresholds():
     from unittest.mock import MagicMock
