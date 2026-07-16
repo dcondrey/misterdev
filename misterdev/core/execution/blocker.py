@@ -92,11 +92,36 @@ _SIGNALS: Tuple[Tuple[re.Pattern, str], ...] = (
 )
 
 
+# A bare 401/403 emitted INSIDE a test run is NOT a missing-credential block: it is
+# either a test asserting on a 401/403 response, or local harness noise (a
+# workers/miniflare pool probe). Parking the task there freezes a whole subtree on
+# a "needs your credential" that the code should just fix (observed: a countless
+# server keystone gated by @cloudflare/vitest-pool-workers). So the two BROAD
+# HTTP-status auth rules are suppressed under test context; the SPECIFIC rules
+# (an explicit `wrangler login`, a named missing key/token) still fire — those
+# name a real external resource, not an HTTP status a test can legitimately emit.
+_TEST_CONTEXT = re.compile(
+    r"\bvitest\b|\bjest\b|\bminiflare\b|vitest-pool-workers|"
+    r"\bexpect\(|\.toBe\b|\.toEqual\b|\bdescribe\(|\bit\(|"
+    r"\bTest Files\b|\.test\.|\.spec\.",
+    re.I,
+)
+_TEST_SUPPRESSIBLE = frozenset(
+    {
+        "authentication failed (401 / invalid credentials)",
+        "access forbidden (403) — the account lacks permission",
+    }
+)
+
+
 def blocked_reason(output: str) -> Optional[str]:
     """A short human reason when ``output`` shows an external-resource block, else
     None. None means "treat as an ordinary (retryable / real) failure"."""
     text = output or ""
+    in_test = bool(_TEST_CONTEXT.search(text))
     for pattern, reason in _SIGNALS:
         if pattern.search(text):
+            if in_test and reason in _TEST_SUPPRESSIBLE:
+                continue  # a 401/403 inside a test run is code to fix, not a block
             return reason
     return None

@@ -57,6 +57,31 @@ def test_blocked_reason_not_fooled_by_key_feature_tests():
         assert blocked_reason(out), out
 
 
+def test_401_403_in_a_test_run_is_not_a_block():
+    # A 401/403 emitted inside a test run (a @cloudflare/vitest-pool-workers probe,
+    # or a test asserting on a 401/403 response) is code to fix, not a credential
+    # block — the T007 keystone false-positive that froze the whole server subtree.
+    for out in (
+        "FAIL src/index.test.ts\n@cloudflare/vitest-pool-workers\nError: 401 Unauthorized",
+        "expect(res.status).toBe(401)\n● app shell > rejects unauthenticated",
+        "vitest\n403 Forbidden returned by handler under test",
+        "describe('auth', () => it('returns 401'))  # 401 unauthorized",
+    ):
+        assert blocked_reason(out) is None, out
+
+
+def test_real_deploy_auth_still_blocks_outside_test_context():
+    # A 401 / login instruction from a deploy or CLI (no test signatures) is a
+    # genuine external block and must still park; the SPECIFIC rules also fire even
+    # if a test happens to be mentioned.
+    assert blocked_reason(
+        "wrangler deploy --minify\nError: authentication failed (401)"
+    )
+    assert blocked_reason("You are not logged in. Run `wrangler login`.")
+    # Non-suppressible signal wins even under test context.
+    assert blocked_reason("vitest run\nError: STRIPE_API_KEY is required")
+
+
 # --- NEEDS_INPUT model marker -------------------------------------------------
 
 
