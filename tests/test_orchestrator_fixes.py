@@ -1446,6 +1446,63 @@ def test_run_project_executes_in_dependency_order():
         assert executed == ["001-a", "002-b"]
 
 
+def test_run_project_writes_classified_run_summary():
+    """The `run --tasks` path now emits run_summary.json with the failure taxonomy
+    (it previously had no summary at all), so a run is diagnosable at a glance."""
+    import json
+    from unittest.mock import patch, MagicMock
+    import misterdev.agent as agent_mod
+    from misterdev.utils.file_utils import orchestrator_state_file
+
+    with tempfile.TemporaryDirectory() as td:
+        project = MagicMock()
+        project.name = "p"
+        project.path = Path(td)
+        project.env_manager = None
+        project.config = {
+            "language": "python",
+            "orchestrator": {"max_consecutive_failures": 3},
+        }
+        done, parked = _mock_task("T-done"), _mock_task("T-park")
+        project.task_manager.get_pending_tasks.return_value = [done, parked]
+
+        def _exec(task, proj, *a, **k):
+            r = MagicMock()
+            if task.id == "T-park":
+                r.status = "deferred"
+                r.message = "could not complete after all attempts"
+                r.questions = []
+            else:
+                r.status = "completed"
+            return r
+
+        with (
+            patch.object(
+                agent_mod.ProjectOrchestrator, "_get_or_register", return_value=project
+            ),
+            patch("misterdev.agent.topological_sort", side_effect=lambda x: x),
+            patch("misterdev.agent.Scratchpad"),
+            patch("misterdev.agent.ContractRegistry"),
+            patch("misterdev.agent.ChangeTracker"),
+            patch("misterdev.agent.StrategyOptimizer") as MockStrat,
+            patch("misterdev.agent.ProgressTracker") as MockProg,
+            patch("misterdev.agent.MarkdownPlanExecutor") as MockExec,
+        ):
+            MockProg.return_value.completed = []
+            MockProg.return_value.is_done.return_value = False
+            MockStrat.return_value.select_best_strategy.return_value = "iterative"
+            MockExec.return_value.execute.side_effect = _exec
+            agent_mod.ProjectOrchestrator().run_project(td)
+
+        data = json.loads(
+            orchestrator_state_file(Path(td), "run_summary.json").read_text()
+        )
+        assert data["completed"] == 1
+        assert data["deferred"] == 1
+        assert data["failure_breakdown"] == {"deferred-needs-input": 1}
+        assert data["top_obstacle"] == "deferred-needs-input"
+
+
 # --- budget kill-switch / graceful checkpointing ----------------------------
 
 
@@ -2653,6 +2710,78 @@ def test_executor_rejects_task_when_build_gate_stays_red(monkeypatch):
         assert head_after == head_before
         # Revert cleans the orphan file the failed task created (not left behind).
         assert not (repo / "feature.py").exists()
+
+
+def test_keystone_decomposes_at_attempt_exhaustion(monkeypatch):
+    """A task that keeps failing real gates now DECOMPOSES (deferred, with named
+    sub-steps) at attempt exhaustion instead of dead-ending on a vague park — the
+    decompose rung is reachable even when escalation_decompose_after == the attempt
+    cap (default 3 == 3), which is the countless T007 keystone case."""
+    from types import SimpleNamespace
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "t@t.t")
+        _git(repo, "config", "user.name", "t")
+        (repo / "seed.py").write_text("X = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "init")
+
+        # DISTINCT applied edits (return 0,1,2,3,4) that all fail the build (!= 42):
+        # each is a real applied code failure that advances the ladder, unlike an
+        # identical edit that only applies once.
+        from misterdev.config import DEFAULT_CONFIG
+        from misterdev.core.execution.project import Project
+        from tests.test_llm_client import FakeLLMClient
+        from misterdev.llm.client import LLMResponse, LLMUsage
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        build_cmd = (
+            'python -c "import feature, sys; '
+            'sys.exit(0 if feature.answer() == 42 else 1)"'
+        )
+        cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+        cfg["name"] = "fixture"
+        cfg["build_command"] = build_cmd
+        cfg.pop("test_command", None)
+        # Reflection would consume a FakeLLMClient response per retry and desync the
+        # distinct edits; off, each attempt's edit is the only LLM call.
+        cfg.setdefault("orchestrator", {})["reflection"] = False
+        project = Project(repo, cfg)
+        project.llm_client = FakeLLMClient(
+            responses=[
+                LLMResponse(
+                    content=f"```python:feature.py\ndef answer():\n    return {i}\n```\n",
+                    usage=LLMUsage(),
+                )
+                for i in range(6)
+            ]
+        )
+        task = SimpleNamespace(
+            id="T-keystone",
+            title="Hono app shell",
+            description="implement the app shell",
+            acceptance_criteria="- returns the error envelope\n- adds CORS\n",
+            files_to_modify=[],
+            files_to_create=["feature.py"],
+            context_files=[],
+            dependencies=[],
+            complexity="small",
+            category="feature",
+            processor_data={"strategy": "surgical"},
+            execution_history=[],
+        )
+
+        result = MarkdownPlanExecutor().execute(task, project)
+
+        # Reached the decompose rung at exhaustion instead of a plain fail/park.
+        assert result.status == "deferred"
+        assert task.processor_data.get("_escalation_decomposed") is True
+        assert len(task.processor_data.get("escalation_substeps", [])) >= 2
+        # The named sub-steps are surfaced as the deferral questions.
+        assert result.questions == task.processor_data["escalation_substeps"]
 
 
 def test_completed_status_persists_to_committed_markdown(monkeypatch):

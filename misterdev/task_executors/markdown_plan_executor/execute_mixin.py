@@ -722,6 +722,13 @@ class ExecuteMixin:
                 if stall_risk > 0.7:
                     logger.warning(f"High stall risk detected ({stall_risk:.2f}).")
                     if attempt > 1:
+                        # A stall — the model reproduced the same edit — is a
+                        # genuine failure to make progress, so it advances the
+                        # escalation ladder just like a red gate. Otherwise a
+                        # staller would only ever see "try a different approach"
+                        # and spin until attempts run out, never widening context
+                        # / switching model / decomposing (the fix T005 needed).
+                        code_failures += 1
                         error_logs = "ERROR: Stalling detected. Try a fundamentally different approach."
                         continue
 
@@ -1061,6 +1068,31 @@ class ExecuteMixin:
         if pending_attempt is not None:
             self._ledger_record(project, task, pending_attempt, success=False)
             pending_attempt = None
+
+        # Escalation ladder top rung, reached by EXHAUSTION. The in-loop decompose
+        # check can never fire when escalation_decompose_after >= the attempt cap
+        # (the default 3 == 3), because the loop breaks the moment code_failures
+        # reaches the threshold — so a keystone that failed decompose_after times
+        # would dead-end at a vague park instead of decomposing. Fire it here so
+        # the rung is reachable: split the too-large task into named sub-steps
+        # (the build pipeline re-decomposes them; a run --tasks park at least
+        # surfaces concrete steps) rather than burn a surgical retry that won't
+        # crack a structural failure. Only when the ladder genuinely climbed to
+        # decompose; otherwise fall through to the surgical retry unchanged.
+        if (
+            escalation_on
+            and _depth < 1
+            and not task.processor_data.get("_escalation_decomposed")
+            and self._escalation_rung(project, code_failures) == "decompose"
+        ):
+            logger.info(
+                f"Task {task.id} exhausted attempts at the decompose rung "
+                f"({code_failures} code failure(s)); requesting a split into sub-steps."
+            )
+            self._abort_task(
+                project, branch_name, base_branch, snapshot, untracked_before
+            )
+            return self._escalate_decompose(project, task, error_logs)
 
         # Strategy escalation: if current strategy failed, try one more attempt
         # with "surgical". Guarded by _depth so escalation can never recurse more

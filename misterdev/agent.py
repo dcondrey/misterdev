@@ -414,6 +414,37 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         )
         reporter.summary(cost=cost)
 
+        # Structured close-out (parity with the build pipeline): classify this run's
+        # failures/parks into the taxonomy + write run_summary.json, and record the
+        # durable env facts. The `run --tasks` path had neither, so a run on this
+        # path was undiagnosable at a glance and never fed P7's cross-run memory.
+        try:
+            import time
+
+            by_id = {t.id: t for t in tasks}
+            failed_items = [
+                (tid, self._task_failure_text(by_id[tid]))
+                for tid in failed_ids
+                if tid in by_id
+            ]
+            deferred_items = [
+                (
+                    d["id"],
+                    f"{d.get('reason', '')} {' '.join(d.get('questions', []))}".strip(),
+                )
+                for d in deferrals
+            ]
+            self._emit_run_summary(
+                project,
+                len(completed_ids),
+                failed_items,
+                deferred_items,
+                time.time() - reporter.start_time,
+            )
+            self._record_env_learnings(project)
+        except Exception as e:  # a summary/learning write must never sink a run
+            logger.warning(f"Run close-out (summary/env-memory) skipped: {e}")
+
         # Walk-away close-out: if any task parked for the user, write the question
         # book (preserving answers already typed) and surface a concise pointer so
         # a returning user knows exactly what to do to finish the build.
@@ -771,19 +802,34 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         return ""
 
     def _write_run_summary(self, project: Project, report: BuildReport) -> None:
-        """Classify the run's failures and write a one-glance summary to the
-        console and ``.orchestrator/run_summary.json`` (feeds P7/P10 and answers
-        "why did this run underperform" at a glance)."""
-        from misterdev.core.execution.failure_taxonomy import build_run_summary
-
+        """Classify the build pipeline's failures and write the one-glance summary
+        (feeds P7/P10; answers "why did this run underperform" at a glance)."""
         end = report.end_time or datetime.now(timezone.utc)
         elapsed = (end - report.start_time).total_seconds()
         failed_items = [(t.id, self._task_failure_text(t)) for t in report.failed_tasks]
         deferred_items = [
             (t.id, self._task_failure_text(t)) for t in report.deferred_tasks
         ]
+        self._emit_run_summary(
+            project, len(report.completed_tasks), failed_items, deferred_items, elapsed
+        )
+
+    def _emit_run_summary(
+        self,
+        project: Project,
+        completed: int,
+        failed_items: list,
+        deferred_items: list,
+        elapsed_seconds: float,
+    ) -> None:
+        """Classify (id, text) failure/deferral pairs into the taxonomy and write a
+        one-glance summary to the console and ``.orchestrator/run_summary.json``.
+        Shared by the build pipeline and the ``run --tasks`` path so both emit the
+        same signal. Never raises — a summary must not sink a finished run."""
+        from misterdev.core.execution.failure_taxonomy import build_run_summary
+
         summary = build_run_summary(
-            len(report.completed_tasks), failed_items, deferred_items, elapsed
+            completed, failed_items, deferred_items, elapsed_seconds
         )
         atomic_write(
             orchestrator_state_file(project.path, "run_summary.json"),
