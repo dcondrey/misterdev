@@ -211,13 +211,22 @@ class GatesMixin:
         the whole suite green. An unparseable red result stays strict (rejected),
         since we will not accept on a number we cannot read.
         """
+        from misterdev.core.verification.validator import (
+            _parse_test_counts,
+            gate_ran_no_tests,
+        )
+
         if success:
+            # A command that exits 0 having collected nothing is a false-GREEN
+            # gate: it greenlights any edit while catching no regression. Pair an
+            # explicit "no tests ran" signal with a parsed total of 0 (high
+            # precision — the phrase alone can appear per-crate in a healthy
+            # workspace) and reject it as hard as a real failure.
+            if gate_ran_no_tests(output) and _parse_test_counts(output)[0] == 0:
+                return False, None
             return True, 0
         if baseline_failures <= 0:
             return False, None
-        from misterdev.core.verification.validator import (
-            _parse_test_counts,
-        )
 
         total, post = _parse_test_counts(output)
         if total > 0 and post <= baseline_failures:
