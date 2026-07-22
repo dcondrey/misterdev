@@ -217,9 +217,32 @@ class ModelSelector:
         # final=True lifts the latency guard here (a slow-but-capable last resort
         # beats giving up), but incompetent models are still excluded.
         if attempt >= max_attempts - 1:
-            return self._pick(
+            pick = self._pick(
                 self._tier_models(rungs[last]), category, complexity, True, final=True
             )
+            if pick is not None:
+                return pick
+            # The strongest tier is empty for this cell (every model in it is proven
+            # incompetent). Do NOT silently fall back to the client default on the
+            # last resort — widen to the best usable model across ALL tiers and warn.
+            wider = [m for r in rungs for m in self._tier_models(r)]
+            pick = self._pick(wider, category, complexity, True, final=True)
+            if pick is not None:
+                logger.warning(
+                    "Model selector: strongest tier has no usable model for (%s, %s) "
+                    "on the final attempt; using %s from a wider set.",
+                    category,
+                    complexity,
+                    pick,
+                )
+            else:
+                logger.warning(
+                    "Model selector: every configured model is excluded for (%s, %s) "
+                    "on the final attempt; falling back to the client default.",
+                    category,
+                    complexity,
+                )
+            return pick
 
         if attempt == 0 and not self._explore_on_first(category, complexity):
             # Conservative first attempt: cheapest rung with a proven model, else

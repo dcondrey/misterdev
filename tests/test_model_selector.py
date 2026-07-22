@@ -341,3 +341,22 @@ def test_escalation_climbs_one_rung_per_attempt_when_exploring(ledger):
     assert sel.select("feature", "large", 0, 4) == "v/cheap"
     assert sel.select("feature", "large", 1, 4) == "v/mid"
     assert sel.select("feature", "large", 2, 4) == "v/top"
+
+
+def test_final_attempt_widens_when_strongest_tier_all_incompetent(ledger, monkeypatch):
+    sel = ModelSelector(
+        _config(models={"cheap": "openai/small", "strong": "anthropic/big"}), ledger
+    )
+    # The strongest tier's only model is proven incompetent for this cell; the final
+    # attempt must NOT silently fall back to the client default — it widens to the
+    # best usable model across all tiers.
+    monkeypatch.setattr(sel, "_incompetent", lambda m, c, x: m == "anthropic/big")
+    assert sel.select("feature", "medium", 2, 3) == "openai/small"
+
+
+def test_final_attempt_none_only_when_everything_incompetent(ledger, monkeypatch):
+    sel = ModelSelector(
+        _config(models={"cheap": "openai/small", "strong": "anthropic/big"}), ledger
+    )
+    monkeypatch.setattr(sel, "_incompetent", lambda m, c, x: True)
+    assert sel.select("feature", "medium", 2, 3) is None
