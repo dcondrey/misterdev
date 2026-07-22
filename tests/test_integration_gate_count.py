@@ -389,3 +389,58 @@ def test_validate_targets_web_gate_green_passes(monkeypatch):
 
     results = orch._validate_targets(_Proj(), None)
     assert results[0]["ok"] is True
+
+
+# --- C1: build-break waves must be reverted (not waved through as unparseable) ---
+
+
+class _BrokenExec:
+    """A wave that BREAKS the build: the suite command fails with a compile/
+    collection error (no parseable test count), on every run."""
+
+    def __init__(self):
+        self.reverted = []
+
+    def _run_command(self, project, cmd, timeout=0, cwd=None):
+        return False, (
+            "ERROR collecting tests/test_x.py\n"
+            "ModuleNotFoundError: No module named 'brokenpkg'\n"
+        )
+
+    def find_task_commit(self, project, tid):
+        return f"sha-{tid}"
+
+    def revert_task_commit(self, project, sha):
+        self.reverted.append(sha)
+        return True
+
+
+def test_count_gate_reverts_when_wave_breaks_the_build():
+    # A build/collection break is strictly worse than a counted red baseline, even
+    # though it yields no parseable count. It must be reverted, not waved through.
+    orch = ProjectOrchestrator()
+    ex = _BrokenExec()
+    reverted = orch._integration_gate_count(
+        None, ex, "t", [_task("T-1")], 1, baseline_failures=2
+    )
+    assert reverted == ["T-1"]
+    assert ex.reverted == ["sha-T-1"]
+
+
+def test_identity_gate_reverts_when_wave_breaks_the_build():
+    orch = ProjectOrchestrator()
+    baseline = _ids(["test_alpha"])
+    ex = _BrokenExec()
+    reverted = orch._integration_gate_ids(
+        _Proj(), ex, "t", [_task("T-1")], 1, baseline
+    )
+    assert reverted == ["T-1"]
+
+
+def test_count_gate_ambiguous_unparseable_still_not_reverted():
+    # Control: a failing-but-unparseable run that is NOT a build break stays
+    # ambiguous — the deliberate don't-revert-on-a-number-we-cant-read behavior.
+    orch = ProjectOrchestrator()
+    ex = _FakeExec([9], unparseable=True)
+    assert orch._integration_gate_count(None, ex, "t", [_task("T-1")], 1, 2) == []
+    assert ex.reverted == []

@@ -128,6 +128,43 @@ class IntegrationGateMixin:
             return set()
         return self._failing_ids_from_output(output, project)
 
+    @staticmethod
+    def _looks_like_broken_build(output: str) -> bool:
+        """True when a FAILING suite's output shows a structural break — the code no
+        longer compiles, collects, or imports — rather than ordinary (countable)
+        test failures we merely could not parse. A build break is strictly worse
+        than any counted red baseline (the suite no longer even runs), so it must be
+        reverted even though it yields no count; an unrecognized-but-ran failure
+        stays ambiguous and is left alone."""
+        from misterdev.core.execution.compile_view import extract_compile_errors
+
+        if extract_compile_errors(output):
+            return True
+        low = (output or "").lower()
+        signals = (
+            "error collecting",
+            "errors during collection",
+            "importerror",
+            "modulenotfounderror",
+            "no module named",
+            "syntaxerror",
+            "internalerror",
+            "cannot find module",
+            "cannot import",
+            "unresolved import",
+            "segmentation fault",
+        )
+        return any(s in low for s in signals)
+
+    def _suite_broken(
+        self, project, executor, test_cmd: str, timeout: int, cwd=None
+    ) -> bool:
+        """True when the suite command fails AND its output is a build/collection
+        break. Runs the command once; used only on the unparseable path to tell a
+        genuine break (revert) from an ambiguous unrecognized failure (leave)."""
+        ok, output = executor._run_command(project, test_cmd, timeout=timeout, cwd=cwd)
+        return (not ok) and self._looks_like_broken_build(output)
+
     def _integration_gate_count(
         self,
         project: Project,
@@ -146,12 +183,20 @@ class IntegrationGateMixin:
         do not revert on a number we can't read).
         """
         after = self._suite_failures(project, executor, test_cmd, timeout)
-        if after is None or after <= baseline_failures:
+        if after is None:
+            if not self._suite_broken(project, executor, test_cmd, timeout):
+                return []
+            logger.warning(
+                "Integration gate (count): post-wave suite no longer builds/collects "
+                "(strictly worse than the red baseline); reverting wave commits."
+            )
+        elif after <= baseline_failures:
             return []
-        logger.warning(
-            f"Integration gate (count): failures rose {baseline_failures} -> "
-            f"{after}; reverting wave commits until restored."
-        )
+        else:
+            logger.warning(
+                f"Integration gate (count): failures rose {baseline_failures} -> "
+                f"{after}; reverting wave commits until restored."
+            )
         commits = self._wave_commits(executor, project, wave_tasks)
         reverted: list[str] = []
         for tid, sha in reversed(commits):
@@ -183,7 +228,21 @@ class IntegrationGateMixin:
         """
         after = self._suite_failing_ids(project, executor, test_cmd, timeout)
         if after is None:
-            return []  # unparseable post-wave count of ids; don't revert blind
+            if not self._suite_broken(project, executor, test_cmd, timeout):
+                return []  # unparseable-but-ran; don't revert on ids we can't read
+            logger.warning(
+                "Integration gate (identity): post-wave suite no longer builds/"
+                "collects; reverting wave commits until restored."
+            )
+            commits = self._wave_commits(executor, project, wave_tasks)
+            reverted: list[str] = []
+            for tid, sha in reversed(commits):
+                if executor.revert_task_commit(project, sha):
+                    reverted.append(tid)
+                now = self._suite_failing_ids(project, executor, test_cmd, timeout)
+                if now is not None and not (now - baseline_ids):
+                    break
+            return reverted
         new_failures = after - baseline_ids
         if not new_failures:
             if baseline_ids - after:
