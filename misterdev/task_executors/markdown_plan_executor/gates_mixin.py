@@ -370,11 +370,14 @@ class GatesMixin:
         on the generator's own model. Routed through ``with_model`` when possible.
         """
         from misterdev.core.verification.independent import (
-            generate_independent,
+            build_independent_call,
         )
 
         judge_model = (project.config.get("judge") or {}).get("model")
-        return generate_independent(project.llm_client, prompt, "", model=judge_model)
+        call = build_independent_call(
+            project.llm_client, "", judge_model, "Acceptance judge"
+        )
+        return call(prompt) if call is not None else ""
 
     def _llm_acceptance_judge(
         self, project: Project, task: Task, criteria: str
