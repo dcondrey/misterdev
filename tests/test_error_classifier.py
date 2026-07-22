@@ -219,3 +219,16 @@ def test_link_error_guidance_is_language_neutral():
 def test_every_indicator_category_has_guidance():
     for category in _TIE_BREAK_ORDER + [ErrorCategory.UNKNOWN]:
         assert FIX_GUIDANCE.get(category, "").strip()
+
+
+def test_csharp_code_requires_roslyn_error_prefix():
+    # A genuine Roslyn diagnostic still classifies by its code.
+    real = "Program.cs(5,10): error CS0103: The name 'x' does not exist"
+    assert classify_error(real) == ErrorCategory.MISSING_SYMBOL
+
+
+def test_bare_csharp_code_substring_does_not_override_real_category():
+    # A CSxxxx: substring appearing in prose/a doc URL/an assertion log must NOT
+    # hijack classification via the fast path (it is not a Roslyn error line).
+    log = "thread panicked at assertion failed: left == right. See docs at CS0103: notes"
+    assert classify_error(log) != ErrorCategory.MISSING_SYMBOL

@@ -315,9 +315,11 @@ def classify_error(error_output: str) -> str:
     for code, category in _RUST_ERROR_CODES.items():
         if f"error[{code}]" in error_output:
             return category
-    # Fast path: C#/Roslyn error codes (e.g. "error CS0103:")
+    # Fast path: C#/Roslyn error codes. Anchor on the Roslyn prefix `error CSxxxx:`
+    # (emitted as `<path>(line,col): error CSxxxx:`) — a bare `CSxxxx:` substring in
+    # prose, a doc URL, or an assertion log must NOT hijack the classification.
     for code, category in _CSHARP_ERROR_CODES.items():
-        if f"{code}:" in error_output:
+        if f"error {code}:" in error_output:
             return category
 
     lower = error_output.lower()
