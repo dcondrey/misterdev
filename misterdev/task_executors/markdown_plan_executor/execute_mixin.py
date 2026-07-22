@@ -828,7 +828,7 @@ class ExecuteMixin:
                     if should_count_failure(output):
                         code_failures += 1
                     locations = resolver.resolve_errors(output)
-                    attributed_error = resolver.format_for_llm(locations)
+                    attributed_error = resolver.format_for_llm(locations, output)
                     classified = format_classified_error(output)
                     error_logs = self._build_error_context(
                         prior_errors,
@@ -853,7 +853,7 @@ class ExecuteMixin:
                     if should_count_failure(output):
                         code_failures += 1
                     locations = resolver.resolve_errors(output)
-                    attributed_error = resolver.format_for_llm(locations)
+                    attributed_error = resolver.format_for_llm(locations, output)
                     classified = format_classified_error(output)
                     error_logs = self._build_error_context(
                         prior_errors,
@@ -983,7 +983,7 @@ class ExecuteMixin:
                     if should_count_failure(output):
                         code_failures += 1
                     locations = resolver.resolve_errors(output)
-                    attributed_error = resolver.format_for_llm(locations)
+                    attributed_error = resolver.format_for_llm(locations, output)
                     classified = format_classified_error(output)
                     error_logs = self._build_error_context(
                         prior_errors,
