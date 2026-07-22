@@ -281,10 +281,12 @@ class EditsMixin:
                     return False, ""
                 return p.returncode == 0, (p.stdout or "") + (p.stderr or "")
 
-            # Score the largest edited non-test source file with a mutable changed
-            # region (the fix's main target). A SKIP (no mutable change, e.g. a
-            # whitespace-only or comment edit) falls through to the next candidate
-            # rather than aborting — the real fix may be in a smaller file.
+            # Score EVERY edited non-test source file with a mutable changed region,
+            # not just the largest: a multi-file fix's crux may be a small file, and
+            # a weak suite there is exactly what a single-file check misses. A SKIP
+            # (no mutable change, e.g. a whitespace-only or comment edit) is passed
+            # over; largest-first only orders the logs.
+            scored = 0
             for path in sorted(pre_edit, key=lambda p: len(pre_edit[p]), reverse=True):
                 if _is_test_file(path) or not (project.path / path).exists():
                     continue
@@ -301,18 +303,19 @@ class EditsMixin:
                 )
                 if res.status == SKIP:
                     continue
+                scored += 1
                 logger.info(f"Changed-region mutation [{path}]: {res.reason}")
                 if res.status == RED:
                     logger.warning(
                         f"Weak suite for {path}: the passing test barely constrains "
                         f"the fix — {res.reason}"
                     )
-                return
             # Enabled but nothing scorable: keep the seam observable, never silent.
-            logger.info(
-                "Changed-region mutation: no mutable source change to score "
-                f"(files: {sorted(pre_edit)})"
-            )
+            if scored == 0:
+                logger.info(
+                    "Changed-region mutation: no mutable source change to score "
+                    f"(files: {sorted(pre_edit)})"
+                )
         except Exception as e:  # advisory only — never fail a completed task
             logger.debug(f"Changed-region mutation check skipped: {e}")
 
