@@ -605,3 +605,32 @@ def test_live_web_runs_or_skips(tmp_path):
         pytest.skip(f"no browser available: {res.reason}")
     assert res.status == GREEN
     assert os.path.exists(res.evidence)
+
+
+def test_start_server_does_not_block_past_deadline_and_no_leak():
+    # A silent server that never signals readiness must not block readline past the
+    # deadline (which would leak the process past the gate's outer bound).
+    import threading
+    import time as _time
+    from pathlib import Path as _Path
+
+    from misterdev.core.verification.web_verify import _start_server, _terminate
+
+    result = {}
+
+    def run():
+        result["proc"] = _start_server(
+            _Path("."), "sleep 5", "NEVER_READY", _time.monotonic() + 0.3
+        )
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout=3)
+    try:
+        assert not t.is_alive(), "_start_server blocked past its deadline (leak)"
+        proc = result.get("proc")
+        assert proc is not None
+        _terminate(proc)
+        assert proc.poll() is not None  # terminated, not leaked
+    finally:
+        _terminate(result.get("proc"))
