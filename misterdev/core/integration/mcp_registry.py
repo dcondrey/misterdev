@@ -517,6 +517,7 @@ def select_curated(
     tiers=("core",),
     env: Optional[Dict[str, str]] = None,
     catalog: Optional[List[Dict[str, Any]]] = None,
+    categories: Optional[set] = None,
 ) -> List[Dict[str, Any]]:
     """Curated stdio configs for the requested tiers.
 
@@ -524,6 +525,8 @@ def select_curated(
     manual Go/Docker/OAuth entry) AND whose ``requires`` env vars are all
     present, so a keyed server (e.g. Postgres needing ``DATABASE_URI``) mounts
     only when it can actually run. ``tiers`` accepts ``"all"`` for every tier.
+    ``categories``, when given, further restricts to those catalog categories
+    (e.g. ``{"docs"}`` to mount only the documentation servers).
     """
     if env is None:
         import os
@@ -535,6 +538,8 @@ def select_curated(
     out: List[Dict[str, Any]] = []
     for entry in catalog:
         if want is not None and entry.get("tier") not in want:
+            continue
+        if categories is not None and entry.get("category") not in categories:
             continue
         command = entry.get("command")
         if not command or not isinstance(entry.get("args"), list):

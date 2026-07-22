@@ -167,6 +167,16 @@ class Project:
                 else ((curated,) if isinstance(curated, str) else tuple(curated))
             )
             servers.extend(select_curated(tiers))
+        elif mcp_cfg.get("docs_tool", True) and not self._host_exec_isolated():
+            # Mount the documentation tool (context7/fetch) by DEFAULT so the model
+            # looks up version-pinned library docs instead of hallucinating APIs.
+            # Docs-category core servers only (not the full curated stack); opt out
+            # with mcp.docs_tool: false, or take the whole stack via mcp.curated.
+            # Gated by isolation: these npx-provisioned servers fetch from the
+            # network on the host, refused under network=none/container like discovery.
+            from misterdev.core.integration.mcp_registry import select_curated
+
+            servers.extend(select_curated(("core",), categories={"docs"}))
         # On-the-fly discovery: search the free official registry for servers
         # matching each capability query and append the trusted, locally-
         # runnable ones (npx/uvx stdio). Best-effort; never blocks the build.

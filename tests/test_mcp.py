@@ -278,13 +278,21 @@ def test_project_mcp_on_demand_manager_without_config(tmp_path):
     from misterdev.core.execution.project import Project
 
     proj = Project(tmp_path, {"name": "p"})
-    assert proj.mcp is not None and proj.mcp.servers == []
+    # The docs tool (context7/fetch) mounts by default (T2.4); the on-demand FIND
+    # loop can still mount more into the same manager.
+    assert proj.mcp is not None
+    assert {"context7", "fetch"} <= {s["name"] for s in proj.mcp.servers}
 
     isolated = Project(tmp_path, {"name": "p", "governance": {"network": "none"}})
-    assert isolated.mcp is None
+    assert (
+        isolated.mcp is None
+    )  # isolation refuses host provisioning (docs + on-demand)
 
-    off = Project(tmp_path, {"name": "p", "mcp": {"discover_on_demand": False}})
-    assert off.mcp is None  # nothing configured and on-demand explicitly off
+    off = Project(
+        tmp_path,
+        {"name": "p", "mcp": {"discover_on_demand": False, "docs_tool": False}},
+    )
+    assert off.mcp is None  # fully opted out -> nothing to mount
 
 
 def test_project_mcp_built_from_config(tmp_path, server_path):
