@@ -123,6 +123,81 @@ class ParallelExecutionMixin:
         projects; overridable via ``orchestrator.worktree_healthcheck_command``)."""
         return worktree_healthcheck_command(project.config, project.path)
 
+    def _prepare_task_worktree(
+        self,
+        project,
+        git,
+        task,
+        wt_root,
+        clone_deps,
+        health_cmd,
+        setup_cmd,
+        setup_timeout,
+        cmd_tool,
+    ):
+        """Create + prime one task's worktree. Returns ``(prep, error)`` where
+        ``prep`` is ``(task, wt_path, branch)`` on success and ``error`` is set on
+        failure (with the worktree already torn down).
+
+        A prep step (clone-prime / install / healthcheck) that RAISES after the
+        worktree was created would otherwise leak that worktree — the wave cleanup
+        only iterates fully-prepared tasks. Tear it down here so the leak can't
+        happen, and surface the task as errored instead of aborting the batch.
+        """
+        import uuid
+
+        # A run-unique branch name (never a bare ``task/<id>``): a leftover branch
+        # from a prior failed run must not collide with this run's ``-b`` create.
+        # The unique branch is cut fresh from HEAD, so it carries the latest
+        # committed work (including earlier sub-waves).
+        run_id = uuid.uuid4().hex[:6]
+        branch = f"task/{task.id}-{run_id}"
+        wt_path = wt_root / f"{task.id}-{run_id}"
+        ok, out = git.worktree_add(project, str(wt_path), branch, new_branch=True)
+        if not ok:
+            logger.error(f"Worktree add failed for {task.id}: {out}")
+            return None, RuntimeError(f"worktree add failed: {out}")
+        try:
+            # Prime deps ONCE here (serially, off the parallel gate path) so the
+            # gate tests code, not install speed. Prefer a near-instant CoW clone
+            # of the base node_modules; that path self-verifies with the probe.
+            primed = False
+            if clone_deps:
+                primed = self._prime_worktree_by_clone(
+                    project, task, wt_path, health_cmd, setup_timeout, cmd_tool
+                )
+            # Install fallback: clone unavailable/declined or it failed the probe.
+            # Best-effort — the gate's own implicit install is the backstop.
+            if not primed and cmd_tool is not None and setup_cmd:
+                sok, sout = cmd_tool.execute(
+                    project, setup_cmd, cwd=str(wt_path), timeout=setup_timeout
+                )
+                if not sok:
+                    logger.warning(
+                        f"Worktree dep prep failed for {task.id} "
+                        f"(gate will fall back to its own install): {sout[-200:]}"
+                    )
+            # A clone already passed the sanity probe; only the install path needs
+            # the re-prime-once healthcheck.
+            if not primed:
+                self._worktree_healthcheck(
+                    project,
+                    task,
+                    wt_path,
+                    setup_cmd,
+                    health_cmd,
+                    setup_timeout,
+                    cmd_tool,
+                )
+            return (task, wt_path, branch), None
+        except Exception as e:
+            logger.error(
+                f"Worktree prep raised for {task.id}; tearing down to avoid a leak: {e}"
+            )
+            git.worktree_remove(project, str(wt_path))
+            git.branch_delete(project, branch)
+            return None, e
+
     def _worktree_healthcheck(
         self, project, task, wt_path, setup_cmd, health_cmd, timeout, cmd_tool
     ) -> None:
@@ -259,7 +334,6 @@ class ParallelExecutionMixin:
         ``_worktree_setup_command``) so the parallel gates test code, not install
         speed.
         """
-        import uuid
         from misterdev.tools.command import CommandTool
         from misterdev.tools.git_tool import GitTool
 
@@ -326,57 +400,21 @@ class ParallelExecutionMixin:
         for batch in batches:
             prepared: list = []
             for task in batch:
-                # A run-unique branch name (never a bare ``task/<id>``): a leftover
-                # branch from a prior failed run must not collide with this run's
-                # ``-b`` create, which would fail the worktree and the task. The
-                # unique branch is always cut fresh from the current HEAD, so it
-                # carries the latest committed work (including earlier sub-waves).
-                run_id = uuid.uuid4().hex[:6]
-                branch = f"task/{task.id}-{run_id}"
-                wt_path = wt_root / f"{task.id}-{run_id}"
-                ok, out = git.worktree_add(
-                    project, str(wt_path), branch, new_branch=True
+                prep, err = self._prepare_task_worktree(
+                    project,
+                    git,
+                    task,
+                    wt_root,
+                    clone_deps,
+                    health_cmd,
+                    setup_cmd,
+                    setup_timeout,
+                    cmd_tool,
                 )
-                if not ok:
-                    logger.error(f"Worktree add failed for {task.id}: {out}")
-                    results.append(
-                        (task, None, RuntimeError(f"worktree add failed: {out}"))
-                    )
-                    continue
-                # Prime deps ONCE here (serially, off the parallel gate path) so the
-                # gate tests code, not install speed. Prefer a near-instant CoW clone
-                # of the base node_modules; that path self-verifies with the probe.
-                primed = False
-                if clone_deps:
-                    primed = self._prime_worktree_by_clone(
-                        project, task, wt_path, health_cmd, setup_timeout, cmd_tool
-                    )
-                # Install fallback: clone unavailable/declined or it failed the
-                # probe. Best-effort — if it fails, the gate's own implicit install
-                # is the backstop; never drop the task over setup.
-                if not primed and cmd_tool is not None and setup_cmd:
-                    sok, sout = cmd_tool.execute(
-                        project, setup_cmd, cwd=str(wt_path), timeout=setup_timeout
-                    )
-                    if not sok:
-                        logger.warning(
-                            f"Worktree dep prep failed for {task.id} "
-                            f"(gate will fall back to its own install): {sout[-200:]}"
-                        )
-                # A clone already passed the sanity probe; only the install path
-                # needs the re-prime-once healthcheck, which surfaces a broken/
-                # partial install as an ENVIRONMENT fault rather than a code failure.
-                if not primed:
-                    self._worktree_healthcheck(
-                        project,
-                        task,
-                        wt_path,
-                        setup_cmd,
-                        health_cmd,
-                        setup_timeout,
-                        cmd_tool,
-                    )
-                prepared.append((task, wt_path, branch))
+                if prep is not None:
+                    prepared.append(prep)
+                elif err is not None:
+                    results.append((task, None, err))
 
             raw = []
             if prepared:
