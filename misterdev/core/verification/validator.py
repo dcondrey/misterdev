@@ -305,15 +305,17 @@ def _parse_test_counts(output: str) -> Tuple[int, int]:
     if m:
         f, total = int(m.group(1)), int(m.group(2))
         return total, f
-    # dotnet test (VSTest): "Failed: N, Passed: M, Skipped: K, Total: T"
-    fm = re.search(r"Failed:\s*(\d+)", output)
-    tm = re.search(r"Total:\s*(\d+)", output)
-    if fm and tm:
-        return int(tm.group(1)), int(fm.group(1))
-    # dotnet test (alt): "Total tests: T. Passed: M. Failed: N."
-    m = re.search(r"Total tests:\s*(\d+)\..*?Failed:\s*(\d+)", output, re.DOTALL)
-    if m:
-        return int(m.group(1)), int(m.group(2))
+    # dotnet test (VSTest): "Failed: N, Passed: M, Skipped: K, Total: T" — SUM every
+    # project's block, like the pytest/cargo branches, so a multi-project solution is
+    # not undercounted to its first project (which would hide a regression).
+    fails = re.findall(r"Failed:\s*(\d+)", output)
+    totals = re.findall(r"Total:\s*(\d+)", output)
+    if fails and totals:
+        return sum(int(n) for n in totals), sum(int(n) for n in fails)
+    # dotnet test (alt): "Total tests: T. Passed: M. Failed: N." — sum all blocks.
+    alt = re.findall(r"Total tests:\s*(\d+)\..*?Failed:\s*(\d+)", output, re.DOTALL)
+    if alt:
+        return sum(int(t) for t, _ in alt), sum(int(f) for _, f in alt)
     # node --test: "ℹ tests N" / "ℹ fail K" (default reporter) or the TAP
     # equivalent "# tests N" / "# fail K".
     tm = re.search(r"(?:ℹ|#)\s*tests\s+(\d+)", output)
