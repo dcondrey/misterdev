@@ -337,8 +337,9 @@ class ExecuteMixin:
                     project, branch_name, base_branch, snapshot, untracked_before
                 )
                 return self._escalate_decompose(project, task, error_logs)
-            widen_context = rung in ("widen_context", "stronger_model")
+            widen_context = rung in ("widen_context", "full_rewrite", "stronger_model")
             force_stronger = rung == "stronger_model"
+            force_full_rewrite = rung == "full_rewrite"
             # Diagnostic: sizes of the context that ACCUMULATES across attempts,
             # so growth (or a runaway component) is visible per retry.
             logger.debug(
@@ -498,6 +499,8 @@ class ExecuteMixin:
                 full_code_context += self._escalation_spec_block(
                     project, task, target_files
                 )
+            if force_full_rewrite:
+                full_code_context += self._full_rewrite_directive(target_files)
             full_code_context += self._mcp_awareness(project)
 
             guidance_context = " ".join(
@@ -1162,6 +1165,9 @@ class ExecuteMixin:
             widen_after=get_setting(
                 project.config, "orchestrator", "escalation_widen_after"
             ),
+            rewrite_after=get_setting(
+                project.config, "orchestrator", "escalation_rewrite_after"
+            ),
             model_after=get_setting(
                 project.config, "orchestrator", "escalation_model_after"
             ),
@@ -1189,6 +1195,25 @@ class ExecuteMixin:
                 f"and their call sites are listed)\n{listed}"
             )
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _full_rewrite_directive(target_files) -> str:
+        """The directive injected at the full_rewrite rung — a structurally
+        different attempt.
+
+        Incremental SEARCH/REPLACE patching has failed repeatedly (the model keeps
+        mis-anchoring against the view). Instruct it to abandon patching and emit
+        the COMPLETE new contents of the target file(s) from scratch, so the next
+        attempt is a different kind of edit rather than another reprompt."""
+        listed = "\n".join(f"- {f}" for f in (target_files or []))
+        return (
+            "\n\n## Escalation — FULL REWRITE (incremental patches keep failing)\n"
+            "Stop patching. Do NOT produce small SEARCH/REPLACE edits — they have "
+            "failed to land repeatedly. Instead, rewrite the COMPLETE, final "
+            "contents of each target file below from scratch (the whole file), "
+            "correct and self-consistent, satisfying the acceptance criteria:\n"
+            f"{listed}"
+        )
 
     @staticmethod
     def _decompose_substeps(task: Task) -> list:

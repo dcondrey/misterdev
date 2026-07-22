@@ -342,7 +342,13 @@ class OrchestratorSettings:
     # Bounded and config-driven; thresholds are cumulative code-failure counts.
     escalation_enabled: bool = True
     escalation_widen_after: int = 1
-    escalation_model_after: int = 2
+    # full_rewrite rung: after this many code failures, stop patching and rewrite
+    # the whole target region from scratch — a structurally different attempt.
+    escalation_rewrite_after: int = 2
+    # model/decompose coincide at 3 by default so a 3-attempt task climbs
+    # normal -> widen -> full_rewrite and decomposes at exhaustion; raise
+    # decompose_after to make the stronger_model rung reachable.
+    escalation_model_after: int = 3
     escalation_decompose_after: int = 3
     # The stronger model id to route generation to at the model rung (None -> keep
     # the routed/default model, i.e. that rung only widens context).

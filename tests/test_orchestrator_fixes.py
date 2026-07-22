@@ -1883,14 +1883,16 @@ def test_escalation_rung_reads_config_thresholds():
     project.config = {
         "orchestrator": {
             "escalation_widen_after": 2,
-            "escalation_model_after": 3,
-            "escalation_decompose_after": 4,
+            "escalation_rewrite_after": 3,
+            "escalation_model_after": 4,
+            "escalation_decompose_after": 5,
         }
     }
     assert ex._escalation_rung(project, 1) == "normal"
     assert ex._escalation_rung(project, 2) == "widen_context"
-    assert ex._escalation_rung(project, 3) == "stronger_model"
-    assert ex._escalation_rung(project, 4) == "decompose"
+    assert ex._escalation_rung(project, 3) == "full_rewrite"
+    assert ex._escalation_rung(project, 4) == "stronger_model"
+    assert ex._escalation_rung(project, 5) == "decompose"
 
 
 def test_decompose_substeps_from_acceptance_then_fallback():
