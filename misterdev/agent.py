@@ -25,6 +25,7 @@ from misterdev.core.planning.assessment import (
 from misterdev.core.context.scratchpad import Scratchpad
 from misterdev.core.planning.decomposer import (
     decompose_spec,
+    split_keystone_tasks,
     topological_sort,
     format_plan,
 )
@@ -1380,6 +1381,9 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
             targets=targets,
             staging_hint=self._staging_hint(project),
         )
+        # Proactively split a high-fan-in keystone before ordering, so its whole
+        # fan-out is not blocked on one all-or-nothing attempt.
+        tasks = split_keystone_tasks(tasks)
         tasks = topological_sort(tasks)
 
         if flags.dry_run:

@@ -361,6 +361,91 @@ def enforce_task_invariants(tasks: list[Task], max_files: int = 20) -> list[Task
     return tasks
 
 
+def _partition(items: list, n: int) -> list:
+    """Split ``items`` into ``n`` contiguous, near-equal chunks."""
+    k, m = divmod(len(items), n)
+    out, start = [], 0
+    for i in range(n):
+        size = k + (1 if i < m else 0)
+        out.append(items[start : start + size])
+        start += size
+    return out
+
+
+def split_keystone_tasks(
+    tasks: list[Task], *, fanin_threshold: int = 3, min_units: int = 2
+) -> list[Task]:
+    """Proactively split a keystone (high-fan-in) task into chained sub-units.
+
+    A keystone — a task many others depend on — landing all its behavior in one
+    attempt has a low per-attempt success rate AND blocks its whole fan-out on that
+    single attempt. When such a task touches at least ``min_units`` files it is
+    split BEFORE execution into smaller sub-tasks partitioned by file and chained in
+    order; every task that depended on the keystone is rewired to depend on the
+    FINAL sub-unit, so the dependency semantics are preserved (dependents still wait
+    for all of the keystone's work). Pure: no LLM, no I/O. A task with fewer than
+    ``fanin_threshold`` dependents, or too few files to partition, is unchanged.
+    """
+    by_id = {t.id: t for t in tasks}
+    dependents: dict[str, list[str]] = {t.id: [] for t in tasks}
+    for t in tasks:
+        for dep in t.dependencies:
+            if dep in by_id:
+                dependents[dep].append(t.id)
+
+    plans: dict[str, list[Task]] = {}
+    for t in tasks:
+        seen: set = set()
+        files = [
+            f
+            for f in (list(t.files_to_create) + list(t.files_to_modify))
+            if f and not (f in seen or seen.add(f))
+        ]
+        if len(dependents[t.id]) < fanin_threshold or len(files) < min_units:
+            continue
+        creates = set(t.files_to_create)
+        chunks = _partition(files, min_units)
+        subs: list[Task] = []
+        for i, chunk in enumerate(chunks):
+            subs.append(
+                Task(
+                    id=f"{t.id}-part{i + 1}",
+                    title=(t.title or t.id) + f" (part {i + 1}/{len(chunks)})",
+                    description=t.description,
+                    acceptance_criteria=t.acceptance_criteria,
+                    files_to_create=[f for f in chunk if f in creates],
+                    files_to_modify=[f for f in chunk if f not in creates],
+                    context_files=list(t.context_files),
+                    dependencies=(
+                        list(t.dependencies) if i == 0 else [f"{t.id}-part{i}"]
+                    ),
+                    complexity=t.complexity,
+                    category=t.category,
+                    type=t.type,
+                    status="pending",
+                    project_ref=t.project_ref,
+                    processor_data=(
+                        dict(t.processor_data)
+                        if isinstance(t.processor_data, dict)
+                        else {}
+                    ),
+                )
+            )
+        plans[t.id] = subs
+
+    if not plans:
+        return tasks
+
+    # A dependency on a split keystone now points at that keystone's FINAL sub-unit.
+    final_of = {kid: subs[-1].id for kid, subs in plans.items()}
+    result: list[Task] = []
+    for t in tasks:
+        result.extend(plans[t.id] if t.id in plans else [t])
+    for t in result:
+        t.dependencies = [final_of.get(d, d) for d in t.dependencies]
+    return result
+
+
 def _add_implicit_dependencies(tasks: list[Task]) -> None:
     """If task B modifies a file that task A creates, B depends on A."""
     creates_map: dict[str, str] = {}
