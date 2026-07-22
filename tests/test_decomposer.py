@@ -242,3 +242,29 @@ def test_decompose_includes_targets_when_present():
     )
     assert "clients/web/" in captured["prompt"]
     assert "ONE target" in captured["prompt"]
+
+
+def test_cap_prunes_dangling_dependency_on_dropped_task():
+    from misterdev.core.models import Task
+    from misterdev.core.planning.decomposer import _cap_tasks
+
+    def _t(tid, deps=None):
+        return Task(id=tid, description="x", project_ref=".", dependencies=list(deps or []))
+
+    # C is the 3rd task -> dropped at cap 2; A's dependency on it must be pruned.
+    tasks = [_t("A", deps=["C"]), _t("B"), _t("C")]
+    out = _cap_tasks(tasks, 2)
+    assert [x.id for x in out] == ["A", "B"]
+    assert out[0].dependencies == []
+
+
+def test_cap_noop_under_limit_preserves_deps():
+    from misterdev.core.models import Task
+    from misterdev.core.planning.decomposer import _cap_tasks
+
+    tasks = [
+        Task(id="A", description="x", project_ref=".", dependencies=["B"]),
+        Task(id="B", description="x", project_ref="."),
+    ]
+    assert _cap_tasks(tasks, 5) is tasks
+    assert tasks[0].dependencies == ["B"]

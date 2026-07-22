@@ -231,13 +231,12 @@ def decompose_spec(
     # repo). Run before dependency detection so reclassified files participate.
     _ground_task_paths(tasks, project_ref)
 
-    # Detect implicit dependencies from file overlaps
-    _add_implicit_dependencies(tasks)
+    # Cap BEFORE wiring implicit deps so overlap-derived edges are only drawn among
+    # kept tasks, and prune any explicit dep pointing at a trimmed task.
+    tasks = _cap_tasks(tasks, max_tasks)
 
-    # Validate and cap
-    if len(tasks) > max_tasks:
-        logger.warning(f"LLM returned {len(tasks)} tasks, capping at {max_tasks}")
-        tasks = tasks[:max_tasks]
+    # Detect implicit dependencies from file overlaps (kept tasks only)
+    _add_implicit_dependencies(tasks)
 
     # Flag any task that breaks the size/verifiability invariant so the executor
     # can split or reject it rather than silently trying to land it in one attempt.
@@ -323,6 +322,35 @@ def _ground_task_paths(tasks: list[Task], project_ref: str) -> None:
             else:
                 still_create.append(f)
         t.files_to_create = still_create
+
+
+def _cap_tasks(tasks: list[Task], max_tasks: int) -> list[Task]:
+    """Cap the task list to ``max_tasks`` and drop any dependency that now points
+    at a trimmed task.
+
+    Trimming after dependency wiring would leave a surviving task depending on a
+    task that no longer exists; topological_sort ignores unknown deps, so the
+    survivor would be treated as if that (never-run) prerequisite were satisfied.
+    Pruning the dangling edge makes the loss explicit instead of silent.
+    """
+    if len(tasks) <= max_tasks:
+        return tasks
+    kept = tasks[:max_tasks]
+    dropped = {t.id for t in tasks[max_tasks:]}
+    depended_on = dropped & {d for t in kept for d in t.dependencies}
+    logger.warning(
+        "Decomposer: %d tasks > cap %d; dropping %s%s.",
+        len(tasks),
+        max_tasks,
+        sorted(dropped),
+        f" (some were depended-on, edges pruned: {sorted(depended_on)})"
+        if depended_on
+        else "",
+    )
+    kept_ids = {t.id for t in kept}
+    for t in kept:
+        t.dependencies = [d for d in t.dependencies if d in kept_ids]
+    return kept
 
 
 def enforce_task_invariants(tasks: list[Task], max_files: int = 20) -> list[Task]:
