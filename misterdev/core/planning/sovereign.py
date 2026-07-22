@@ -260,13 +260,21 @@ class RealTimeAligner:
         self._load()
 
     def _load(self):
-        if self.cert_file.exists():
-            try:
-                self.data = json.loads(self.cert_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                self.data = {"invariants": [], "decisions": []}
-        else:
-            self.data = {"invariants": [], "decisions": []}
+        self.data = {"invariants": [], "decisions": []}
+        if not self.cert_file.exists():
+            return
+        try:
+            loaded = json.loads(self.cert_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+        # Valid JSON of the WRONG shape (a list, a scalar, or a dict missing the
+        # expected keys) would crash certify_decision/get_consensus_context later.
+        # Normalize: keep only list-valued invariants/decisions, default the rest.
+        if isinstance(loaded, dict):
+            for key in ("invariants", "decisions"):
+                value = loaded.get(key)
+                if isinstance(value, list):
+                    self.data[key] = value
 
     def certify_decision(self, decision: str, rationale: str):
         """Records a certified project decision to keep future tasks aligned."""
