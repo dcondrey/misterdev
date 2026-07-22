@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Any
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from misterdev.utils.file_utils import read_file, is_golden_path
 
@@ -665,12 +665,27 @@ class SymbolGraph:
                     symbol.outgoing_calls.add(other_key)
                     self.symbols[other_key].incoming_calls.add(key)
 
+    def _file_index(self) -> Dict[str, List[Tuple[str, SymbolNode]]]:
+        """Per-file ``[(key, node)]`` index, memoized, sorted by start line.
+
+        The file-scoped queries below were each a full O(all-symbols) scan; on a
+        large repo that is O(errors x symbols) / O(files x symbols) across a run.
+        The index is rebuilt only when ``self.symbols`` is replaced or resized
+        (``build()`` swaps the whole dict), keyed on ``(id, len)``."""
+        key = (id(self.symbols), len(self.symbols))
+        if getattr(self, "_file_index_key", None) != key:
+            idx: Dict[str, List[Tuple[str, SymbolNode]]] = {}
+            for skey, s in self.symbols.items():
+                idx.setdefault(s.file_path, []).append((skey, s))
+            for entries in idx.values():
+                entries.sort(key=lambda kv: kv[1].start_line)
+            self._file_index_cache = idx
+            self._file_index_key = key
+        return self._file_index_cache
+
     def file_symbols(self, file_path: str) -> List[SymbolNode]:
         """Symbols defined in one file, ordered by start line."""
-        return sorted(
-            (s for s in self.symbols.values() if s.file_path == file_path),
-            key=lambda s: s.start_line,
-        )
+        return [s for _key, s in self._file_index().get(file_path, [])]
 
     def _match_files(self, file_path: str) -> Set[str]:
         """Graph file paths an error path refers to: an exact match when present,
@@ -678,13 +693,11 @@ class SymbolGraph:
         cwd (``src/app.ts``) still resolves against the root-relative key
         (``frontend/src/app.ts``). An ambiguous suffix yields no match rather
         than a wrong one."""
-        exact = {s.file_path for s in self.symbols.values() if s.file_path == file_path}
-        if exact:
-            return exact
+        idx = self._file_index()
+        if file_path in idx:
+            return {file_path}
         suffix = "/" + file_path
-        matches = {
-            s.file_path for s in self.symbols.values() if s.file_path.endswith(suffix)
-        }
+        matches = {f for f in idx if f.endswith(suffix)}
         return matches if len(matches) == 1 else set()
 
     def symbol_at_line(self, file_path: str, line: int) -> Optional[str]:
@@ -699,16 +712,16 @@ class SymbolGraph:
         if not files:
             return None
         row = line - 1
+        idx = self._file_index()
         best_key: Optional[str] = None
         best_span: Optional[int] = None
-        for key, sym in self.symbols.items():
-            if sym.file_path not in files:
-                continue
-            if sym.start_line <= row <= sym.end_line:
-                span = sym.end_line - sym.start_line
-                if best_span is None or span < best_span:
-                    best_span = span
-                    best_key = key
+        for f in files:
+            for skey, sym in idx.get(f, []):
+                if sym.start_line <= row <= sym.end_line:
+                    span = sym.end_line - sym.start_line
+                    if best_span is None or span < best_span:
+                        best_span = span
+                        best_key = skey
         return best_key
 
     def callers_of(self, key: str) -> List[str]:
