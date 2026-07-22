@@ -1949,7 +1949,11 @@ def test_escalate_decompose_returns_deferred_with_named_substeps():
         title="Big",
         acceptance_criteria="- part a does X\n- part b does Y\n",
     )
-    res = MarkdownPlanExecutor()._escalate_decompose(MagicMock(), t, "last error")
+    # At depth >= 1 (a sub-step's own decompose) the base case still records the
+    # named sub-steps and defers rather than recursing (T4.1 recursion guard).
+    res = MarkdownPlanExecutor()._escalate_decompose(
+        MagicMock(), t, "last error", _depth=1
+    )
     assert res.status == "deferred"
     assert len(res.questions) >= 2  # named sub-steps surfaced as the decomposition
     assert t.processor_data["_escalation_decomposed"] is True

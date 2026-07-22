@@ -336,7 +336,13 @@ class ExecuteMixin:
                 self._abort_task(
                     project, branch_name, base_branch, snapshot, untracked_before
                 )
-                return self._escalate_decompose(project, task, error_logs)
+                return self._escalate_decompose(
+                    project,
+                    task,
+                    error_logs,
+                    use_git_branch=use_git_branch,
+                    _depth=_depth,
+                )
             widen_context = rung in ("widen_context", "full_rewrite", "stronger_model")
             force_stronger = rung == "stronger_model"
             force_full_rewrite = rung == "full_rewrite"
@@ -1244,17 +1250,73 @@ class ExecuteMixin:
             f"Wire the remaining behavior of '{label}' on top, keeping the suite green",
         ]
 
-    def _escalate_decompose(self, project: Project, task: Task, error_logs):
-        """Top escalation rung: stop retrying and request a decomposition.
+    def _build_substep_tasks(self, task: Task, substeps: list) -> list:
+        """Real child Tasks for a decomposed task's sub-steps.
 
-        Records named sub-steps on the task and parks it (deferred) with a
-        decomposition request, so the convergence loop re-decomposes it into
-        runnable sub-tasks instead of the run dead-ending on an over-large task.
-        The caller has already reverted this task's work, so nothing is left behind.
+        Each child carries one sub-step as both its description AND its acceptance
+        criterion (so it runs the full per-task gate), scoped to the parent's files,
+        and flagged as an escalation sub-step so it is never itself re-decomposed."""
+        # The task reaching the decompose rung may be a duck object, so read every
+        # optional field defensively.
+        creates = list(getattr(task, "files_to_create", []) or [])
+        modifies = list(getattr(task, "files_to_modify", []) or [])
+        ctx = list(getattr(task, "context_files", []) or [])
+        children = []
+        for i, step in enumerate(substeps):
+            children.append(
+                Task(
+                    id=f"{task.id}-sub{i + 1}",
+                    title=step[:80],
+                    description=step,
+                    acceptance_criteria=step,
+                    files_to_create=creates,
+                    files_to_modify=modifies,
+                    context_files=ctx,
+                    complexity=getattr(task, "complexity", "medium"),
+                    category=getattr(task, "category", "feature"),
+                    type=getattr(task, "type", "markdown_planner"),
+                    status="pending",
+                    project_ref=getattr(task, "project_ref", "."),
+                    processor_data={"_is_escalation_substep": True, "parent": task.id},
+                )
+            )
+        return children
+
+    def _escalate_decompose(
+        self,
+        project: Project,
+        task: Task,
+        error_logs,
+        *,
+        use_git_branch: bool = True,
+        _depth: int = 0,
+    ):
+        """Top escalation rung: split the too-large task into named sub-steps and
+        EXECUTE each as a real child task (running the full per-task gate pipeline).
+
+        Guarded by ``_depth``: a sub-step runs at depth+1 and can never itself
+        re-decompose, so recursion is bounded to one level. If every sub-step
+        completes, the parent is satisfied; otherwise (or at depth >= 1) the task is
+        parked (deferred) with the decomposition request as before. The caller has
+        already reverted this task's work, so the children start from a clean base.
         """
         substeps = self._decompose_substeps(task)
         task.processor_data["_escalation_decomposed"] = True
         task.processor_data["escalation_substeps"] = substeps
+        if _depth < 1 and substeps:
+            results = [
+                self.execute(
+                    child, project, use_git_branch=use_git_branch, _depth=_depth + 1
+                )
+                for child in self._build_substep_tasks(task, substeps)
+            ]
+            if results and all(r.status == "completed" for r in results):
+                return self._complete_task(
+                    project,
+                    task,
+                    f"Completed via {len(results)} executed sub-step(s).",
+                    error_logs or "",
+                )
         reason = (
             f"escalated to decomposition: '{task.title or task.id}' failed "
             "repeatedly and is too large to land in one edit. Split it into the "
