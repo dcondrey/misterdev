@@ -415,10 +415,14 @@ class ExecuteMixin:
 
             # Budget-aware context allocation using configured token limit
             budget = ContextBudget(max_tokens=context_budget_tokens)
-            budget.set("code_context", code_context, priority=1)
+            # The edit region: the exact lines a SEARCH/REPLACE must match, kept
+            # verbatim so the model never edits blind against a dropped tail.
+            budget.set("code_context", code_context, priority=1, truncatable=False)
             # Correctness-critical: the complete reference set must survive
             # truncation, or a rename/delete misses sites and the build fails.
-            budget.set("reference_sites", reference_sites, priority=1, min_lines=0)
+            budget.set(
+                "reference_sites", reference_sites, priority=1, truncatable=False
+            )
             # The self-authored reproduction test IS the task's concrete target;
             # it must survive truncation so the model always edits toward it.
             budget.set("spec_test", spec_test_source or "", priority=1, min_lines=0)

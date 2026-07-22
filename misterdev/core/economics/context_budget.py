@@ -76,11 +76,22 @@ class ContextBudget:
         self.available = max_tokens - reserved_tokens
         self._sections: Dict[str, _Section] = {}
 
-    def set(self, name: str, content: str, priority: int = 2, min_lines: int = 10):
+    def set(
+        self,
+        name: str,
+        content: str,
+        priority: int = 2,
+        min_lines: int = 10,
+        truncatable: bool = True,
+    ):
         """Register a context section.
 
         priority: 1 = essential (truncate last), 2 = important, 3 = nice-to-have (truncate first)
         min_lines: minimum lines to keep even under pressure
+        truncatable: when False the section is kept VERBATIM even under budget
+            pressure (never trimmed, no elision marker). Use for the edit region —
+            the exact lines a SEARCH/REPLACE edit must match — where a dropped tail
+            makes the model edit blind against spans it can no longer see.
         """
         self._sections[name] = _Section(
             name=name,
@@ -88,6 +99,7 @@ class ContextBudget:
             priority=priority,
             min_lines=min_lines,
             tokens=estimate_tokens(content),
+            truncatable=truncatable,
         )
 
     def allocate(self) -> Dict[str, str]:
@@ -113,6 +125,14 @@ class ContextBudget:
 
         for section in by_priority:
             if overflow <= 0:
+                result[section.name] = section.content
+                continue
+
+            # The edit region (and anything marked truncatable=False) is kept
+            # verbatim even under pressure: a dropped tail makes the model edit
+            # blind against spans it can no longer see. Truncatable sections then
+            # absorb the overflow instead.
+            if not section.truncatable:
                 result[section.name] = section.content
                 continue
 
@@ -148,13 +168,20 @@ class ContextBudget:
 
 class _Section:
     def __init__(
-        self, name: str, content: str, priority: int, min_lines: int, tokens: int
+        self,
+        name: str,
+        content: str,
+        priority: int,
+        min_lines: int,
+        tokens: int,
+        truncatable: bool = True,
     ):
         self.name = name
         self.content = content
         self.priority = priority
         self.min_lines = min_lines
         self.tokens = tokens
+        self.truncatable = truncatable
 
 
 def _truncate_to_tokens(lines: list, target_tokens: int, name: str) -> str:
