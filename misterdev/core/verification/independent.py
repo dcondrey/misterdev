@@ -52,10 +52,21 @@ def build_independent_call(
         return None
 
     can_switch = hasattr(llm_client, "with_model")
+    # A judge model that equals the generator's own model is NOT independence: it
+    # routes to the same weights and shares the same blind spots. Detect it so the
+    # weaker case is surfaced instead of silently masquerading as an independent
+    # check, and do not bother switching to the identical model.
+    same_model = bool(model) and model == getattr(llm_client, "model", None)
     if model and not can_switch:
         logger.warning(
             f"{role}: an independent model is set but the client cannot switch "
             f"models; running on the generator's own model (weaker independence)."
+        )
+    elif same_model:
+        logger.warning(
+            f"{role}: the configured model ({model}) is the SAME as the generator's "
+            f"model, so this judgment shares the generator's blind spots (no real "
+            f"independence). Set a DIFFERENT model for a stronger, independent check."
         )
     elif not model and role not in _INDEPENDENCE_NOTED:
         _INDEPENDENCE_NOTED.add(role)
@@ -65,7 +76,7 @@ def build_independent_call(
             f"set a different model for it in project.yaml. Noted once per run."
         )
 
-    effective = model if (model and can_switch) else None
+    effective = model if (model and can_switch and not same_model) else None
 
     def _call(prompt: str) -> str:
         return generate_independent(llm_client, prompt, system, model=effective)
