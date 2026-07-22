@@ -222,6 +222,32 @@ class ContextMixin:
             logger.debug(f"Solved-task warm-start skipped: {e}")
             return ""
 
+    def _failure_priors(self, project: Project, task: Task) -> str:
+        """Runtime read-back of this project's FailureLog for THIS task, or "".
+
+        The FailureLog was write-only at runtime (read only by the evolution loop);
+        this closes the loop within a run: a task that already failed sees its own
+        prior failures (by task id) so a later attempt does not rediscover the same
+        error. Best-effort — a missing/unreadable log or no match degrades to "".
+        """
+        try:
+            from misterdev.core.learning.failure_log import FailureLog
+
+            records = FailureLog(
+                project.path / ".orchestrator" / "failures.jsonl"
+            ).load()
+            mine = [r for r in records if r.name == task.id and r.error]
+            if not mine:
+                return ""
+            lines = ["## Prior failures of this task (do NOT repeat these):"]
+            for r in mine[::-1][:3]:  # most recent first, capped
+                cat = f"[{r.category}] " if r.category else ""
+                lines.append(f"- {cat}{r.error.strip()[:300]}")
+            return "\n".join(lines)
+        except Exception as e:  # read-back is best-effort; never sink the build
+            logger.debug(f"Failure-prior read-back skipped: {e}")
+            return ""
+
     def _localize_target_files(self, project: Project, task: Task) -> List[str]:
         """Find edit targets for a task that declares none, or [].
 

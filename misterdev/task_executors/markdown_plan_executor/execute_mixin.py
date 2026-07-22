@@ -275,6 +275,11 @@ class ExecuteMixin:
         # matches. Closes the learning loop at the executor, not just the planner.
         solved_priors = self._solved_task_priors(project, task)
 
+        # Runtime read-back of this task's own prior failures (T5.1): a later attempt
+        # sees what already went wrong this run instead of rediscovering it. "" when
+        # the FailureLog has nothing for this task.
+        failure_priors = self._failure_priors(project, task)
+
         # Shared task-list preamble: the global conventions a numbered devplan
         # states once up front (canonical constants, locked dependency versions,
         # "never guess" rules) that every task must honor. The tasklist parser
@@ -443,6 +448,7 @@ class ExecuteMixin:
             budget.set("error_logs", error_logs or "", priority=1, min_lines=20)
             budget.set("scratchpad", scratchpad_context, priority=3)
             budget.set("solved_priors", solved_priors, priority=3, min_lines=0)
+            budget.set("failure_priors", failure_priors, priority=2, min_lines=0)
             # The user's own directive for this task must survive truncation.
             budget.set("user_answer", user_answer, priority=1, min_lines=0)
             budget.set("interface_contracts", interface_contracts, priority=2)
@@ -483,6 +489,8 @@ class ExecuteMixin:
                 full_code_context += "\n\n" + allocated["recent_changes"]
             if allocated["solved_priors"]:
                 full_code_context += "\n\n" + allocated["solved_priors"]
+            if allocated["failure_priors"]:
+                full_code_context += "\n\n" + allocated["failure_priors"]
             if allocated["user_answer"]:
                 full_code_context += (
                     "\n\n## The user's answer to your earlier question (follow this)\n"
