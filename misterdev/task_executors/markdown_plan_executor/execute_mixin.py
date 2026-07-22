@@ -737,6 +737,16 @@ class ExecuteMixin:
                         # / switching model / decomposing (the fix T005 needed).
                         code_failures += 1
                         error_logs = "ERROR: Stalling detected. Try a fundamentally different approach."
+                        # Reset to the clean task base so the next attempt is a
+                        # FRESH candidate, not another edit piled onto the stuck one
+                        # the model keeps failing to fix (T3.2). Stays on the branch.
+                        self._reset_to_task_base(
+                            project,
+                            branch_name,
+                            base_branch,
+                            snapshot,
+                            untracked_before,
+                        )
                         continue
 
                 validation_failed = False
