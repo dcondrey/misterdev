@@ -150,7 +150,9 @@ def test_phase4_flags_default_off_leave_loop_unchanged():
     assert orch["goal_check"] is False
     assert orch["block_on_goal_gap"] is False
     assert orch["mutation_gate"] is False
-    assert orch["spec_as_tests"] is False
+    # spec_as_tests is default-on (T1.1), but advisory (spec_as_tests_block off).
+    assert orch["spec_as_tests"] is True
+    assert orch["spec_as_tests_block"] is False
     # And the gate guard reads the same default, so the goal check is skipped.
     assert get_setting({}, "orchestrator", "goal_check") is False
 

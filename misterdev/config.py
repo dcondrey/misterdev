@@ -262,15 +262,15 @@ class OrchestratorSettings:
     goal_check: bool = False
     block_on_goal_gap: bool = False
     goal_check_timeout: int = 60
-    # Spec-as-tests (CONSERVATIVE, opt-in, currently DEFERRED): generate a failing
-    # test from a task's acceptance criteria before it is implemented. Off by
-    # default. The generation primitive lives in core/spec_tests.py and is tested,
-    # but it is NOT wired into the execute loop yet: writing a failing test inside
-    # the wave loop would flip the integration-gate baseline red and silently
-    # disable that gate, which is not control-flow-neutral. When set true today it
-    # only logs that the feature is staged-but-not-wired (see the seam in
-    # core/spec_tests.py); it never alters the build loop.
-    spec_as_tests: bool = False
+    # Spec-as-tests (reproduction-first / TDD): before a task is implemented,
+    # generate a failing test from its acceptance criteria so "done" means "this
+    # test now passes", not a self-report. DEFAULT-ON. Wired in the executor
+    # (_maybe_generate_spec_test / _run_spec_test): the test is written under
+    # .orchestrator/spec_tests/ — OUTSIDE the project suite — so it can never flip
+    # the integration-gate baseline red, and it is run scoped to that one file
+    # after the task's own gates pass. ADVISORY unless spec_as_tests_block is set.
+    # Generation is best-effort and timeout-bounded.
+    spec_as_tests: bool = True
     # When spec_as_tests is on, a per-task generated spec test is run (scoped,
     # from .orchestrator/spec_tests/) after the task's gates pass. ADVISORY by
     # default: a still-failing spec test is logged/recorded but does not fail the
