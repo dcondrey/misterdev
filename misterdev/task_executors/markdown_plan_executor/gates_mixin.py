@@ -283,6 +283,7 @@ class GatesMixin:
         timeout: int,
         cwd=None,
         already_passed: Optional[str] = None,
+        prior_gate_passed: bool = True,
     ) -> Tuple[bool, str]:
         """Verify the task's acceptance_criteria after build/test gates pass.
 
@@ -328,7 +329,7 @@ class GatesMixin:
             # false-failed on `cargo test` from the repo root). Treat it as a
             # pass-through. A genuine missing test path (FILE_NOT_FOUND) is left
             # as a real failure.
-            if classify_error(output) == ErrorCategory.MANIFEST:
+            if prior_gate_passed and classify_error(output) == ErrorCategory.MANIFEST:
                 logger.warning(
                     "Acceptance command could not locate the project manifest; "
                     "the build/test gates already passed, so treating acceptance "

@@ -910,6 +910,7 @@ class ExecuteMixin:
                         # baseline run OR a flake-rescued one must still be
                         # re-checked, so key on the raw result, not the flake flip.
                         already_passed=test_command if test_exited_green else None,
+                        prior_gate_passed=True,
                     )
                     if not acc_ok:
                         logger.warning(
@@ -1020,6 +1021,7 @@ class ExecuteMixin:
                     llm_acceptance_judge,
                     test_timeout,
                     cwd=task_cwd,
+                    prior_gate_passed=gate_verified,
                 )
                 if not acc_ok:
                     logger.warning(
