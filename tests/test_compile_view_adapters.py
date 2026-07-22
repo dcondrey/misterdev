@@ -22,8 +22,8 @@ TSC_CLASSIC = (
 )
 TSC_PRETTY = "src/index.ts:12:7 - error TS2322: Type 'string' is not assignable to type 'number'.\n"
 
-STUB_LANGUAGES = ["go", "swift", "csharp"]
-FULL_LANGUAGES = ["rust", "typescript"]
+STUB_LANGUAGES = []  # go/swift/csharp promoted to real adapters (T2.1b)
+FULL_LANGUAGES = ["rust", "typescript", "go", "swift", "csharp"]
 
 
 def test_registry_has_all_five_languages():
@@ -59,13 +59,6 @@ def test_typescript_pretty_extracted():
 def test_typescript_autodetected_without_language():
     errs = extract_compile_errors(TSC_CLASSIC)
     assert any(e.code == "TS2322" for e in errs)
-
-
-@pytest.mark.parametrize("lang", STUB_LANGUAGES)
-def test_stub_adapters_recognize_nothing_yet(lang):
-    ad = get_adapter(lang)
-    assert ad.parse("any compiler output here") == []
-    assert ad.detect("any compiler output here") is False
 
 
 def test_typescript_does_not_misparse_rust():

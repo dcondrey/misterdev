@@ -144,26 +144,93 @@ def _detect_tsc(output: str) -> bool:
     return bool(re.search(r"error\s+TS\d+:", output))
 
 
-# --- stub adapters ----------------------------------------------------------
-# go/swift/csharp are registered so the language is a known, first-class member
-# of the registry (and covered by contract tests), but their real parsers are
-# follow-up work: they recognize nothing yet, so a caller falls back to its
-# existing compressed view rather than a wrong structured one.
+# --- go (go build / go vet) -------------------------------------------------
+
+# `./main.go:10:6: undefined: helper` — the column is optional.
+_GO_ERROR = re.compile(
+    r"^(?P<file>\S+\.go):(?P<line>\d+):(?:(?P<col>\d+):)?\s+(?P<message>.+)$"
+)
 
 
-def _stub_parse(_output: str) -> List[CompileError]:
-    return []
+def _parse_go(output: str) -> List[CompileError]:
+    out: List[CompileError] = []
+    for line in output.splitlines():
+        m = _GO_ERROR.match(line)
+        if not m:
+            continue
+        loc = f"{m.group('file')}:{m.group('line')}"
+        if m.group("col"):
+            loc += f":{m.group('col')}"
+        out.append(CompileError(message=m.group("message").strip(), location=loc))
+    return out
 
 
-def _stub_detect(_output: str) -> bool:
-    return False
+def _detect_go(output: str) -> bool:
+    return bool(re.search(r"^\S+\.go:\d+:", output, re.M))
+
+
+# --- swiftc -----------------------------------------------------------------
+
+# `/src/App.swift:12:15: error: cannot find 'foo' in scope`
+_SWIFT_ERROR = re.compile(
+    r"^(?P<file>.+?\.swift):(?P<line>\d+):(?P<col>\d+):\s*error:\s*(?P<message>.+)$"
+)
+
+
+def _parse_swift(output: str) -> List[CompileError]:
+    out: List[CompileError] = []
+    for line in output.splitlines():
+        m = _SWIFT_ERROR.match(line)
+        if not m:
+            continue
+        out.append(
+            CompileError(
+                message=m.group("message").strip(),
+                location=f"{m.group('file')}:{m.group('line')}:{m.group('col')}",
+            )
+        )
+    return out
+
+
+def _detect_swift(output: str) -> bool:
+    return bool(re.search(r"\.swift:\d+:\d+:\s*error:", output))
+
+
+# --- csc / dotnet (MSBuild) -------------------------------------------------
+
+# `Program.cs(12,20): error CS0103: <message>` with an optional trailing
+# ` [project.csproj]` MSBuild tag, which is stripped from the message.
+_CSC_ERROR = re.compile(
+    r"^(?P<file>.+?)\((?P<line>\d+),(?P<col>\d+)\):\s*error\s+(?P<code>CS\d+):\s*"
+    r"(?P<message>.+?)(?:\s*\[[^\]]+\])?$"
+)
+
+
+def _parse_csharp(output: str) -> List[CompileError]:
+    out: List[CompileError] = []
+    for line in output.splitlines():
+        m = _CSC_ERROR.match(line)
+        if not m:
+            continue
+        out.append(
+            CompileError(
+                message=m.group("message").strip(),
+                code=m.group("code"),
+                location=f"{m.group('file')}:{m.group('line')}:{m.group('col')}",
+            )
+        )
+    return out
+
+
+def _detect_csharp(output: str) -> bool:
+    return bool(re.search(r"error\s+CS\d+:", output))
 
 
 register_adapter(CompilerAdapter("rust", "rustc", _parse_rustc, _detect_rustc))
 register_adapter(CompilerAdapter("typescript", "tsc", _parse_tsc, _detect_tsc))
-register_adapter(CompilerAdapter("go", "go build", _stub_parse, _stub_detect))
-register_adapter(CompilerAdapter("swift", "swiftc", _stub_parse, _stub_detect))
-register_adapter(CompilerAdapter("csharp", "csc", _stub_parse, _stub_detect))
+register_adapter(CompilerAdapter("go", "go build", _parse_go, _detect_go))
+register_adapter(CompilerAdapter("swift", "swiftc", _parse_swift, _detect_swift))
+register_adapter(CompilerAdapter("csharp", "csc", _parse_csharp, _detect_csharp))
 
 
 def extract_compile_errors(
