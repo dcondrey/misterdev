@@ -80,6 +80,10 @@ DEFAULT_TRUSTED_NAMESPACES = (
 
 # npm -> npx, PyPI -> uvx. Anything else is not auto-runnable here.
 _RUNTIME_BY_REGISTRY = {"npm": "npx", "pypi": "uvx"}
+# The only commands a discovered server may spawn. A registry-supplied runtimeHint
+# is honored ONLY if it is one of these — otherwise an untrusted entry could set
+# `command` to an arbitrary binary and bypass the npx/uvx launcher sandbox.
+_ALLOWED_RUNTIMES = frozenset(_RUNTIME_BY_REGISTRY.values())
 
 _CURATED_PATH = Path(__file__).with_name("curated_servers.json")
 
@@ -347,6 +351,14 @@ def _pinned_identifier(pkg: Dict[str, Any], runtime_hint: str) -> str:
 def _to_config(server: Dict[str, Any], pkg: Dict[str, Any]) -> Dict[str, Any]:
     runtime = _RUNTIME_BY_REGISTRY[(pkg.get("registryType") or "").lower()]
     runtime_hint = pkg.get("runtimeHint") or runtime
+    if runtime_hint not in _ALLOWED_RUNTIMES:
+        logger.warning(
+            "MCP discovery: ignoring untrusted runtimeHint %r for '%s'; using %s.",
+            runtime_hint,
+            server.get("name"),
+            runtime,
+        )
+        runtime_hint = runtime
     args = _positional_values(pkg.get("runtimeArguments"))
     if runtime_hint == "npx" and "-y" not in args:
         args = ["-y", *args]
