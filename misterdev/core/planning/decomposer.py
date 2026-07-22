@@ -239,6 +239,10 @@ def decompose_spec(
         logger.warning(f"LLM returned {len(tasks)} tasks, capping at {max_tasks}")
         tasks = tasks[:max_tasks]
 
+    # Flag any task that breaks the size/verifiability invariant so the executor
+    # can split or reject it rather than silently trying to land it in one attempt.
+    enforce_task_invariants(tasks)
+
     return tasks
 
 
@@ -319,6 +323,42 @@ def _ground_task_paths(tasks: list[Task], project_ref: str) -> None:
             else:
                 still_create.append(f)
         t.files_to_create = still_create
+
+
+def enforce_task_invariants(tasks: list[Task], max_files: int = 20) -> list[Task]:
+    """Flag decomposed tasks that violate the size/verifiability invariant.
+
+    Pure (no LLM/no I/O). A task is well-formed when it (a) touches at most
+    ``max_files`` distinct files (create+modify) and (b) carries a concrete,
+    non-empty acceptance criterion. Violations are recorded on
+    ``task.processor_data["invariant_violations"]`` and logged, so downstream
+    (the decompose rung / keystone split) can act on an over-large or unverifiable
+    task instead of silently trying to land it in one attempt.
+    """
+    # Low-signal acceptance strings that encode nothing a gate can check.
+    _PLACEHOLDERS = {"works", "done", "ok", "todo", "tbd", "n/a", "it works"}
+    for task in tasks:
+        violations: list[str] = []
+        touched = {
+            f for f in (list(task.files_to_create) + list(task.files_to_modify)) if f
+        }
+        if len(touched) > max_files:
+            violations.append(
+                f"touches {len(touched)} files > max {max_files}; split it"
+            )
+        crit = (getattr(task, "acceptance_criteria", "") or "").strip()
+        if len(crit) < 8 or crit.lower() in _PLACEHOLDERS:
+            violations.append("acceptance criteria missing or not concrete/verifiable")
+        if violations:
+            if not isinstance(task.processor_data, dict):
+                task.processor_data = {}
+            task.processor_data["invariant_violations"] = violations
+            logger.warning(
+                "Task %s violates the size/verifiability invariant: %s",
+                task.id,
+                "; ".join(violations),
+            )
+    return tasks
 
 
 def _add_implicit_dependencies(tasks: list[Task]) -> None:
