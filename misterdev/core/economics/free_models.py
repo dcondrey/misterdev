@@ -21,6 +21,11 @@ logger = setup_logger(__name__)
 
 _MODELS_URL = "https://openrouter.ai/api/v1/models"
 _DAY_SECONDS = 24 * 3600
+# Bound the body materialized from the (semi-trusted) OpenRouter endpoint. Real
+# model lists are well under this; the cap only rejects a compromised/misbehaving
+# endpoint slow-dripping an oversized body. Callers already treat a fetch that
+# raises as a transient failure and fall back to the cached list.
+_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 # Per-process cache of fetched list endpoints, keyed by URL. Free-model
 # harvesting, the model catalog, and each failover client's catalog all hit the
@@ -41,7 +46,10 @@ def _http_fetch(url: str = _MODELS_URL) -> list:
 
     req = urllib.request.Request(url, headers={"User-Agent": "misterdev"})
     with urllib.request.urlopen(req, timeout=10) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+        raw = resp.read(_MAX_RESPONSE_BYTES + 1)
+    if len(raw) > _MAX_RESPONSE_BYTES:
+        raise ValueError(f"model-list response exceeded {_MAX_RESPONSE_BYTES} bytes")
+    payload = json.loads(raw.decode("utf-8"))
     data = payload.get("data", []) if isinstance(payload, dict) else []
     _FETCH_CACHE[url] = data
     return data

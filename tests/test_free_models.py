@@ -110,7 +110,7 @@ def test_http_fetch_memoizes_per_url(monkeypatch):
         def __exit__(self, *a):
             return False
 
-        def read(self):
+        def read(self, n=-1):
             return b'{"data": [{"id": "m"}]}'
 
     def fake_urlopen(req, timeout=10):
@@ -123,5 +123,32 @@ def test_http_fetch_memoizes_per_url(monkeypatch):
         second = fm._http_fetch("https://example/models")
         assert first == second == [{"id": "m"}]
         assert len(calls) == 1  # second call served from the per-process memo
+    finally:
+        fm._FETCH_CACHE.clear()
+
+
+def test_http_fetch_rejects_oversized_body(monkeypatch):
+    import misterdev.core.economics.free_models as fm
+
+    fm._FETCH_CACHE.clear()
+    # Valid JSON but larger than the cap — only the size guard can reject it.
+    body = b'{"data":[' + b"0," * (fm._MAX_RESPONSE_BYTES // 2 + 1) + b"0]}"
+    assert len(body) > fm._MAX_RESPONSE_BYTES
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n=-1):
+            return body if n < 0 else body[:n]
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=10: FakeResp())
+    try:
+        with pytest.raises(ValueError):
+            fm._http_fetch("https://example/big")
+        assert "https://example/big" not in fm._FETCH_CACHE
     finally:
         fm._FETCH_CACHE.clear()
