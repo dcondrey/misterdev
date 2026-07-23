@@ -3419,7 +3419,7 @@ def _run_convergence_pipeline(gate_sequence, max_iterations, budget=100.0):
         flags = BuildFlags(budget=budget)
         orch = agent_mod.ProjectOrchestrator()
 
-        def fake_exec(tasks, project, flags, report):
+        def fake_exec(tasks, project, flags, report, progress_cb=None):
             counters["exec"] += 1
 
         def fake_decompose(spec, assessment, mode, client, path, **kwargs):
@@ -3482,7 +3482,7 @@ def _run_convergence_pipeline_with_cfg(gate_sequence, orchestrator_cfg):
         flags = BuildFlags(budget=100.0)
         orch = agent_mod.ProjectOrchestrator()
 
-        def fake_exec(tasks, project, flags, report):
+        def fake_exec(tasks, project, flags, report, progress_cb=None):
             counters["exec"] += 1
 
         def fake_decompose(spec, assessment, mode, client, path, **kwargs):

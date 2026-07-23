@@ -4,7 +4,7 @@ import shlex
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Callable, Dict, Optional
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -160,6 +160,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         tasklist: Optional[str] = None,
         budget: Optional[float] = None,
         proceed: bool = False,
+        progress_cb: Optional[Callable[..., None]] = None,
     ):
         """Run pending devplan tasks with dependency-aware orchestration.
 
@@ -262,6 +263,17 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         logger.info(f"Running {len(tasks)} pending tasks for {project.name}.")
 
         reporter = ProgressReporter(len(tasks))
+
+        def _emit_progress(phase: str) -> None:
+            """Best-effort task-level progress to an async job's reporter."""
+            if progress_cb is None:
+                return
+            try:
+                progress_cb(done=len(completed_ids), total=len(tasks), phase=phase)
+            except Exception as e:  # a progress callback must never break the run
+                logger.debug(f"Progress callback failed (non-fatal): {e}")
+
+        _emit_progress("executing")
         remaining = list(tasks)
         aborted = False
         wave = 0
@@ -352,9 +364,11 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
                             language=lang,
                         )
                         changes.record_task_changes(task.id, modified)
+                    _emit_progress(f"wave {wave}")
                     return False
                 failed_ids.add(task.id)
                 progress.mark_failed(task.id)
+                _emit_progress(f"wave {wave}")
                 consecutive_failures += 1
                 if consecutive_failures >= max_consecutive_failures:
                     logger.error("Aborting run: too many consecutive failures.")
@@ -636,6 +650,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         project_path: str | Path,
         args: str = "",
         reference_dir: str | None = None,
+        progress_cb: Optional[Callable[..., None]] = None,
     ) -> str:
         project = self._get_or_register(project_path)
         if not project:
@@ -722,6 +737,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
                 env_activate,
                 report,
                 reference_digest=reference_digest,
+                progress_cb=progress_cb,
             )
         except BudgetExceededError as e:
             return self._halt_on_budget(project, report, e)
@@ -1229,6 +1245,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         report: BuildReport,
         confirm_plan: bool = False,
         reference_digest: str = "",
+        progress_cb: Optional[Callable[..., None]] = None,
     ) -> str:
         """Phases 1.5-6: probes, spec, decompose, (confirm), execute, validate.
 
@@ -1418,7 +1435,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
             tasks_this_iter = len(tasks)
 
             # Phase 4: Execution
-            self._execute_tasks(tasks, project, flags, report)
+            self._execute_tasks(tasks, project, flags, report, progress_cb=progress_cb)
 
             # Phase 5: Gates
             if flags.no_verify:
@@ -1764,6 +1781,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         project: Project,
         flags: BuildFlags,
         report: BuildReport,
+        progress_cb: Optional[Callable[..., None]] = None,
     ) -> None:
         scratchpad = Scratchpad()
         aligner = RealTimeAligner(project.path)
@@ -1780,6 +1798,17 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
 
         completed_ids = set(progress.completed)
         failed_ids: set[str] = set()
+
+        def _emit_progress(phase: str) -> None:
+            """Best-effort task-level progress to an async job's reporter."""
+            if progress_cb is None:
+                return
+            try:
+                progress_cb(done=len(completed_ids), total=len(tasks), phase=phase)
+            except Exception as e:  # a progress callback must never break the build
+                logger.debug(f"Progress callback failed (non-fatal): {e}")
+
+        _emit_progress("executing")
         # Skip a ready task before spawning a worktree when it is already
         # satisfied (content hash unchanged since a recorded completion). Default
         # on; false forces every ready task to re-run.
@@ -2099,6 +2128,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
                     report.failed_tasks.append(task)
                     consecutive_failures += 1
 
+                _emit_progress("building")
                 if consecutive_failures >= max_consecutive_failures:
                     aborted = True
                     break

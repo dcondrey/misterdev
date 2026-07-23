@@ -441,13 +441,15 @@ def build_async(
     """
     orch = ProjectOrchestrator()
 
-    def _target() -> str:
+    def _target(report) -> str:
         parts = [goal, "--budget", str(budget)]
         if parallel:
             parts.append("--parallel")
         if max_tasks is not None:
             parts += ["--max-tasks", str(max_tasks)]
-        return orch.build(path, " ".join(parts), reference_dir=reference_dir)
+        return orch.build(
+            path, " ".join(parts), reference_dir=reference_dir, progress_cb=report
+        )
 
     try:
         run_id = registry.start("build", path, _target, stop_hook=orch.request_stop)
@@ -493,8 +495,8 @@ def run_async(
     """
     orch = ProjectOrchestrator()
 
-    def _target() -> str:
-        orch.run_project(path, dry_run=False)
+    def _target(report) -> str:
+        orch.run_project(path, dry_run=False, progress_cb=report)
         return f"Ran pending tasks for {path}."
 
     try:

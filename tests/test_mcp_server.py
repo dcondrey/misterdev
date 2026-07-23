@@ -11,8 +11,10 @@ class _FakeOrch:
     last_build_succeeded = True
     calls: dict = {}
 
-    def build(self, path, args, reference_dir=None):
+    def build(self, path, args, reference_dir=None, progress_cb=None):
         _FakeOrch.calls["build"] = (path, args, reference_dir)
+        if progress_cb is not None:
+            progress_cb(done=1, total=1, phase="building")
         return "REPORT-BODY"
 
     def scan_directory(self, directory):
@@ -24,8 +26,10 @@ class _FakeOrch:
     def get_project_status(self, path):
         return {"path": path, "tasks": []}
 
-    def run_project(self, path, dry_run=False):
+    def run_project(self, path, dry_run=False, progress_cb=None):
         _FakeOrch.calls["run_project"] = (path, dry_run)
+        if progress_cb is not None:
+            progress_cb(done=2, total=4, phase="wave 1")
 
     def run_task(self, path, task_id):
         _FakeOrch.calls["run_task"] = (path, task_id)
@@ -204,7 +208,7 @@ def test_build_async_refuses_second_job_same_project(monkeypatch):
     reg = _patch_jobs(monkeypatch)
     hold = {"go": False}
 
-    def _slow(self, path, args, reference_dir=None):
+    def _slow(self, path, args, reference_dir=None, progress_cb=None):
         while not hold["go"]:
             time.sleep(0.005)
         return "REPORT-BODY"
@@ -271,3 +275,23 @@ def test_approve_plan_without_plan_errors(tmp_path):
 
 def test_get_plan_empty_when_none(tmp_path):
     assert mcp_server.get_plan(str(tmp_path)) == {"items": []}
+
+
+def test_run_async_reports_task_progress(monkeypatch):
+    _patch(monkeypatch)
+    reg = _patch_jobs(monkeypatch)
+    run_id = mcp_server.run_async("/repo")["run_id"]
+    st = _await_status(reg, run_id, "succeeded")
+    # Progress reported by the run flowed through the reporter into job status.
+    assert st["tasks_done"] == 2 and st["tasks_total"] == 4
+    assert st["phase"] == "wave 1"
+
+
+def test_build_async_reports_task_progress(monkeypatch):
+    _patch(monkeypatch)
+    reg = _patch_jobs(monkeypatch)
+    run_id = mcp_server.build_async("/repo", "do it", budget=1.0)["run_id"]
+    st = _await_status(reg, run_id, "succeeded")
+    assert (
+        st["tasks_done"] == 1 and st["tasks_total"] == 1 and st["phase"] == "building"
+    )
