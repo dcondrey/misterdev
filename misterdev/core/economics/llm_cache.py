@@ -33,6 +33,11 @@ class LLMCache:
     def __init__(self, dir_path: Path, max_entries: int = DEFAULT_MAX_ENTRIES):
         self.dir = Path(dir_path)
         self.max_entries = max_entries
+        # Running count of stored entries, seeded by one real scan on the first
+        # new put and re-synced whenever an eviction scan runs. Lets a put below
+        # the cap skip the O(entries) scandir+stat that would otherwise run on
+        # every write (O(entries^2) filesystem work across a build).
+        self._count_estimate: Optional[int] = None
 
     @staticmethod
     def _key(system_prompt: str, prompt: str) -> str:
@@ -71,21 +76,41 @@ class LLMCache:
 
         key = self._key(system_prompt, prompt)
         path = self._path(key)
+        is_new = not path.exists()
         atomic_write_json(
             path,
             {"output": output, "model": model, "created_at": timestamp, "key": key},
             indent=2,
         )
-        self._evict_if_needed()
+        if is_new:
+            self._note_new_entry()
 
-    def _evict_if_needed(self) -> None:
-        """Drop the oldest entries (by mtime) once the cap is exceeded.
+    def _note_new_entry(self) -> None:
+        """Account for a newly-stored entry, scanning only when eviction is due.
 
-        Best-effort: any filesystem error degrades to leaving the cache as-is
-        rather than raising into the build, like the rest of this module.
+        The full scandir+stat sweep runs only when the running count first needs
+        seeding or crosses the cap — not on every put — so a long build's writes
+        cost O(entries) filesystem work total rather than O(entries^2).
         """
         if self.max_entries <= 0:
             return
+        if self._count_estimate is None:
+            self._count_estimate = self._evict_if_needed()
+            return
+        self._count_estimate += 1
+        if self._count_estimate > self.max_entries:
+            self._count_estimate = self._evict_if_needed()
+
+    def _evict_if_needed(self) -> int:
+        """Drop the oldest entries (by mtime) once the cap is exceeded.
+
+        Returns the entry count after any eviction, so the caller can re-sync its
+        running estimate. Best-effort: any filesystem error degrades to leaving
+        the cache as-is rather than raising into the build, like the rest of this
+        module.
+        """
+        if self.max_entries <= 0:
+            return 0
         try:
             entries = [
                 (e.stat().st_mtime, e.path)
@@ -93,13 +118,16 @@ class LLMCache:
                 if e.name.endswith(".json") and e.is_file()
             ]
         except OSError:
-            return
+            return 0
         excess = len(entries) - self.max_entries
         if excess <= 0:
-            return
+            return len(entries)
         entries.sort(key=lambda t: t[0])
+        removed = 0
         for _mtime, victim in entries[:excess]:
             try:
                 os.remove(victim)
+                removed += 1
             except OSError:
                 continue
+        return len(entries) - removed
