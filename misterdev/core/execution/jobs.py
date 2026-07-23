@@ -78,6 +78,28 @@ class Job:
             "stop_requested": self.stop_requested,
         }
 
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "Job":
+        """Reconstruct a job from its persisted form (no live thread/hook).
+
+        A job persisted as ``running`` belonged to a process that has since died,
+        so its thread no longer exists: load it as ``interrupted`` rather than
+        implying it is still making progress in this process."""
+        status = d.get("status", "interrupted")
+        if status == "running":
+            status = "interrupted"
+        return cls(
+            run_id=str(d.get("run_id", "")),
+            kind=str(d.get("kind", "")),
+            project_path=str(d.get("project_path", "")),
+            status=status,
+            result=d.get("result"),
+            error=d.get("error"),
+            started_at=str(d.get("started_at", _now())),
+            ended_at=d.get("ended_at"),
+            stop_requested=bool(d.get("stop_requested", False)),
+        )
+
 
 # Cap on retained FINISHED jobs. A long-lived MCP server runs many builds over
 # its lifetime; without eviction every job — and the orchestrator/client/report
@@ -89,10 +111,52 @@ _DEFAULT_MAX_FINISHED = 50
 class JobRegistry:
     """Thread-safe registry of background jobs, keyed by ``run_id``."""
 
-    def __init__(self, max_finished: int = _DEFAULT_MAX_FINISHED) -> None:
+    def __init__(
+        self,
+        max_finished: int = _DEFAULT_MAX_FINISHED,
+        store_path: Optional[str] = None,
+    ) -> None:
         self._jobs: Dict[str, Job] = {}
         self._lock = threading.Lock()
         self._max_finished = max(1, max_finished)
+        # Optional durable store so run_ids/results survive an MCP server restart.
+        self._store = Path(store_path).expanduser() if store_path else None
+        if self._store is not None:
+            self._load()
+
+    def _load(self) -> None:
+        """Load persisted jobs on startup. Best-effort: a missing/corrupt store
+        yields an empty registry, never an error at import/boot."""
+        try:
+            if not self._store.exists():
+                return
+            import json
+
+            data = json.loads(self._store.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            logger.warning(f"Job store unreadable ({e}); starting empty.")
+            return
+        for d in data if isinstance(data, list) else []:
+            job = Job.from_dict(d)
+            if job.run_id:
+                self._jobs[job.run_id] = job
+
+    def _save_locked(self) -> None:
+        """Persist all jobs to the store (atomic). Caller holds ``self._lock``.
+        Best-effort: a write failure is logged, never raised into a job's path."""
+        if self._store is None:
+            return
+        try:
+            import json
+            import os
+
+            self._store.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps([j.to_dict() for j in self._jobs.values()], indent=2)
+            tmp = self._store.with_suffix(self._store.suffix + ".tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            os.replace(tmp, self._store)
+        except OSError as e:
+            logger.warning(f"Could not persist job store (non-fatal): {e}")
 
     def _prune_finished_locked(self) -> None:
         """Evict the least-recently-FINISHED jobs beyond the retention cap.
@@ -143,6 +207,7 @@ class JobRegistry:
             # Bound retention so finished jobs (and the resources their closures
             # pin) don't accumulate over the server's lifetime.
             self._prune_finished_locked()
+            self._save_locked()
 
         def _runner() -> None:
             try:
@@ -170,6 +235,7 @@ class JobRegistry:
                 with self._lock:
                     job.ended_at = _now()
                     self._prune_finished_locked()
+                    self._save_locked()
 
         thread = threading.Thread(
             target=_runner, name=f"misterdev-job-{run_id}", daemon=True
@@ -198,6 +264,7 @@ class JobRegistry:
                 return False
             job.stop_requested = True
             hook = job._stop_hook
+            self._save_locked()
         if hook is not None:
             try:
                 hook()
