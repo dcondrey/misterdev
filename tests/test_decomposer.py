@@ -49,6 +49,20 @@ def test_topological_sort_cycle():
     assert len(result) == 2
 
 
+def test_topological_sort_tiebreak_applies_mid_traversal():
+    # A single root A unblocks both a `test` and a `feature` task in the same
+    # wave. Category order (feature=2 before test=4) must win regardless of the
+    # input order in which the dependents were declared.
+    tasks = [
+        _task("A", category="infrastructure"),
+        _task("T-test", deps=["A"], category="test"),
+        _task("T-feat", deps=["A"], category="feature"),
+    ]
+    result = topological_sort(tasks)
+    order = [t.id for t in result]
+    assert order.index("T-feat") < order.index("T-test"), order
+
+
 def test_add_implicit_dependencies():
     tasks = [
         _task("T-1", files_create=["src/new.py"]),
@@ -150,10 +164,12 @@ def test_decompose_includes_file_map_and_grounding_rule():
     class _Client:
         def generate_code(self, prompt, system=""):
             captured["prompt"] = prompt
-            return '[{"id": "T-001", "title": "x", "description": "x", '\
-                   '"acceptance_criteria": "x", "files_to_create": [], '\
-                   '"files_to_modify": ["lib/allowlist.js"], "context_files": [], '\
-                   '"dependencies": [], "complexity": "small", "category": "fix"}]'
+            return (
+                '[{"id": "T-001", "title": "x", "description": "x", '
+                '"acceptance_criteria": "x", "files_to_create": [], '
+                '"files_to_modify": ["lib/allowlist.js"], "context_files": [], '
+                '"dependencies": [], "complexity": "small", "category": "fix"}]'
+            )
 
     assessment = ProjectAssessment(
         structure=ProjectStructure(project_type="web-app", languages=["javascript"]),
@@ -163,7 +179,11 @@ def test_decompose_includes_file_map_and_grounding_rule():
     )
     file_map = "lib/allowlist.js\n  function parseAllowlistCsv\n"
     tasks = decompose_spec(
-        "fix parseAllowlistCsv", assessment, BuildMode.DEBUG, _Client(), ".",
+        "fix parseAllowlistCsv",
+        assessment,
+        BuildMode.DEBUG,
+        _Client(),
+        ".",
         file_map=file_map,
     )
     assert "lib/allowlist.js" in captured["prompt"]
@@ -200,12 +220,17 @@ def test_decompose_without_file_map_uses_fallback_text():
 
 def test_targets_prompt_helper():
     from misterdev.core.planning.decomposer import _targets_prompt
+
     section, rule = _targets_prompt(None)
     assert section == "" and rule == ""
     section, rule = _targets_prompt(
         [
             {"name": "core", "path": "emathy-core", "build_command": "cargo build"},
-            {"name": "web", "path": "clients/web", "build_command": "npm run typecheck"},
+            {
+                "name": "web",
+                "path": "clients/web",
+                "build_command": "npm run typecheck",
+            },
         ]
     )
     assert "emathy-core/" in section and "clients/web/" in section
@@ -237,8 +262,14 @@ def test_decompose_includes_targets_when_present():
         risk=RiskAssessment(level="low"),
     )
     decompose_spec(
-        "x", assessment, BuildMode.SMART, _Client(), ".",
-        targets=[{"name": "web", "path": "clients/web", "build_command": "npm run typecheck"}],
+        "x",
+        assessment,
+        BuildMode.SMART,
+        _Client(),
+        ".",
+        targets=[
+            {"name": "web", "path": "clients/web", "build_command": "npm run typecheck"}
+        ],
     )
     assert "clients/web/" in captured["prompt"]
     assert "ONE target" in captured["prompt"]
@@ -249,7 +280,9 @@ def test_cap_prunes_dangling_dependency_on_dropped_task():
     from misterdev.core.planning.decomposer import _cap_tasks
 
     def _t(tid, deps=None):
-        return Task(id=tid, description="x", project_ref=".", dependencies=list(deps or []))
+        return Task(
+            id=tid, description="x", project_ref=".", dependencies=list(deps or [])
+        )
 
     # C is the 3rd task -> dropped at cap 2; A's dependency on it must be pruned.
     tasks = [_t("A", deps=["C"]), _t("B"), _t("C")]
