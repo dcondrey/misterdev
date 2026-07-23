@@ -332,5 +332,16 @@ class JobRegistry:
             return [j.to_dict() for j in self._jobs.values()]
 
 
-# Process-wide registry shared by the MCP server's async tools.
-registry = JobRegistry()
+def _default_job_store() -> str:
+    """The durable job store path: ``$MISTERDEV_STATE_DIR/jobs.json`` or the
+    conventional ``~/.misterdev/jobs.json`` (matching the project registry)."""
+    import os
+
+    base = os.environ.get("MISTERDEV_STATE_DIR") or str(Path.home() / ".misterdev")
+    return str(Path(base) / "jobs.json")
+
+
+# Process-wide registry shared by the MCP server's async tools. Persistent by
+# default so run_ids/results survive a server restart; loading is best-effort and
+# writes are deferred until a job actually runs.
+registry = JobRegistry(store_path=_default_job_store())

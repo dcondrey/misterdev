@@ -67,3 +67,16 @@ def test_corrupt_store_starts_empty(tmp_path):
     store.write_text("{not valid json")
     r = JobRegistry(store_path=str(store))
     assert r.list_jobs() == []
+
+
+def test_default_job_store_honors_env(monkeypatch, tmp_path):
+    from misterdev.core.execution.jobs import _default_job_store
+
+    monkeypatch.setenv("MISTERDEV_STATE_DIR", str(tmp_path))
+    assert _default_job_store() == str(tmp_path / "jobs.json")
+
+
+def test_shared_registry_has_persistence_wired():
+    from misterdev.core.execution.jobs import registry
+
+    assert registry._store is not None  # the MCP server's registry persists by default
