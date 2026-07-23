@@ -62,6 +62,11 @@ class Job:
     started_at: str = field(default_factory=_now)
     ended_at: Optional[str] = None
     stop_requested: bool = False
+    # Task-level progress the running build reports (0/0 until it does).
+    tasks_done: int = 0
+    tasks_total: int = 0
+    phase: str = ""
+    message: str = ""
     _stop_hook: Optional[Callable[[], None]] = None
     _thread: Optional[threading.Thread] = None
 
@@ -76,6 +81,10 @@ class Job:
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "stop_requested": self.stop_requested,
+            "tasks_done": self.tasks_done,
+            "tasks_total": self.tasks_total,
+            "phase": self.phase,
+            "message": self.message,
         }
 
     @classmethod
@@ -98,6 +107,10 @@ class Job:
             started_at=str(d.get("started_at", _now())),
             ended_at=d.get("ended_at"),
             stop_requested=bool(d.get("stop_requested", False)),
+            tasks_done=int(d.get("tasks_done", 0) or 0),
+            tasks_total=int(d.get("tasks_total", 0) or 0),
+            phase=str(d.get("phase", "")),
+            message=str(d.get("message", "")),
         )
 
 
@@ -209,9 +222,22 @@ class JobRegistry:
             self._prune_finished_locked()
             self._save_locked()
 
+        # A target may optionally accept a progress reporter: a 1-arg target gets
+        # ``report(**fields)`` bound to this run; a legacy 0-arg target is called
+        # as before (fully backward compatible).
+        try:
+            import inspect
+
+            wants_reporter = len(inspect.signature(target).parameters) >= 1
+        except (TypeError, ValueError):
+            wants_reporter = False
+
+        def _report(**fields: Any) -> None:
+            self.update_progress(run_id, **fields)
+
         def _runner() -> None:
             try:
-                report = target()
+                report = target(_report) if wants_reporter else target()
                 with self._lock:
                     if job.stop_requested:
                         # build() catches the stop's budget-trip and returns its
@@ -251,6 +277,35 @@ class JobRegistry:
     def status(self, run_id: str) -> Optional[Dict[str, Any]]:
         job = self.get(run_id)
         return job.to_dict() if job else None
+
+    def update_progress(
+        self,
+        run_id: str,
+        *,
+        done: Optional[int] = None,
+        total: Optional[int] = None,
+        phase: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> bool:
+        """Record task-level progress for a running job (surfaced by ``status``).
+
+        Returns False for an unknown id. Only the provided fields change, so a
+        caller can update just the phase, or just the done count. Persisted so
+        progress survives a restart too."""
+        with self._lock:
+            job = self._jobs.get(run_id)
+            if job is None:
+                return False
+            if done is not None:
+                job.tasks_done = int(done)
+            if total is not None:
+                job.tasks_total = int(total)
+            if phase is not None:
+                job.phase = str(phase)
+            if message is not None:
+                job.message = str(message)
+            self._save_locked()
+        return True
 
     def stop(self, run_id: str) -> bool:
         """Request cooperative cancellation of a running job.
