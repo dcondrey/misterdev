@@ -298,13 +298,3 @@ class ModelSelector:
                 f"[auto] {category}/{complexity} now using proven cheap model "
                 f"{model!r} on first attempt"
             )
-
-    def is_ready(self, category: str, complexity: str) -> bool:
-        """Whether this cell would use a proven cheap model on a first attempt."""
-        if not self.enabled:
-            return False
-        return any(
-            self._proven(m, category, complexity)
-            for tier in self._rungs()[:-1]
-            for m in self._tier_models(tier)
-        )

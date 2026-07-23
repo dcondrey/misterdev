@@ -75,8 +75,10 @@ def changed_line_indices(old_content: str, new_content: str) -> Set[int]:
     ).get_opcodes():
         if tag in ("replace", "insert"):
             changed.update(range(j1, j2))
-    if not changed and new:
-        # Whole-file replacement with no diffable anchor: treat all as changed.
+    if not changed and new and not old:
+        # A brand-NEW file (no prior content): every line is new. An UNCHANGED file
+        # (old == new) legitimately has no changed region — do not treat it as
+        # fully changed, which would mutate untouched code.
         changed = set(range(len(new)))
     return changed
 

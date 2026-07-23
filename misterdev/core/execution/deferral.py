@@ -54,7 +54,7 @@ class DeferralBook:
         current: str = ""
         for line in lines:
             if line.startswith("## "):
-                current = line[3:].split("—", 1)[0].split(" - ", 1)[0].strip()
+                current = line[3:].split("—", 1)[0].strip()
                 continue
             low = line.strip()
             marker = "- answer:"

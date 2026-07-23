@@ -312,3 +312,14 @@ def test_run_project_parallel_path_runs_and_records_wave(tmp_path, monkeypatch):
         encoding="utf-8"
     )
     assert all(t in progress for t in ("T1", "T2", "T3"))  # all recorded completed
+
+
+def test_load_answers_preserves_task_id_with_spaced_hyphen(tmp_path):
+    from misterdev.core.execution.deferral import DeferralBook
+
+    q = tmp_path / ".orchestrator" / "QUESTIONS.md"
+    q.parent.mkdir(parents=True)
+    q.write_text("## auth - login — needs a secret\n\n- Answer: use env var\n")
+    book = DeferralBook(q.parent)
+    answers = book.load_answers()
+    assert answers.get("auth - login") == "use env var"
