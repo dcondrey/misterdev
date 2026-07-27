@@ -720,14 +720,20 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         # exhausted by pre-execution analysis+probes+spec and crashed the run.)
         report = None
         try:
-            # Phase 1: Analysis
-            assessment = self._analyze(project, env_activate)
+            # Phase 1: Analysis — skipped when the caller supplies a spec directly
+            # (spec_text path: Claude already analysed the codebase; use a zero-cost
+            # stub so decomposition still has a well-typed object to read).
+            if spec_text:
+                assessment = ProjectAssessment()
+            else:
+                assessment = self._analyze(project, env_activate)
 
             report = BuildReport(mode, project.name, assessment, start_time)
             report.health_before = assessment.health.model_copy()
-            _warn_if_baseline_broken(assessment, report)
-            _warn_if_no_test_gate(assessment, project, report)
-            _warn_if_test_gate_is_noop(assessment, report)
+            if not spec_text:
+                _warn_if_baseline_broken(assessment, report)
+                _warn_if_no_test_gate(assessment, project, report)
+                _warn_if_test_gate_is_noop(assessment, report)
 
             return self._run_pipeline(
                 project,

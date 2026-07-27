@@ -442,9 +442,21 @@ def main():
         if args.max_tasks is not None:
             build_args.extend(["--max-tasks", str(args.max_tasks)])
 
-        report = orchestrator.build(
-            project_path, " ".join(build_args), reference_dir=args.reference
-        )
+        from rich.live import Live
+        from rich.spinner import Spinner
+
+        _spinner = Spinner("dots", text="Analyzing…")
+
+        def _on_progress(done, total, phase):
+            _spinner.text = f"{phase} [{done}/{total}]" if total else phase
+
+        with Live(_spinner, console=console, transient=True, refresh_per_second=10):
+            report = orchestrator.build(
+                project_path,
+                " ".join(build_args),
+                reference_dir=args.reference,
+                progress_cb=_on_progress,
+            )
         console.print("\n")
         if orchestrator.last_build_succeeded:
             console.print(
