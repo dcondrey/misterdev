@@ -290,6 +290,12 @@ class GateKeeper:
                 if mutation.evidence:
                     health.test_output = mutation.evidence
                 return False, issues, health
+            elif mutation.status == "skip" and (mutation.reason or "").startswith(
+                "error:"
+            ):
+                logger.warning(
+                    f"G3.6: Mutation gate errored and was skipped: {mutation.reason}"
+                )
 
         # G4: Type check (optional). Blocking like G1/G3: a configured
         # typecheck command that fails short-circuits the gate so broken types
