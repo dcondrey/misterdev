@@ -20,6 +20,7 @@ it to *resolve* "did this change help?" faster; the promotion gate stays
 regressions==0 + resolved_rate (see fitness.py). Pure and deterministic.
 """
 
+import math
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence, Tuple
 
@@ -99,8 +100,8 @@ class PartialCreditScore:
         """Sample variance of the per-task credits (population form)."""
         if self.total < 1:
             return 0.0
-        m = self.mean_credit
-        return sum((c - m) ** 2 for c in self.credits) / self.total
+        m = math.fsum(self.credits) / self.total
+        return math.fsum((c - m) ** 2 for c in self.credits) / self.total
 
     @property
     def stderr(self) -> float:
