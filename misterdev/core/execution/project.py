@@ -85,9 +85,13 @@ class Project:
         """Persistent per-model performance store (lazy, file-backed)."""
         if self._model_ledger is None:
             from misterdev.core.economics.model_ledger import ModelLedger
+            from pathlib import Path
 
             self._model_ledger = ModelLedger(
                 self.path / ".orchestrator" / "model_stats.json"
+            )
+            self._model_ledger.seed_from(
+                Path.home() / ".misterdev" / "model_stats.json"
             )
         return self._model_ledger
 

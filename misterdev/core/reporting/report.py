@@ -294,20 +294,24 @@ class BuildReport:
         # Completed tasks
         if self.completed_tasks:
             lines.append("### Completed Tasks")
-            lines.append("| # | ID | Title |")
-            lines.append("|---|------|-------|")
+            lines.append("| # | ID | Title | Attempts |")
+            lines.append("|---|------|-------|----------|")
             for i, t in enumerate(self.completed_tasks, 1):
-                lines.append(f"| {i} | {t.id} | {t.title or t.description[:60]} |")
+                attempts = len(getattr(t, "execution_history", None) or []) or 1
+                lines.append(
+                    f"| {i} | {t.id} | {t.title or t.description[:60]} | {attempts} |"
+                )
             lines.append("")
 
         # Failed tasks
         if self.failed_tasks:
             lines.append("### Failed Tasks")
-            lines.append("| ID | Title | Reason |")
-            lines.append("|------|-------|--------|")
+            lines.append("| ID | Title | Attempts | Reason |")
+            lines.append("|------|-------|----------|--------|")
             for t in self.failed_tasks:
+                attempts = len(getattr(t, "execution_history", None) or []) or 1
                 lines.append(
-                    f"| {t.id} | {t.title or t.description[:50]} | "
+                    f"| {t.id} | {t.title or t.description[:50]} | {attempts} | "
                     f"{_failure_reason(t)} |"
                 )
             lines.append("")

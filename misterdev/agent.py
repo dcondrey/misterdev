@@ -825,6 +825,14 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         except Exception as e:
             logger.warning(f"Run summary write failed (non-fatal): {e}")
             report.degraded_subsystems.append(f"Run summary: {e}")
+        try:
+            from pathlib import Path
+
+            project.model_ledger.merge_into(
+                Path.home() / ".misterdev" / "model_stats.json"
+            )
+        except Exception as e:
+            logger.warning(f"Global model ledger merge failed (non-fatal): {e}")
 
     @staticmethod
     def _task_failure_text(task) -> str:

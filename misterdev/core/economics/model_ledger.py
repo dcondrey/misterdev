@@ -329,3 +329,90 @@ class ModelLedger:
         """A snapshot of every stat cell (for reporting/inspection)."""
         with self._lock:
             return list(self._stats.values())
+
+    def seed_from(self, src_path: Path, weight: float = 0.1) -> int:
+        """Blend prior stats from ``src_path`` for any key absent in this ledger.
+
+        Only fills gaps — keys already present are untouched. The prior counts
+        are scaled by ``weight`` so a single real observation quickly dominates
+        (default 0.1 means 10 global observations ≈ 1 effective prior). Returns
+        the number of keys seeded. Best-effort: a missing or corrupt source is
+        silently ignored.
+        """
+        src_path = Path(src_path)
+        if not src_path.exists():
+            return 0
+        try:
+            raw = json.loads(src_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return 0
+        valid = {f.name for f in fields(ModelStat)}
+        seeded = 0
+        with self._lock:
+            for key, data in (raw or {}).items():
+                if key in self._stats or not isinstance(data, dict):
+                    continue
+                clean = {k: v for k, v in data.items() if k in valid}
+                try:
+                    s = ModelStat(**clean)
+                except TypeError:
+                    continue
+                s.attempts *= weight
+                s.successes *= weight
+                s.first_try_attempts *= weight
+                s.first_try_successes *= weight
+                s.aborts *= weight
+                s.total_cost *= weight
+                s.total_latency *= weight
+                self._stats[key] = s
+                seeded += 1
+        if seeded:
+            logger.debug(f"ModelLedger: seeded {seeded} key(s) from {src_path}")
+        return seeded
+
+    def merge_into(self, dest_path: Path) -> None:
+        """Accumulate this ledger's stats into a shared global file.
+
+        For each key, sums the effective counts with whatever is already in the
+        destination. Best-effort: write failures are logged and swallowed.
+        """
+        from misterdev.utils.file_utils import atomic_write_json
+
+        dest_path = Path(dest_path)
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            raw = (
+                json.loads(dest_path.read_text(encoding="utf-8"))
+                if dest_path.exists()
+                else {}
+            )
+        except (json.JSONDecodeError, OSError):
+            raw = {}
+        valid = {f.name for f in fields(ModelStat)}
+        with self._lock:
+            snapshot = {k: asdict(v) for k, v in self._stats.items()}
+        for key, data in snapshot.items():
+            if key not in raw:
+                raw[key] = data
+                continue
+            existing = raw[key]
+            for field in (
+                "attempts",
+                "successes",
+                "first_try_attempts",
+                "first_try_successes",
+                "aborts",
+                "total_cost",
+                "total_latency",
+            ):
+                existing[field] = existing.get(field, 0.0) + data.get(field, 0.0)
+            existing["last_seen"] = max(
+                existing.get("last_seen", 0.0), data.get("last_seen", 0.0)
+            )
+            for f in ("model", "category", "complexity"):
+                if f not in existing and f in data:
+                    existing[f] = data[f]
+        try:
+            atomic_write_json(dest_path, raw, indent=2, sort_keys=True)
+        except OSError as e:
+            logger.warning(f"Global model ledger write failed (non-fatal): {e}")
