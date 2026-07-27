@@ -861,7 +861,7 @@ class ExecuteMixin:
                     locations = resolver.resolve_errors(output)
                     attributed_error = resolver.format_for_llm(locations, output)
                     classified = format_classified_error(output)
-                    error_logs = self._build_error_context(
+                    error_logs = "[BUILD] " + self._build_error_context(
                         prior_errors,
                         attempt,
                         output,
@@ -886,7 +886,7 @@ class ExecuteMixin:
                     locations = resolver.resolve_errors(output)
                     attributed_error = resolver.format_for_llm(locations, output)
                     classified = format_classified_error(output)
-                    error_logs = self._build_error_context(
+                    error_logs = "[TYPECHECK] " + self._build_error_context(
                         prior_errors,
                         attempt,
                         output,
@@ -1016,7 +1016,7 @@ class ExecuteMixin:
                     locations = resolver.resolve_errors(output)
                     attributed_error = resolver.format_for_llm(locations, output)
                     classified = format_classified_error(output)
-                    error_logs = self._build_error_context(
+                    error_logs = "[TEST] " + self._build_error_context(
                         prior_errors,
                         attempt,
                         output,
