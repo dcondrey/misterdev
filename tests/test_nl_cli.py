@@ -130,3 +130,15 @@ def test_fast_route_falls_back_to_llm_for_queries(monkeypatch):
     monkeypatch.setattr(nl_cli, "parse_intent", spy)
     nl_cli.route("what is the current status", _FakeOrch(), confirm=lambda _p: "n")
     assert called, "LLM should be called for a query-word request"
+
+
+def test_destructive_verb_still_confirms(monkeypatch):
+    monkeypatch.setattr(nl_cli, "parse_intent", lambda req, client: {})
+    confirmed = []
+    orch = _FakeOrch()
+    _FakeOrch.calls = {}
+    nl_cli.route(
+        "delete the auth module", orch, confirm=lambda _p: confirmed.append(1) or "n"
+    )
+    assert confirmed, "destructive verb must prompt for confirmation even on fast path"
+    assert "build" not in _FakeOrch.calls

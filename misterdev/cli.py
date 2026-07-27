@@ -388,6 +388,8 @@ def main():
             logger.info(f"Running specific task {args.task} in project {run_path}")
             orchestrator.run_task(run_path, args.task)
         else:
+            status_before = orchestrator.get_project_status(run_path)
+            has_tasks = bool(status_before.get("tasks"))
             logger.info(f"Running pending tasks for project {run_path}")
             orchestrator.run_project(
                 run_path,
@@ -399,6 +401,11 @@ def main():
                 budget=args.budget,
                 proceed=args.proceed,
             )
+            if not has_tasks and not args.tasks:
+                console.print(
+                    "[dim]No planned tasks found.[/]  "
+                    "Use [bold]misterdev build [goal][/bold] to autonomously plan and execute work."
+                )
     elif args.command == "build":
         from pathlib import Path as _Path
 

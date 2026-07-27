@@ -89,13 +89,16 @@ def preview(intent: Dict[str, Any]) -> str:
 
 
 def _dispatch(intent: Dict[str, Any], orchestrator) -> int:
+    from rich.live import Live
     from rich.markdown import Markdown
     from rich.panel import Panel
+    from rich.text import Text
 
     cmd = intent.get("command")
     path = intent.get("path") or "."
     if cmd == "build":
-        report = orchestrator.build(path, _build_args(intent))
+        with Live(Text("Building…", style="dim"), console=console, transient=True):
+            report = orchestrator.build(path, _build_args(intent))
         succeeded = orchestrator.last_build_succeeded
         title = (
             "[bold green]Build Complete[/bold green]"
@@ -147,6 +150,7 @@ _QUERY_WORDS = {
     "when",
     "who",
 }
+_DESTRUCTIVE_VERBS = {"delete", "remove", "drop", "destroy", "wipe", "erase", "purge"}
 
 
 def _fast_route(request: str) -> Dict[str, Any] | None:
@@ -164,7 +168,9 @@ def route(request: str, orchestrator, confirm=input) -> int:
     Returns a process exit code. ``confirm`` is injectable for testing.
     """
     intent = _fast_route(request)
-    needs_confirm = intent is None  # explicit fast-route = user was already clear
+    first_word = request.strip().split()[0].lower() if request.strip() else ""
+    # Skip confirm for fast-routed requests unless the verb is destructive.
+    needs_confirm = intent is None or first_word in _DESTRUCTIVE_VERBS
     if intent is None:
         cfg = ConfigManager().load_project_config(".")
         try:
