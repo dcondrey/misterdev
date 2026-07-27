@@ -15,7 +15,7 @@ class _FakeOrch:
     last_build_succeeded = True
     calls: dict = {}
 
-    def build(self, path, args):
+    def build(self, path, args, progress_cb=None, **kwargs):
         _FakeOrch.calls["build"] = (path, args)
         return "REPORT"
 
@@ -80,8 +80,10 @@ def test_route_confirms_then_runs_mutating(monkeypatch):
 
 
 def test_route_cancel_skips_execution(monkeypatch):
+    # Use a query-word prefix so the request falls through to the LLM and the
+    # confirm prompt fires; the fast-path skips confirm by design.
     _stub_client(monkeypatch, '{"command": "build", "path": ".", "goal": "x"}')
-    rc = nl_cli.route("x", _FakeOrch(), confirm=lambda _p: "n")
+    rc = nl_cli.route("do build x", _FakeOrch(), confirm=lambda _p: "n")
     assert rc == 0
     assert "build" not in _FakeOrch.calls
 
@@ -98,5 +100,45 @@ def test_route_readonly_does_not_confirm(monkeypatch):
 
 def test_route_unmappable_request(monkeypatch):
     _stub_client(monkeypatch, '{"command": "nonsense"}')
-    rc = nl_cli.route("blah blah", _FakeOrch(), confirm=lambda _p: "y")
+    # "what" is a query word so it falls through to the LLM, which returns an
+    # unknown command — the router should return 1.
+    rc = nl_cli.route("what is blah blah", _FakeOrch(), confirm=lambda _p: "y")
     assert rc == 1
+
+
+def test_fast_route_skips_llm_for_build_requests(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        nl_cli, "parse_intent", lambda req, client: called.append(1) or {}
+    )
+    orch = _FakeOrch()
+    _FakeOrch.calls = {}
+    nl_cli.route("add caching to the API", orch, confirm=lambda _p: "y")
+    assert not called, "LLM should not be called for an obvious build request"
+    assert "build" in _FakeOrch.calls
+
+
+def test_fast_route_falls_back_to_llm_for_queries(monkeypatch):
+    called = []
+    _stub_client(monkeypatch, '{"command": "status", "path": "."}')
+    orig = nl_cli.parse_intent
+
+    def spy(req, client):
+        called.append(req)
+        return orig(req, client)
+
+    monkeypatch.setattr(nl_cli, "parse_intent", spy)
+    nl_cli.route("what is the current status", _FakeOrch(), confirm=lambda _p: "n")
+    assert called, "LLM should be called for a query-word request"
+
+
+def test_destructive_verb_still_confirms(monkeypatch):
+    monkeypatch.setattr(nl_cli, "parse_intent", lambda req, client: {})
+    confirmed = []
+    orch = _FakeOrch()
+    _FakeOrch.calls = {}
+    nl_cli.route(
+        "delete the auth module", orch, confirm=lambda _p: confirmed.append(1) or "n"
+    )
+    assert confirmed, "destructive verb must prompt for confirmation even on fast path"
+    assert "build" not in _FakeOrch.calls

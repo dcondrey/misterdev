@@ -374,15 +374,25 @@ def main():
         _print_doctor(result)
         sys.exit(result.get("exit_code", 1))
     elif args.command == "run":
+        from pathlib import Path as _Path
+
+        run_path = args.project_path
+        # If project_path isn't a directory the user likely typed a goal
+        # (e.g. `misterdev run "add feature X"`); route to build instead.
+        if run_path != "." and not _Path(run_path).is_dir() and not args.task:
+            from misterdev.nl_cli import route as _nl_route
+
+            sys.exit(_nl_route(run_path, orchestrator))
+
         if args.task:
-            logger.info(
-                f"Running specific task {args.task} in project {args.project_path}"
-            )
-            orchestrator.run_task(args.project_path, args.task)
+            logger.info(f"Running specific task {args.task} in project {run_path}")
+            orchestrator.run_task(run_path, args.task)
         else:
-            logger.info(f"Running pending tasks for project {args.project_path}")
+            status_before = orchestrator.get_project_status(run_path)
+            has_tasks = bool(status_before.get("tasks"))
+            logger.info(f"Running pending tasks for project {run_path}")
             orchestrator.run_project(
-                args.project_path,
+                run_path,
                 dry_run=args.dry_run,
                 skip_preflight=args.skip_preflight,
                 force=args.force,
@@ -391,8 +401,24 @@ def main():
                 budget=args.budget,
                 proceed=args.proceed,
             )
+            if not has_tasks and not args.tasks:
+                console.print(
+                    "[dim]No planned tasks found.[/]  "
+                    "Use [bold]misterdev build [goal][/bold] to autonomously plan and execute work."
+                )
     elif args.command == "build":
-        build_args = list(args.prompt)
+        from pathlib import Path as _Path
+
+        project_path = args.project_path
+        prompt_words = list(args.prompt)
+        # If project_path doesn't exist as a directory the user wrote something
+        # like `misterdev build "add caching"` — treat the value as the first
+        # word(s) of the goal and default the path to the current directory.
+        if project_path != "." and not _Path(project_path).is_dir():
+            prompt_words = [project_path] + prompt_words
+            project_path = "."
+
+        build_args = prompt_words
         if args.budget != 100.0:
             build_args.extend(["--budget", str(args.budget)])
         if args.commit:
@@ -416,9 +442,21 @@ def main():
         if args.max_tasks is not None:
             build_args.extend(["--max-tasks", str(args.max_tasks)])
 
-        report = orchestrator.build(
-            args.project_path, " ".join(build_args), reference_dir=args.reference
-        )
+        from rich.live import Live
+        from rich.spinner import Spinner
+
+        _spinner = Spinner("dots", text="Analyzing…")
+
+        def _on_progress(done, total, phase):
+            _spinner.text = f"{phase} [{done}/{total}]" if total else phase
+
+        with Live(_spinner, console=console, transient=True, refresh_per_second=10):
+            report = orchestrator.build(
+                project_path,
+                " ".join(build_args),
+                reference_dir=args.reference,
+                progress_cb=_on_progress,
+            )
         console.print("\n")
         if orchestrator.last_build_succeeded:
             console.print(

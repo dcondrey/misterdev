@@ -272,6 +272,19 @@ def build(
             examples=["/Users/me/code/donor-impl"],
         ),
     ] = None,
+    spec_text: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "A complete implementation spec in markdown — supply this when you "
+                "have already analysed the codebase and written the spec yourself "
+                "(e.g. from a Claude conversation). misterdev will skip its own "
+                "analysis and spec-generation phases and go straight to "
+                "decompose → execute → verify using your spec. Omit to let "
+                "misterdev analyse and generate the spec from ``goal``."
+            ),
+        ),
+    ] = None,
 ) -> str:
     """Autonomously plan AND execute a goal in a project, from scratch.
 
@@ -283,6 +296,9 @@ def build(
     Related: ``run`` (execute an existing plan), ``status`` (inspect tasks).
     Pass ``reference_dir`` to port from an existing implementation: its
     module/symbol map is extracted read-only and guides the plan.
+    Pass ``spec_text`` when you have already written the implementation spec
+    (e.g. in a Claude conversation) — misterdev skips its own planning phase
+    and executes your spec directly, making it Claude's execution backend.
 
     DESTRUCTIVE side effects: edits files and makes git commits, and calls an
     external LLM provider (open-world, non-idempotent). It refuses to run on a
@@ -299,7 +315,12 @@ def build(
         parts.append("--parallel")
     if max_tasks is not None:
         parts += ["--max-tasks", str(max_tasks)]
-    report = orch.build(path, " ".join(parts), reference_dir=reference_dir)
+    report = orch.build(
+        path,
+        " ".join(parts),
+        reference_dir=reference_dir,
+        spec_text=spec_text or "",
+    )
     outcome = "succeeded" if orch.last_build_succeeded else "did not fully succeed"
     return f"Build {outcome}.\n\n{report}"
 

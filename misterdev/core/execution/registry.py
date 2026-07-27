@@ -89,6 +89,14 @@ class ProjectRegistry:
             logger.debug(f"Project already registered: {project_id}")
             return self.projects[project_id]
 
+        yaml_path = path / "project.yaml"
+        if not yaml_path.exists():
+            try:
+                yaml_path.write_text(f"name: {path.name}\n", encoding="utf-8")
+                logger.info(f"Created minimal project.yaml at {yaml_path}")
+            except OSError as e:
+                logger.warning(f"Could not write project.yaml at {yaml_path}: {e}")
+
         config = self.config_manager.load_project_config(path)
         project = Project(path, config)
         self.projects[project_id] = project

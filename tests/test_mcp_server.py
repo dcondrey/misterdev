@@ -11,7 +11,7 @@ class _FakeOrch:
     last_build_succeeded = True
     calls: dict = {}
 
-    def build(self, path, args, reference_dir=None, progress_cb=None):
+    def build(self, path, args, reference_dir=None, progress_cb=None, spec_text=""):
         _FakeOrch.calls["build"] = (path, args, reference_dir)
         if progress_cb is not None:
             progress_cb(done=1, total=1, phase="building")

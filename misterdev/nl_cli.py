@@ -89,12 +89,31 @@ def preview(intent: Dict[str, Any]) -> str:
 
 
 def _dispatch(intent: Dict[str, Any], orchestrator) -> int:
+    from rich.live import Live
+    from rich.markdown import Markdown
+    from rich.panel import Panel
+    from rich.spinner import Spinner
+
     cmd = intent.get("command")
     path = intent.get("path") or "."
     if cmd == "build":
-        report = orchestrator.build(path, _build_args(intent))
-        console.print(report)
-        return 0 if orchestrator.last_build_succeeded else 1
+        spinner = Spinner("dots", text="Building…")
+
+        def _on_progress(done, total, phase):
+            spinner.text = f"{phase} [{done}/{total}]" if total else phase
+
+        with Live(spinner, console=console, transient=True, refresh_per_second=10):
+            report = orchestrator.build(
+                path, _build_args(intent), progress_cb=_on_progress
+            )
+        succeeded = orchestrator.last_build_succeeded
+        title = (
+            "[bold green]Build Complete[/bold green]"
+            if succeeded
+            else "[bold red]Build Failed Validation[/bold red]"
+        )
+        console.print(Panel(Markdown(report), title=title, expand=False))
+        return 0 if succeeded else 1
     if cmd == "run":
         orchestrator.run_project(path, dry_run=bool(intent.get("dry_run")))
         return 0
@@ -117,22 +136,60 @@ def _dispatch(intent: Dict[str, Any], orchestrator) -> int:
     return 1
 
 
+_MANAGEMENT_WORDS = {"scan", "list", "status", "report", "run", "plan"}
+_QUERY_WORDS = {
+    "what",
+    "how",
+    "why",
+    "show",
+    "get",
+    "find",
+    "check",
+    "is",
+    "are",
+    "does",
+    "do",
+    "did",
+    "has",
+    "have",
+    "which",
+    "where",
+    "when",
+    "who",
+}
+_DESTRUCTIVE_VERBS = {"delete", "remove", "drop", "destroy", "wipe", "erase", "purge"}
+
+
+def _fast_route(request: str) -> Dict[str, Any] | None:
+    """Return a build intent without an LLM call when the request clearly
+    describes coding work (first word is not a management or query word)."""
+    first = request.strip().split()[0].lower() if request.strip() else ""
+    if first and first not in _MANAGEMENT_WORDS and first not in _QUERY_WORDS:
+        return {"command": "build", "path": ".", "goal": request.strip()}
+    return None
+
+
 def route(request: str, orchestrator, confirm=input) -> int:
     """Resolve a plain-English request to an action and run it.
 
     Returns a process exit code. ``confirm`` is injectable for testing.
     """
-    cfg = ConfigManager().load_project_config(".")
-    try:
-        client = create_llm_client(cfg)
-    except Exception as e:
-        console.print(
-            "[yellow]Natural-language mode needs an LLM configured "
-            f"(model + API key). {e}[/]\nRun `misterdev --help` for the flag-based CLI."
-        )
-        return 1
+    intent = _fast_route(request)
+    first_word = request.strip().split()[0].lower() if request.strip() else ""
+    # Skip confirm for fast-routed requests unless the verb is destructive.
+    needs_confirm = intent is None or first_word in _DESTRUCTIVE_VERBS
+    if intent is None:
+        cfg = ConfigManager().load_project_config(".")
+        try:
+            client = create_llm_client(cfg)
+        except Exception as e:
+            console.print(
+                "[yellow]Natural-language mode needs an LLM configured "
+                f"(model + API key). {e}[/]\nRun `misterdev --help` for the flag-based CLI."
+            )
+            return 1
+        intent = parse_intent(request, client)
 
-    intent = parse_intent(request, client)
     cmd = intent.get("command")
     if cmd not in KNOWN_COMMANDS:
         console.print(
@@ -140,8 +197,9 @@ def route(request: str, orchestrator, confirm=input) -> int:
         )
         return 1
 
-    console.print(f"[dim]→ I'll run:[/] misterdev {preview(intent)}")
-    if cmd in _MUTATING:
+    if needs_confirm:
+        console.print(f"[dim]→ I'll run:[/] misterdev {preview(intent)}")
+    if needs_confirm and cmd in _MUTATING:
         answer = confirm("proceed? [Y/n] ").strip().lower()
         if answer and answer not in ("y", "yes"):
             console.print("Cancelled.")
