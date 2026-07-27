@@ -15,7 +15,7 @@ class _FakeOrch:
     last_build_succeeded = True
     calls: dict = {}
 
-    def build(self, path, args):
+    def build(self, path, args, progress_cb=None, **kwargs):
         _FakeOrch.calls["build"] = (path, args)
         return "REPORT"
 

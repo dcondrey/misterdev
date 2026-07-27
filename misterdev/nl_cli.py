@@ -92,13 +92,20 @@ def _dispatch(intent: Dict[str, Any], orchestrator) -> int:
     from rich.live import Live
     from rich.markdown import Markdown
     from rich.panel import Panel
-    from rich.text import Text
+    from rich.spinner import Spinner
 
     cmd = intent.get("command")
     path = intent.get("path") or "."
     if cmd == "build":
-        with Live(Text("Building…", style="dim"), console=console, transient=True):
-            report = orchestrator.build(path, _build_args(intent))
+        spinner = Spinner("dots", text="Building…")
+
+        def _on_progress(done, total, phase):
+            spinner.text = f"{phase} [{done}/{total}]" if total else phase
+
+        with Live(spinner, console=console, transient=True, refresh_per_second=10):
+            report = orchestrator.build(
+                path, _build_args(intent), progress_cb=_on_progress
+            )
         succeeded = orchestrator.last_build_succeeded
         title = (
             "[bold green]Build Complete[/bold green]"
@@ -190,7 +197,8 @@ def route(request: str, orchestrator, confirm=input) -> int:
         )
         return 1
 
-    console.print(f"[dim]→ I'll run:[/] misterdev {preview(intent)}")
+    if needs_confirm:
+        console.print(f"[dim]→ I'll run:[/] misterdev {preview(intent)}")
     if needs_confirm and cmd in _MUTATING:
         answer = confirm("proceed? [Y/n] ").strip().lower()
         if answer and answer not in ("y", "yes"):
