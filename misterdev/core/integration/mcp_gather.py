@@ -275,7 +275,10 @@ def gather_context(
             gathered.append(f"### {server}.{tool} -> (no result / error)")
             continue
         tag = _UNVETTED_TAG if server in provisioned else ""
-        gathered.append(f"### {server}.{tool}{tag}\n{result}")
+        gathered.append(
+            f"### {server}.{tool}{tag}\n"
+            f'<tool_result name="{server}.{tool}">\n{result}\n</tool_result>'
+        )
 
     if not gathered:
         return ""
