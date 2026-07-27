@@ -112,10 +112,12 @@ class GatesMixin:
             reflections.append(new_reflection)
         if not reflections:
             return error_logs
+        window = reflections[-3:]
         header = "### Reflection on why previous attempts failed\n" + "\n\n".join(
-            reflections
+            window
         )
-        return f"{header}\n\n{error_logs}"
+        trimmed = error_logs[:20000] if len(error_logs) > 20000 else error_logs
+        return f"{header}\n\n{trimmed}"
 
     def _build_error_context(
         self,

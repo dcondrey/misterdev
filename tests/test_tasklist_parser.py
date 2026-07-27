@@ -4,6 +4,7 @@ tables, dependency resolution, and the LLM fallback."""
 
 from misterdev.core.planning.tasklist_parser import (
     _clean_path,
+    _extract_dependency_table,
     detect_format,
     parse_task_list,
 )
@@ -214,6 +215,13 @@ def test_markdown_dependency_table_unlocks_graph():
     assert docs.dependencies == [ids["Add API"]]
     core = next(t for t in tasks if t.title == "Build core")
     assert core.dependencies == []  # independent -> parallelizable
+
+
+def test_dependency_table_dep_column_first_no_self_edge():
+    # Dependency column at index 0 with an unrecognized task header ('Step').
+    # task_col must not blindly fall back to 0 (== dep_col) and key a self-edge.
+    md = "| Blocked By | Step |\n|-----|-----|\n| T001 | T002 |\n"
+    assert _extract_dependency_table(md) == {"T002": ["T001"]}
 
 
 # --- plain text -------------------------------------------------------------

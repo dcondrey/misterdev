@@ -429,7 +429,9 @@ class ParallelExecutionMixin:
                 # to delete a branch still checked out in a worktree, which otherwise
                 # leaks even merged branches. The task's commits live on the branch
                 # ref, so the merge below still sees them after the dir is gone.
-                git.worktree_remove(project, str(wt_path))
+                ok, msg = git.worktree_remove(project, str(wt_path))
+                if not ok:
+                    logger.warning(f"Failed to remove worktree {wt_path}: {msg}")
                 merged = False
                 if (
                     result is not None

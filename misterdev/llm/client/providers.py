@@ -158,7 +158,7 @@ class OpenRouterLLMClient(BaseLLMClient):
     def __init__(self, config: dict):
         super().__init__(config)
         llm_config = config.get("llm", {})
-        self.client, self.api_key = _openrouter_sdk(llm_config)
+        self.client, _ = _openrouter_sdk(llm_config)
         self.model = get_section_setting("llm", llm_config, "model")
         self.temperature = get_section_setting("llm", llm_config, "temperature")
         self.sampling = dict(get_section_setting("llm", llm_config, "sampling") or {})

@@ -205,8 +205,24 @@ def _extract_dependency_table(text: str) -> Dict[str, List[str]]:
         ),
         None,
     )
-    task_col = next((i for i, h in enumerate(header) if "task" in h or "id" in h), 0)
+    task_col = next(
+        (
+            i
+            for i, h in enumerate(header)
+            if any(
+                k in h for k in ("task", "id", "step", "feature", "item", "name", "#")
+            )
+        ),
+        None,
+    )
     if dep_col is None:
+        return deps
+    if task_col is None or task_col == dep_col:
+        # No recognizable task header (or it collided with the dep column):
+        # take the first column that is not the dependency column rather than
+        # blindly keying on index 0 and manufacturing a self-edge.
+        task_col = next((i for i in range(len(header)) if i != dep_col), None)
+    if task_col is None:
         return deps
     for row in rows[1:]:
         cells = [c.strip() for c in row.strip("|").split("|")]

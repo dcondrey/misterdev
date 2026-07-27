@@ -315,19 +315,32 @@ def _cgcone_entry(
         "stars": stars,
         "isArchived": archived,
         "lastCommit": last,
-        "installConfig": {"command": command, "args": args, "env": env or {}, "type": "npm"},
+        "installConfig": {
+            "command": command,
+            "args": args,
+            "env": env or {},
+            "type": "npm",
+        },
     }
 
 
 def test_cgcone_config_admits_free_stdio_rejects_keyed_and_remote():
     assert reg._cgcone_config(_cgcone_entry("x/a", "a"))["command"] == "npx"
     assert reg._cgcone_config(_cgcone_entry("x/a", "a", env={"API_KEY": ""})) is None
-    assert reg._cgcone_config(_cgcone_entry("x/a", "a", server_type="streamable-http")) is None
-    assert reg._cgcone_config({"name": "x", "serverType": "stdio", "installConfig": {}}) is None
+    assert (
+        reg._cgcone_config(_cgcone_entry("x/a", "a", server_type="streamable-http"))
+        is None
+    )
+    assert (
+        reg._cgcone_config({"name": "x", "serverType": "stdio", "installConfig": {}})
+        is None
+    )
 
 
 def test_cgcone_signals_map_from_index():
-    sig = reg._cgcone_signals(_cgcone_entry("x/a", "a", stars=3000, days=5, archived=True))
+    sig = reg._cgcone_signals(
+        _cgcone_entry("x/a", "a", stars=3000, days=5, archived=True)
+    )
     assert sig.github_stars == 3000 and sig.archived is True
     assert 0 <= sig.github_pushed_days <= 7
 
@@ -337,10 +350,10 @@ def test_discover_via_cgcone_admits_pins_and_ranks(monkeypatch):
         _cgcone_entry("io.x/fetcher", "server-fetch", stars=8000),
         _cgcone_entry("io.x/obscure", "obscure-pkg", stars=1, description="unrelated"),
     ]
-    monkeypatch.setattr(reg, "fetch_cgcone_registry", lambda cache=None, timeout=10.0: entries)
     monkeypatch.setattr(
-        reg, "_resolve_version", lambda rt, ident, t, c: "1.2.3"
+        reg, "fetch_cgcone_registry", lambda cache=None, timeout=10.0: entries
     )
+    monkeypatch.setattr(reg, "_resolve_version", lambda rt, ident, t, c: "1.2.3")
     out = reg.discover_via_cgcone(["fetch web pages"], max_servers=2)
     assert out and out[0]["name"] == "io.x.fetcher"
     assert out[0]["args"][-1] == "server-fetch@1.2.3"  # version-pinned
@@ -349,21 +362,29 @@ def test_discover_via_cgcone_admits_pins_and_ranks(monkeypatch):
 
 def test_discover_via_cgcone_drops_bogus_unresolvable_spec(monkeypatch):
     entries = [_cgcone_entry("io.x/bogus", "n8n-monorepo", stars=9000)]
-    monkeypatch.setattr(reg, "fetch_cgcone_registry", lambda cache=None, timeout=10.0: entries)
-    monkeypatch.setattr(reg, "_resolve_version", lambda rt, ident, t, c: "")  # doesn't resolve
+    monkeypatch.setattr(
+        reg, "fetch_cgcone_registry", lambda cache=None, timeout=10.0: entries
+    )
+    monkeypatch.setattr(
+        reg, "_resolve_version", lambda rt, ident, t, c: ""
+    )  # doesn't resolve
     assert reg.discover_via_cgcone(["fetch web pages"], max_servers=2) == []
 
 
 def test_discover_via_cgcone_skips_archived_by_score(monkeypatch):
     entries = [_cgcone_entry("io.x/dead", "dead-pkg", stars=9000, archived=True)]
-    monkeypatch.setattr(reg, "fetch_cgcone_registry", lambda cache=None, timeout=10.0: entries)
+    monkeypatch.setattr(
+        reg, "fetch_cgcone_registry", lambda cache=None, timeout=10.0: entries
+    )
     monkeypatch.setattr(reg, "_resolve_version", lambda rt, ident, t, c: "1.0.0")
     assert reg.discover_via_cgcone(["fetch web pages"], max_servers=2) == []
 
 
 def test_discover_via_cgcone_dedups_known_identity(monkeypatch):
     entries = [_cgcone_entry("io.x/fetcher", "server-fetch", stars=8000)]
-    monkeypatch.setattr(reg, "fetch_cgcone_registry", lambda cache=None, timeout=10.0: entries)
+    monkeypatch.setattr(
+        reg, "fetch_cgcone_registry", lambda cache=None, timeout=10.0: entries
+    )
     monkeypatch.setattr(reg, "_resolve_version", lambda rt, ident, t, c: "1.2.3")
     known = {("stdio", "npx", "-y", "server-fetch@1.2.3")}
     assert reg.discover_via_cgcone(["fetch"], known_identities=known) == []
@@ -372,11 +393,13 @@ def test_discover_via_cgcone_dedups_known_identity(monkeypatch):
 def test_discover_servers_routes_source_cgcone(monkeypatch):
     called = {"cgcone": 0, "official": 0}
     monkeypatch.setattr(
-        reg, "discover_via_cgcone",
+        reg,
+        "discover_via_cgcone",
         lambda *a, **k: called.__setitem__("cgcone", called["cgcone"] + 1) or [],
     )
     monkeypatch.setattr(
-        reg, "search_registry",
+        reg,
+        "search_registry",
         lambda *a, **k: called.__setitem__("official", called["official"] + 1) or [],
     )
     discover_servers(["fetch"], source="cgcone")
@@ -415,6 +438,66 @@ def test_absent_runtime_hint_uses_registry_runtime():
     from misterdev.core.integration.mcp_registry import _to_config
 
     assert (
-        _to_config({"name": "p"}, {"registryType": "pypi", "identifier": "p"})["command"]
+        _to_config({"name": "p"}, {"registryType": "pypi", "identifier": "p"})[
+            "command"
+        ]
         == "uvx"
     )
+
+
+class _FakeResp:
+    status = 200
+
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self, n=-1):
+        return self._body if n < 0 else self._body[:n]
+
+
+def test_http_get_json_rejects_oversized_body(monkeypatch):
+    import urllib.request
+
+    # Valid JSON, but larger than the cap — only the size guard can reject it.
+    body = b"[" + b"0," * (reg._MAX_RESPONSE_BYTES // 2 + 1) + b"0]"
+    assert len(body) > reg._MAX_RESPONSE_BYTES
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda req, timeout=None: _FakeResp(body)
+    )
+    assert reg._http_get_json("https://example.test/x", 1.0) is None
+
+
+def test_http_get_json_parses_normal_body(monkeypatch):
+    import urllib.request
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda req, timeout=None: _FakeResp(b'{"ok": true}')
+    )
+    assert reg._http_get_json("https://example.test/x", 1.0) == {"ok": True}
+
+
+def test_resolve_version_pypi_rejects_traversal_identifier(monkeypatch):
+    calls = []
+
+    def _fake(url, timeout, headers=None):
+        calls.append(url)
+        return {"info": {"version": "9.9.9"}}
+
+    monkeypatch.setattr(reg, "_http_get_json", _fake)
+    assert reg._resolve_version("uvx", "foo/../../bar", 1.0, None) == ""
+    assert calls == []  # non-conforming identifier dropped before any request
+
+
+def test_resolve_version_pypi_resolves_valid_name(monkeypatch):
+    def _fake(url, timeout, headers=None):
+        assert url == "https://pypi.org/pypi/mcp-server-foo/json"
+        return {"info": {"version": "1.2.3"}}
+
+    monkeypatch.setattr(reg, "_http_get_json", _fake)
+    assert reg._resolve_version("uvx", "mcp-server-foo", 1.0, None) == "1.2.3"

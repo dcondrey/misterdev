@@ -60,6 +60,13 @@ _CGCONE_URL = (
     "https://raw.githubusercontent.com/Himanshu507/cgcone/main/public/registry.json"
 )
 _DEFAULT_TIMEOUT = 10.0
+# Bound the body materialized from a (semi-trusted) registry/GitHub/npm/PyPI
+# endpoint. Real registry and model-list payloads are well under this; the cap
+# only rejects a compromised/misbehaving endpoint slow-dripping an oversized body.
+_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+# PEP 503 normalized distribution name; anything else (path separators, spaces)
+# is not a real PyPI package and must not be interpolated raw into a request path.
+_PYPI_NAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
 _DEFAULT_MAX_SERVERS = 3
 _DEFAULT_MIN_TRUST = 0.5
 # Cap network scoring per build so a wide search cannot hammer the GitHub API
@@ -172,7 +179,11 @@ def _http_get_json(
             with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
                 if resp.status != 200:
                     return None
-                return json.loads(resp.read().decode("utf-8"))
+                raw = resp.read(_MAX_RESPONSE_BYTES + 1)
+                if len(raw) > _MAX_RESPONSE_BYTES:
+                    logger.debug(f"MCP registry GET oversized (> cap): {url}")
+                    return None
+                return json.loads(raw.decode("utf-8"))
         except (urllib.error.URLError, ValueError, OSError) as e:
             logger.debug(f"MCP registry GET failed ({url}): {e}")
             return None
@@ -205,6 +216,10 @@ class RegistryCache:
         with RegistryCache._locks_guard:
             self._lock = RegistryCache._locks.setdefault(key, threading.Lock())
         self._data: Dict[str, Dict[str, Any]] = self._load()
+        try:
+            self._mtime: float = self.path.stat().st_mtime
+        except OSError:
+            self._mtime = 0.0
 
     def _load(self) -> Dict[str, Dict[str, Any]]:
         try:
@@ -224,13 +239,31 @@ class RegistryCache:
             merged = {**self._load(), **self._data}
             self._data = merged
             tmp = self.path.with_suffix(f".{os.getpid()}.{id(self)}.tmp")
-            tmp.write_text(json.dumps(merged), encoding="utf-8")
-            os.replace(tmp, self.path)
+            try:
+                tmp.write_text(json.dumps(merged), encoding="utf-8")
+                os.replace(tmp, self.path)
+                try:
+                    self._mtime = self.path.stat().st_mtime
+                except OSError:
+                    pass
+            except Exception:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
         except (OSError, ValueError) as e:
             logger.debug(f"MCP registry cache flush failed: {e}")
 
     def get(self, key: str) -> Optional[Any]:
         with self._lock:
+            try:
+                mtime = self.path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            if mtime != self._mtime:
+                self._data = self._load()
+                self._mtime = mtime
             entry = self._data.get(key)
             if not entry:
                 return None
@@ -681,8 +714,11 @@ def _resolve_version(runtime: str, identifier: str, timeout: float, cache) -> st
         quoted = urllib.parse.quote(identifier, safe="@")
         data = _http_get_json(f"https://registry.npmjs.org/{quoted}/latest", timeout)
         version = data.get("version", "") if isinstance(data, dict) else ""
+    elif not _PYPI_NAME_RE.match(identifier):
+        version = ""
     else:
-        data = _http_get_json(f"https://pypi.org/pypi/{identifier}/json", timeout)
+        quoted = urllib.parse.quote(identifier, safe="")
+        data = _http_get_json(f"https://pypi.org/pypi/{quoted}/json", timeout)
         version = (
             (data.get("info") or {}).get("version", "")
             if isinstance(data, dict)

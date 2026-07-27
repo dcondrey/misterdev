@@ -213,7 +213,7 @@ def _drive_browser(
     deadline: float,
 ) -> WebResult:
     """Load ``url`` headless, run ``checks``, always capture a screenshot."""
-    nav_timeout_ms = max(1, int((deadline - time.monotonic()) * 1000))
+    nav_timeout_ms = max(1000, int((deadline - time.monotonic()) * 1000))
     console_errors: List[str] = []
     results: List[Tuple[str, str]] = []
     failures: List[str] = []

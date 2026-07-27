@@ -96,3 +96,22 @@ def test_eviction_ignores_tmp_files():
         stray.write_text("{}", encoding="utf-8")
         cache.put("sys", "p2", "o2")
         assert stray.exists()
+
+
+def test_put_below_cap_does_not_rescan(monkeypatch):
+    import misterdev.core.economics.llm_cache as mod
+
+    with tempfile.TemporaryDirectory() as d:
+        cache = LLMCache(Path(d) / "c", max_entries=1000)
+        cache.put("sys", "warm", "o")  # first put seeds the count estimate
+        calls = []
+        real = os.scandir
+
+        def spy(path):
+            calls.append(path)
+            return real(path)
+
+        monkeypatch.setattr(mod.os, "scandir", spy)
+        for i in range(5):
+            cache.put("sys", f"p{i}", f"o{i}")
+        assert calls == []  # no directory scan while far below the cap

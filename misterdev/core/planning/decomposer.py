@@ -4,7 +4,7 @@ Breaks a spec into ordered, atomic tasks with dependency tracking.
 Uses topological sort to determine execution order.
 """
 
-from collections import deque
+import heapq
 from pathlib import Path
 
 from misterdev.core.models import Task
@@ -494,7 +494,8 @@ def _add_implicit_dependencies(tasks: list[Task]) -> None:
 def topological_sort(tasks: list[Task]) -> list[Task]:
     """Sort tasks respecting dependencies. Falls back to category order on ties.
 
-    Returns tasks in execution order. Raises ValueError on cycles.
+    Returns tasks in execution order. On a dependency cycle it does not raise:
+    the cyclic remainder is appended in category order with a warning.
     """
     task_map = {t.id: t for t in tasks}
     in_degree: dict[str, int] = {t.id: 0 for t in tasks}
@@ -506,20 +507,28 @@ def topological_sort(tasks: list[Task]) -> list[Task]:
                 in_degree[t.id] += 1
                 dependents[dep_id].append(t.id)
 
-    # Seed queue with zero-dependency tasks, sorted by category order
-    queue: deque[str] = deque()
-    ready = [tid for tid, deg in in_degree.items() if deg == 0]
-    ready.sort(key=lambda tid: CATEGORY_ORDER.get(task_map[tid].category, 99))
-    queue.extend(ready)
+    def _rank(tid: str) -> int:
+        return CATEGORY_ORDER.get(task_map[tid].category, 99)
+
+    # Min-heap keyed on (category_rank, insertion_index) so every ready task —
+    # the initial seed and tasks unblocked mid-traversal alike — is dequeued in
+    # category order, with declaration order as a stable tie-break.
+    counter = 0
+    heap: list[tuple[int, int, str]] = []
+    for tid, deg in in_degree.items():
+        if deg == 0:
+            heapq.heappush(heap, (_rank(tid), counter, tid))
+            counter += 1
 
     result = []
-    while queue:
-        tid = queue.popleft()
+    while heap:
+        _, _, tid = heapq.heappop(heap)
         result.append(task_map[tid])
         for dep_tid in dependents[tid]:
             in_degree[dep_tid] -= 1
             if in_degree[dep_tid] == 0:
-                queue.append(dep_tid)
+                heapq.heappush(heap, (_rank(dep_tid), counter, dep_tid))
+                counter += 1
 
     if len(result) != len(tasks):
         # Cycle detected; append remaining tasks anyway with a warning
