@@ -10,6 +10,22 @@ from misterdev.config import get_setting
 from .helpers import logger
 
 
+def _write_spec_conftest(spec_dir) -> None:
+    """Write a pytest conftest that prevents discovery of spec test files.
+
+    collect_ignore_glob only suppresses bare-discovery; explicit paths
+    (as used by _run_spec_test) are unaffected. Best-effort: OSError is silent.
+    """
+    conftest = spec_dir / "conftest.py"
+    if not conftest.exists():
+        try:
+            conftest.write_text(
+                "collect_ignore_glob = ['spec_*.py']\n", encoding="utf-8"
+            )
+        except OSError:
+            pass
+
+
 class CriticSpecMixin:
     def _critic_enabled_for(self, project: Project, task: Task) -> bool:
         """Whether the adversarial critic runs for this task.
@@ -171,12 +187,14 @@ class CriticSpecMixin:
                 except OSError:
                     pass
                 return None, None
+            _write_spec_conftest(path.parent)
             logger.info(
                 "Spec-as-test written (validated: "
                 f"{'reproduces' if status == 'red' else 'unscored'}; injected as "
                 f"target, run as gate): {path}"
             )
             return str(path), source
+        _write_spec_conftest(path.parent)
         logger.info(f"Spec-as-test written (injected as target, run as gate): {path}")
         return str(path), source
 
