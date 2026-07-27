@@ -9,6 +9,43 @@ type.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-27
+
+Natural-language-first interface and Claude execution-backend integration.
+
+### Added
+
+- **Zero-friction natural-language CLI.** `misterdev "add rate limiting"` routes
+  directly to an autonomous build — no subcommand, no devplan, no confirmation
+  prompt. A fast-path heuristic handles coding verbs without an LLM call; query
+  words (`what`, `how`, `show`, …) fall through to intent-parsing as before.
+- **`spec_text` parameter on `build` (CLI + MCP).** Supply a pre-written
+  implementation spec and misterdev skips its own analysis and spec-generation
+  phases, going straight to decompose → execute → verify. Intended for Claude
+  Code: Claude thinks and writes the spec, misterdev executes it with worktrees,
+  gate verification, and parallel task management.
+- **Analysis-phase skip for `spec_text`.** When a spec is caller-supplied,
+  `_analyze()` is replaced by a zero-cost `ProjectAssessment()` stub, saving
+  the full analysis run (LLM calls + build/test execution).
+- **Animated Rich progress spinner.** Both `misterdev build` and the
+  natural-language path show a live spinner whose text updates as tasks complete
+  (`executing [3/7]`), replacing itself with a colour-coded Panel on finish.
+
+### Fixed
+
+- `misterdev build "goal"` — first positional arg is now treated as the goal
+  when it is not a real directory path.
+- `misterdev run "goal"` — same detection; redirects to the natural-language
+  router instead of failing on a missing project path.
+- `misterdev run` with no planned tasks now prints a hint to use
+  `misterdev build [goal]` instead of silently doing nothing.
+- Destructive verbs (`delete`, `remove`, `drop`, `destroy`, `wipe`, `erase`,
+  `purge`) still prompt for confirmation even on the fast path.
+- Redundant "→ I'll run:" echo suppressed for unambiguous fast-routed requests.
+- Projects without a `project.yaml` are now auto-assigned a minimal one on
+  first registration, preventing them from being pruned from the registry on
+  the next startup.
+
 ## [0.5.0] - 2026-07-23
 
 A large hardening + feature run: all planned tiers, the critical/high/medium audit
