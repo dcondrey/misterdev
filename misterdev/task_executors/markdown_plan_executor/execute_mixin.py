@@ -678,6 +678,8 @@ class ExecuteMixin:
             edits, resolve_error = self._resolve_edits(project, llm_response)
             if resolve_error:
                 apply_failures += 1
+                if pending_attempt is not None:
+                    pending_attempt["had_edit_failure"] = True
                 logger.warning(
                     f"Surgical edit could not be applied (#{apply_failures}): "
                     f"{resolve_error}"
@@ -714,6 +716,8 @@ class ExecuteMixin:
                 # model is confident the work already holds — fall through to the
                 # certainty-completion path below instead of spinning.
                 apply_failures += 1
+                if pending_attempt is not None:
+                    pending_attempt["had_edit_failure"] = True
                 logger.warning(
                     f"No applicable file edit in LLM response (#{apply_failures})."
                 )

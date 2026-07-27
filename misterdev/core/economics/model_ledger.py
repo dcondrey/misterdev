@@ -74,6 +74,7 @@ class ModelStat:
     first_try_attempts: float = 0.0
     first_try_successes: float = 0.0
     aborts: float = 0.0
+    edit_apply_failures: float = 0.0
     total_cost: float = 0.0
     total_latency: float = 0.0
     last_seen: float = 0.0  # epoch seconds of the most recent record
@@ -93,6 +94,10 @@ class ModelStat:
     @property
     def abort_rate(self) -> float:
         return self.aborts / self.attempts if self.attempts else 0.0
+
+    @property
+    def edit_fail_rate(self) -> float:
+        return self.edit_apply_failures / self.attempts if self.attempts else 0.0
 
     @property
     def avg_cost(self) -> float:
@@ -210,6 +215,7 @@ class ModelLedger:
         cost: float = 0.0,
         latency: float = 0.0,
         timestamp: Optional[float] = None,
+        edit_failure: bool = False,
     ) -> ModelStat:
         """Record one attempt's outcome and persist the ledger.
 
@@ -239,6 +245,8 @@ class ModelLedger:
                     s.first_try_successes += 1
             if aborted:
                 s.aborts += 1
+            if edit_failure:
+                s.edit_apply_failures += 1
             s.total_latency += latency
             s.last_seen = ts
         self.save()
@@ -262,6 +270,7 @@ class ModelLedger:
         s.first_try_attempts *= factor
         s.first_try_successes *= factor
         s.aborts *= factor
+        s.edit_apply_failures *= factor
         s.total_cost *= factor
         s.total_latency *= factor
 
@@ -362,6 +371,7 @@ class ModelLedger:
                 s.first_try_attempts *= weight
                 s.first_try_successes *= weight
                 s.aborts *= weight
+                s.edit_apply_failures *= weight
                 s.total_cost *= weight
                 s.total_latency *= weight
                 self._stats[key] = s
@@ -402,6 +412,7 @@ class ModelLedger:
                 "first_try_attempts",
                 "first_try_successes",
                 "aborts",
+                "edit_apply_failures",
                 "total_cost",
                 "total_latency",
             ):

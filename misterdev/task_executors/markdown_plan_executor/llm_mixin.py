@@ -235,4 +235,5 @@ class LLMMixin:
             aborted=pending["aborted"],
             cost=cost,
             latency=pending["latency"],
+            edit_failure=pending.get("had_edit_failure", False),
         )

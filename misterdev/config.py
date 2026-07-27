@@ -85,6 +85,10 @@ class LLMSettings:
     # calls; unseen models are unaffected. 0 disables the guard (default off,
     # since a sensible ceiling is project/hardware specific).
     max_attempt_latency_seconds: float = 0.0
+    # Skip a model on a NON-final attempt when its ledger edit-apply-failure rate
+    # exceeds this fraction — it is proven to produce unanchorable edits for this
+    # task kind. 0 disables the guard (default off).
+    max_edit_fail_rate: float = 0.0
     # "auto" mode treats a (category, complexity) cell as matured once it has at
     # least this many recorded attempts, after which it stops exploring and
     # behaves conservatively.

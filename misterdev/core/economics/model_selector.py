@@ -44,6 +44,7 @@ class ModelSelector:
         self.first_try_floor = get_setting(config, "llm", "first_try_floor")
         self.incompetence_floor = get_setting(config, "llm", "incompetence_floor")
         self.max_latency = get_setting(config, "llm", "max_attempt_latency_seconds")
+        self.max_edit_fail_rate = get_setting(config, "llm", "max_edit_fail_rate")
         self.posture = get_setting(config, "llm", "selection_posture")
         self.maturity_threshold = get_setting(config, "llm", "maturity_threshold")
         # Cells already announced as graduated to cheap-first (one log per cell).
@@ -130,6 +131,14 @@ class ModelSelector:
             self.ledger.stat(model, category, complexity).avg_latency > self.max_latency
         )
 
+    def _edit_unreliable(self, model: str, category: str, complexity: str) -> bool:
+        """Proven to produce unanchorable edits: edit-apply-failure rate above the
+        configured ceiling, with enough attempts to judge. Unseen models return False."""
+        if not self.max_edit_fail_rate:
+            return False
+        s = self.ledger.stat(model, category, complexity)
+        return s.attempts >= self.min_obs and s.edit_fail_rate > self.max_edit_fail_rate
+
     # Free (`:free`) endpoints are reserved for the easiest tasks: they are slow
     # (2.5-5 min/call observed) and unreliable, so on anything heavier than a
     # small task they cost more wall-clock and failed attempts than they save.
@@ -159,6 +168,9 @@ class ModelSelector:
         models = [m for m in models if not self._incompetent(m, category, complexity)]
         if not final:
             models = [m for m in models if not self._too_slow(m, category, complexity)]
+            models = [
+                m for m in models if not self._edit_unreliable(m, category, complexity)
+            ]
         if not models:
             return None
         total = self.ledger.total_observations(category, complexity)
