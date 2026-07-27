@@ -98,5 +98,33 @@ def test_route_readonly_does_not_confirm(monkeypatch):
 
 def test_route_unmappable_request(monkeypatch):
     _stub_client(monkeypatch, '{"command": "nonsense"}')
-    rc = nl_cli.route("blah blah", _FakeOrch(), confirm=lambda _p: "y")
+    # "what" is a query word so it falls through to the LLM, which returns an
+    # unknown command — the router should return 1.
+    rc = nl_cli.route("what is blah blah", _FakeOrch(), confirm=lambda _p: "y")
     assert rc == 1
+
+
+def test_fast_route_skips_llm_for_build_requests(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        nl_cli, "parse_intent", lambda req, client: called.append(1) or {}
+    )
+    orch = _FakeOrch()
+    _FakeOrch.calls = {}
+    nl_cli.route("add caching to the API", orch, confirm=lambda _p: "y")
+    assert not called, "LLM should not be called for an obvious build request"
+    assert "build" in _FakeOrch.calls
+
+
+def test_fast_route_falls_back_to_llm_for_queries(monkeypatch):
+    called = []
+    _stub_client(monkeypatch, '{"command": "status", "path": "."}')
+    orig = nl_cli.parse_intent
+
+    def spy(req, client):
+        called.append(req)
+        return orig(req, client)
+
+    monkeypatch.setattr(nl_cli, "parse_intent", spy)
+    nl_cli.route("what is the current status", _FakeOrch(), confirm=lambda _p: "n")
+    assert called, "LLM should be called for a query-word request"

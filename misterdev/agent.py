@@ -651,6 +651,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         args: str = "",
         reference_dir: str | None = None,
         progress_cb: Optional[Callable[..., None]] = None,
+        spec_text: str = "",
     ) -> str:
         project = self._get_or_register(project_path)
         if not project:
@@ -738,6 +739,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
                 report,
                 reference_digest=reference_digest,
                 progress_cb=progress_cb,
+                spec_text=spec_text,
             )
         except BudgetExceededError as e:
             return self._halt_on_budget(project, report, e)
@@ -1246,6 +1248,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         confirm_plan: bool = False,
         reference_digest: str = "",
         progress_cb: Optional[Callable[..., None]] = None,
+        spec_text: str = "",
     ) -> str:
         """Phases 1.5-6: probes, spec, decompose, (confirm), execute, validate.
 
@@ -1323,9 +1326,13 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         # conservative: only claims the verifier refutes with evidence are dropped.
         self._verify_completeness_claims(project, assessment, report)
 
-        # Phase 2: Generate Spec
-        spec = self._generate_spec(
-            mode, prompt, assessment, project, facts=verified_facts
+        # Phase 2: Generate Spec (skip when caller supplies one directly)
+        spec = (
+            spec_text
+            if spec_text
+            else self._generate_spec(
+                mode, prompt, assessment, project, facts=verified_facts
+            )
         )
 
         # Prepend the reference-implementation digest (when porting from one) so

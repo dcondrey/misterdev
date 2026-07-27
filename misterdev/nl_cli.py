@@ -117,22 +117,56 @@ def _dispatch(intent: Dict[str, Any], orchestrator) -> int:
     return 1
 
 
+_MANAGEMENT_WORDS = {"scan", "list", "status", "report", "run", "plan"}
+_QUERY_WORDS = {
+    "what",
+    "how",
+    "why",
+    "show",
+    "get",
+    "find",
+    "check",
+    "is",
+    "are",
+    "does",
+    "do",
+    "did",
+    "has",
+    "have",
+    "which",
+    "where",
+    "when",
+    "who",
+}
+
+
+def _fast_route(request: str) -> Dict[str, Any] | None:
+    """Return a build intent without an LLM call when the request clearly
+    describes coding work (first word is not a management or query word)."""
+    first = request.strip().split()[0].lower() if request.strip() else ""
+    if first and first not in _MANAGEMENT_WORDS and first not in _QUERY_WORDS:
+        return {"command": "build", "path": ".", "goal": request.strip()}
+    return None
+
+
 def route(request: str, orchestrator, confirm=input) -> int:
     """Resolve a plain-English request to an action and run it.
 
     Returns a process exit code. ``confirm`` is injectable for testing.
     """
-    cfg = ConfigManager().load_project_config(".")
-    try:
-        client = create_llm_client(cfg)
-    except Exception as e:
-        console.print(
-            "[yellow]Natural-language mode needs an LLM configured "
-            f"(model + API key). {e}[/]\nRun `misterdev --help` for the flag-based CLI."
-        )
-        return 1
+    intent = _fast_route(request)
+    if intent is None:
+        cfg = ConfigManager().load_project_config(".")
+        try:
+            client = create_llm_client(cfg)
+        except Exception as e:
+            console.print(
+                "[yellow]Natural-language mode needs an LLM configured "
+                f"(model + API key). {e}[/]\nRun `misterdev --help` for the flag-based CLI."
+            )
+            return 1
+        intent = parse_intent(request, client)
 
-    intent = parse_intent(request, client)
     cmd = intent.get("command")
     if cmd not in KNOWN_COMMANDS:
         console.print(

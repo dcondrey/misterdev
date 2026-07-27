@@ -392,7 +392,18 @@ def main():
                 proceed=args.proceed,
             )
     elif args.command == "build":
-        build_args = list(args.prompt)
+        from pathlib import Path as _Path
+
+        project_path = args.project_path
+        prompt_words = list(args.prompt)
+        # If project_path doesn't exist as a directory the user wrote something
+        # like `misterdev build "add caching"` — treat the value as the first
+        # word(s) of the goal and default the path to the current directory.
+        if project_path != "." and not _Path(project_path).is_dir():
+            prompt_words = [project_path] + prompt_words
+            project_path = "."
+
+        build_args = prompt_words
         if args.budget != 100.0:
             build_args.extend(["--budget", str(args.budget)])
         if args.commit:
@@ -417,7 +428,7 @@ def main():
             build_args.extend(["--max-tasks", str(args.max_tasks)])
 
         report = orchestrator.build(
-            args.project_path, " ".join(build_args), reference_dir=args.reference
+            project_path, " ".join(build_args), reference_dir=args.reference
         )
         console.print("\n")
         if orchestrator.last_build_succeeded:
