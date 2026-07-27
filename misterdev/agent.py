@@ -1,9 +1,10 @@
-import concurrent.futures
+import json
 import re
+import shlex
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Callable, Dict, Optional
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -24,6 +25,7 @@ from misterdev.core.planning.assessment import (
 from misterdev.core.context.scratchpad import Scratchpad
 from misterdev.core.planning.decomposer import (
     decompose_spec,
+    split_keystone_tasks,
     topological_sort,
     format_plan,
 )
@@ -49,6 +51,10 @@ from misterdev.core.context.change_tracker import ChangeTracker
 from misterdev.core.reporting.report import BuildReport
 from misterdev.core.execution.project import Project
 from misterdev.core.execution.deferral import DeferralBook
+from misterdev.core.execution.env_learnings import EnvLearnings
+from misterdev.core.execution.parallel import ParallelExecutionMixin
+from misterdev.core.execution.integration_gate import IntegrationGateMixin
+from misterdev.utils.file_utils import atomic_write, orchestrator_state_file
 from misterdev.core.models import Task
 from misterdev.analyzers.project_analyzer import (
     analyze_project,
@@ -57,14 +63,18 @@ from misterdev.analyzers.project_analyzer.detection import (
     detect_lint_command,
     detect_typecheck_command,
 )
+from misterdev.analyzers.reference_digest import build_reference_digest
 from misterdev.core.planning.advisor import recommend_work
+from misterdev.core.planning.plan_store import (
+    approved_items,
+    save_plan,
+)
 from misterdev.llm.client import BudgetExceededError
 from misterdev.task_executors.markdown_plan_executor import (
     MarkdownPlanExecutor,
 )
 from misterdev.agent_helpers import (
     ProgressReporter,
-    _WorktreeProjectView,
     _apply_budget_ceiling,
     _budget_exhausted,
     _check_golden_config,
@@ -72,6 +82,8 @@ from misterdev.agent_helpers import (
     _warn_if_baseline_broken,
     _warn_if_no_test_gate,
     _warn_if_test_gate_is_noop,
+    worktree_healthcheck_command,
+    worktree_setup_command,
 )
 from misterdev.config import get_setting
 from misterdev.logging_setup import setup_logger
@@ -87,13 +99,31 @@ MAX_CONSECUTIVE_FAILURES = 3
 CONVERGENCE_CEILING = 25
 
 
-class ProjectOrchestrator:
+class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
     """Main orchestrator with Sovereign Grounded workflow."""
 
     def __init__(self):
         self.registry = ProjectRegistry()
         self.last_build_succeeded = True
         self.last_build_cost = 0.0
+        # Cooperative-stop plumbing for background jobs (see core.execution.jobs).
+        # request_stop() lowers the active run's budget so the next model call
+        # trips the existing graceful-halt path; None until a run loads a client.
+        self._active_client: Any = None
+        self._stop_requested = False
+
+    def request_stop(self) -> None:
+        """Cooperatively cancel the in-flight build/run, if any.
+
+        Reuses the budget kill-switch instead of interrupting the task loop:
+        the active client's ceiling is dropped to 0 so its next call raises
+        BudgetExceededError, which build()/the pipeline already degrade to a
+        partial report. Safe to call before a client exists (the flag is
+        honored when the run loads one) and idempotent.
+        """
+        self._stop_requested = True
+        if self._active_client is not None:
+            _apply_budget_ceiling(self._active_client, 0.0)
 
     def scan_directory(self, path: str | Path):
         self.registry.discover_projects(path)
@@ -130,6 +160,7 @@ class ProjectOrchestrator:
         tasklist: Optional[str] = None,
         budget: Optional[float] = None,
         proceed: bool = False,
+        progress_cb: Optional[Callable[..., None]] = None,
     ):
         """Run pending devplan tasks with dependency-aware orchestration.
 
@@ -150,6 +181,11 @@ class ProjectOrchestrator:
         # budget (this path previously had no CLI override at all).
         if budget is not None:
             _apply_budget_ceiling(project.llm_client, budget)
+        # Expose this run's client so a background job's request_stop() can trip
+        # the budget kill-switch; honor a stop that arrived before it existed.
+        self._active_client = project.llm_client
+        if self._stop_requested:
+            _apply_budget_ceiling(self._active_client, 0.0)
         _check_golden_config(project.config)
         if project.env_manager:
             project.env_manager.setup()
@@ -200,6 +236,11 @@ class ProjectOrchestrator:
         )
 
         run_parallel = get_setting(project.config, "orchestrator", "run_parallel")
+        # The branch a completed/failed task must return to; captured once so a
+        # task that strands HEAD (via an unhandled error) can be recovered instead
+        # of later tasks piling their merges onto the dead branch.
+        _bb = run_git("git rev-parse --abbrev-ref HEAD", project.path)
+        base_branch = _bb.stdout.strip() if _bb and _bb.returncode == 0 else None
         completed_ids = set(progress.completed)
         failed_ids: set[str] = set()
         deferred_ids: set[str] = set()
@@ -222,6 +263,17 @@ class ProjectOrchestrator:
         logger.info(f"Running {len(tasks)} pending tasks for {project.name}.")
 
         reporter = ProgressReporter(len(tasks))
+
+        def _emit_progress(phase: str) -> None:
+            """Best-effort task-level progress to an async job's reporter."""
+            if progress_cb is None:
+                return
+            try:
+                progress_cb(done=len(completed_ids), total=len(tasks), phase=phase)
+            except Exception as e:  # a progress callback must never break the run
+                logger.debug(f"Progress callback failed (non-fatal): {e}")
+
+        _emit_progress("executing")
         remaining = list(tasks)
         aborted = False
         wave = 0
@@ -312,9 +364,11 @@ class ProjectOrchestrator:
                             language=lang,
                         )
                         changes.record_task_changes(task.id, modified)
+                    _emit_progress(f"wave {wave}")
                     return False
                 failed_ids.add(task.id)
                 progress.mark_failed(task.id)
+                _emit_progress(f"wave {wave}")
                 consecutive_failures += 1
                 if consecutive_failures >= max_consecutive_failures:
                     logger.error("Aborting run: too many consecutive failures.")
@@ -338,6 +392,7 @@ class ProjectOrchestrator:
                     logger.warning(f"Halting run: {e}")
                     aborted = True
                     break
+                self._recover_to_base_branch(project, base_branch)
                 for task, result, error in batch:
                     if isinstance(error, BudgetExceededError):
                         aborted = True
@@ -360,6 +415,7 @@ class ProjectOrchestrator:
                     except Exception as e:
                         logger.error(f"Task {task.id} raised: {e}")
                         result = None
+                    self._recover_to_base_branch(project, base_branch)
                     if apply_result(task, result):
                         aborted = True
                         break
@@ -372,6 +428,37 @@ class ProjectOrchestrator:
             None,
         )
         reporter.summary(cost=cost)
+
+        # Structured close-out (parity with the build pipeline): classify this run's
+        # failures/parks into the taxonomy + write run_summary.json, and record the
+        # durable env facts. The `run --tasks` path had neither, so a run on this
+        # path was undiagnosable at a glance and never fed P7's cross-run memory.
+        try:
+            import time
+
+            by_id = {t.id: t for t in tasks}
+            failed_items = [
+                (tid, self._task_failure_text(by_id[tid]))
+                for tid in failed_ids
+                if tid in by_id
+            ]
+            deferred_items = [
+                (
+                    d["id"],
+                    f"{d.get('reason', '')} {' '.join(d.get('questions', []))}".strip(),
+                )
+                for d in deferrals
+            ]
+            self._emit_run_summary(
+                project,
+                len(completed_ids),
+                failed_items,
+                deferred_items,
+                time.time() - reporter.start_time,
+            )
+            self._record_env_learnings(project)
+        except Exception as e:  # a summary/learning write must never sink a run
+            logger.warning(f"Run close-out (summary/env-memory) skipped: {e}")
 
         # Walk-away close-out: if any task parked for the user, write the question
         # book (preserving answers already typed) and surface a concise pointer so
@@ -387,6 +474,26 @@ class ProjectOrchestrator:
                 console.print(f"  [dim]{d['id']}[/] {d.get('reason', '')}")
             if len(deferrals) > 12:
                 console.print(f"  [dim]... and {len(deferrals) - 12} more[/]")
+
+    def _recover_to_base_branch(self, project, base_branch) -> None:
+        """Return HEAD to the run's base branch if a task stranded it.
+
+        The executor creates a ``task/<id>`` branch before running; on a clean
+        success or failure it merges/reverts back to base, but an UNHANDLED
+        exception can bypass that cleanup and leave HEAD on the dead task branch —
+        after which every later sequential task piles its merge onto that branch
+        instead of main. Called after each task, this is a no-op when HEAD is
+        already on base (the normal case) and a reset-to-base otherwise."""
+        if not base_branch:
+            return
+        proc = run_git("git rev-parse --abbrev-ref HEAD", project.path)
+        cur = proc.stdout.strip() if proc and proc.returncode == 0 else ""
+        if cur and cur != base_branch:
+            run_git("git reset --hard", project.path)
+            run_git(f"git checkout {shlex.quote(base_branch)}", project.path)
+            logger.warning(
+                f"Recovered HEAD from stranded branch '{cur}' back to '{base_branch}'."
+            )
 
     def _requirements_preflight(self, project, tasks, proceed: bool) -> bool:
         """Review the plan for user-supplied inputs up front. Writes REQUIREMENTS.md,
@@ -417,6 +524,7 @@ class ProjectOrchestrator:
             for key, answer in book.load_answers().items():
                 for r in reqs:
                     if r["key"] == key:
+                        r["answered"] = True
                         for t in tasks:
                             if t.id in r.get("task_ids", []):
                                 t.processor_data["user_answer"] = answer
@@ -537,7 +645,13 @@ class ProjectOrchestrator:
             logger.error(f"Task {task_id} raised: {e}")
             project.task_manager.update_task_status(task_id, "failed")
 
-    def build(self, project_path: str | Path, args: str = "") -> str:
+    def build(
+        self,
+        project_path: str | Path,
+        args: str = "",
+        reference_dir: str | None = None,
+        progress_cb: Optional[Callable[..., None]] = None,
+    ) -> str:
         project = self._get_or_register(project_path)
         if not project:
             return "Error: could not load project"
@@ -546,6 +660,20 @@ class ProjectOrchestrator:
         remaining, flags = parse_flags(arg_list)
         prompt = " ".join(remaining)
         mode = resolve_mode(prompt, project.path)
+
+        # Optional reference implementation to port from. Validate the path up
+        # front (fail fast, like the dirty-tree check) rather than planning
+        # against nothing; the digest itself is read-only and offline.
+        reference_digest = ""
+        if reference_dir:
+            try:
+                reference_digest = build_reference_digest(
+                    reference_dir,
+                    cache_dir=project.path / ".orchestrator",
+                )
+            except (ValueError, OSError) as e:
+                logger.error(f"Reference analysis failed: {e}")
+                return f"Error: reference dir unusable ({e})."
 
         logger.info(f"Build started: mode={mode.value}, flags={flags}")
         start_time = datetime.now(timezone.utc)
@@ -565,6 +693,13 @@ class ProjectOrchestrator:
 
         # Propagate budget to LLM client
         _apply_budget_ceiling(project.llm_client, flags.budget)
+
+        # Expose this run's client so a background job's request_stop() can trip
+        # the budget kill-switch. Honor a stop that arrived before the client
+        # existed (dropped budget halts the very first call).
+        self._active_client = project.llm_client
+        if self._stop_requested:
+            _apply_budget_ceiling(self._active_client, 0.0)
 
         # Preflight: fail fast on a retired/misrouted model id before spending
         # the analysis phase on calls that would 404 mid-run.
@@ -594,7 +729,15 @@ class ProjectOrchestrator:
             _warn_if_test_gate_is_noop(assessment, report)
 
             return self._run_pipeline(
-                project, prompt, mode, flags, assessment, env_activate, report
+                project,
+                prompt,
+                mode,
+                flags,
+                assessment,
+                env_activate,
+                report,
+                reference_digest=reference_digest,
+                progress_cb=progress_cb,
             )
         except BudgetExceededError as e:
             return self._halt_on_budget(project, report, e)
@@ -650,6 +793,154 @@ class ProjectOrchestrator:
         except Exception as e:
             logger.warning(f"Solved-task indexing failed (non-fatal): {e}")
             report.degraded_subsystems.append(f"Solved-task indexing: {e}")
+        try:
+            self._record_env_learnings(project)
+        except Exception as e:
+            logger.warning(f"Env-memory persist failed (non-fatal): {e}")
+            report.degraded_subsystems.append(f"Env-memory persist: {e}")
+        try:
+            self._write_run_summary(project, report)
+        except Exception as e:
+            logger.warning(f"Run summary write failed (non-fatal): {e}")
+            report.degraded_subsystems.append(f"Run summary: {e}")
+
+    @staticmethod
+    def _task_failure_text(task) -> str:
+        """The best-available failure text for a terminal non-success task: the
+        error stashed on the error path, else the last execution result's message
+        and logs. '' when nothing is recorded."""
+        stored = (getattr(task, "processor_data", None) or {}).get("failure_text")
+        if stored:
+            return str(stored)
+        hist = getattr(task, "execution_history", None) or []
+        if hist:
+            last = hist[-1]
+            return f"{getattr(last, 'message', '') or ''}\n{getattr(last, 'logs', '') or ''}"
+        return ""
+
+    def _write_run_summary(self, project: Project, report: BuildReport) -> None:
+        """Classify the build pipeline's failures and write the one-glance summary
+        (feeds P7/P10; answers "why did this run underperform" at a glance)."""
+        end = report.end_time or datetime.now(timezone.utc)
+        elapsed = (end - report.start_time).total_seconds()
+        failed_items = [(t.id, self._task_failure_text(t)) for t in report.failed_tasks]
+        deferred_items = [
+            (t.id, self._task_failure_text(t)) for t in report.deferred_tasks
+        ]
+        self._emit_run_summary(
+            project, len(report.completed_tasks), failed_items, deferred_items, elapsed
+        )
+
+    def _emit_run_summary(
+        self,
+        project: Project,
+        completed: int,
+        failed_items: list,
+        deferred_items: list,
+        elapsed_seconds: float,
+    ) -> None:
+        """Classify (id, text) failure/deferral pairs into the taxonomy and write a
+        one-glance summary to the console and ``.orchestrator/run_summary.json``.
+        Shared by the build pipeline and the ``run --tasks`` path so both emit the
+        same signal. Never raises — a summary must not sink a finished run."""
+        from misterdev.core.execution.failure_taxonomy import build_run_summary
+
+        summary = build_run_summary(
+            completed, failed_items, deferred_items, elapsed_seconds
+        )
+        atomic_write(
+            orchestrator_state_file(project.path, "run_summary.json"),
+            json.dumps(summary, indent=2),
+        )
+        # Concise console line — the whole point is one-glance readability.
+        mins, secs = divmod(int(summary["elapsed_seconds"]), 60)
+        parts = [f"[green]{summary['completed']} done[/]"]
+        if summary["deferred"]:
+            parts.append(f"[yellow]{summary['deferred']} deferred[/]")
+        if summary["failed"]:
+            parts.append(f"[red]{summary['failed']} failed[/]")
+        console.print(
+            "[bold]Run summary[/] · "
+            + " · ".join(parts)
+            + f" · [dim]{mins}m {secs}s[/]"
+        )
+        if summary["failure_breakdown"]:
+            brk = ", ".join(
+                f"{cat} {n}" for cat, n in summary["failure_breakdown"].items()
+            )
+            console.print(f"  [dim]failures:[/] {brk}")
+            top = summary["top_obstacle"]
+            if top:
+                ex = summary["exemplars"].get(top, "")
+                console.print(
+                    f"  [dim]top obstacle:[/] {top}"
+                    + (f" [dim]— {ex[:120]}[/]" if ex else "")
+                )
+
+    def _record_env_learnings(self, project: Project) -> None:
+        """Record this run's durable environment facts for the next run.
+
+        Loads the existing ledger and refreshes: the effective worktree
+        setup/healthcheck commands (resolved from the current config), and a
+        learned max_workers — persisted ONLY when the adaptive loop settled BELOW
+        the configured base (a real, contention-driven reduction). A run that held
+        or recovered to full concurrency clears any stale reduction, so a single
+        bad run never pins the project low forever.
+        """
+        learnings = EnvLearnings.load(project.path)
+        setup = worktree_setup_command(project.config, project.path)
+        if setup:
+            learnings.worktree_setup_command = setup
+        health = worktree_healthcheck_command(project.config, project.path)
+        if health:
+            learnings.worktree_healthcheck_command = health
+        settled = getattr(project, "env_settled_workers", None)
+        base = getattr(project, "env_base_workers", None)
+        if settled is not None and base is not None:
+            learnings.max_workers = settled if settled < base else None
+        learnings.save(project.path)
+
+    def propose_plan(self, project_path: str | Path, args: str = "") -> Dict[str, Any]:
+        """Analyze the project and persist ranked work proposals for approval.
+
+        The non-interactive counterpart to interactive_plan(): runs analysis and
+        the advisor, writes the proposals to .orchestrator/proposed_plan.json
+        (each unapproved), and returns them so a client can review and approve a
+        subset before any code is edited. Spends LLM budget; edits no code.
+        """
+        project = self._get_or_register(project_path)
+        if not project:
+            return {"error": "could not load project"}
+        _, flags = parse_flags(args.split() if args else [])
+        _apply_budget_ceiling(project.llm_client, flags.budget)
+        self._active_client = project.llm_client
+        try:
+            env_activate = self._setup_env(project)
+            assessment = self._analyze(project, env_activate)
+            recs = recommend_work(assessment, project.llm_client)
+        except BudgetExceededError as e:
+            return {"error": f"budget exhausted during analysis: {e}"}
+        return {"items": save_plan(project.path, recs)}
+
+    def execute_plan(self, project_path: str | Path, args: str = "") -> str:
+        """Build the approved items from a previously proposed plan.
+
+        Composes a single goal from the approved proposals and runs the normal
+        build pipeline (decompose -> execute -> verify) over it. Returns a
+        message when nothing is approved. Any build flags in ``args`` (budget,
+        parallel, ...) are preserved.
+        """
+        project = self._get_or_register(project_path)
+        if not project:
+            return "Error: could not load project"
+        approved = approved_items(project.path)
+        if not approved:
+            return "No approved plan items to execute. Approve items first."
+        goal = "complete the following approved work: " + "; ".join(
+            it["title"] for it in approved
+        )
+        build_args = f"{goal} {args}".strip()
+        return self.build(project_path, build_args)
 
     def interactive_plan(self, project_path: str | Path, args: str = "") -> str:
         """Analyze the project, recommend work, and compose a plan with the user.
@@ -779,6 +1070,170 @@ class ProjectOrchestrator:
             return ""
         return f"{len(lines)} file(s), e.g. {lines[0][3:].strip()}"
 
+    def run_doctor(self, project_path: str | Path) -> Dict[str, Any]:
+        """Preflight a project for an unattended run: gather the environment facts
+        and route them through the pure ``doctor`` checks. Returns the aggregate
+        (counts + exit_code) with the per-check results under ``checks``. Never
+        raises — a gathering error degrades that one check, it does not crash."""
+        from misterdev.core.execution import doctor as dr
+
+        project = self._get_or_register(project_path)
+        if not project:
+            err = dr.Check(
+                "load project", dr.FAIL, "could not load the project", "check the path"
+            )
+            out = dr.aggregate([err])
+            out["checks"] = [err]
+            return out
+
+        checks: list = []
+        is_git = (Path(project.path) / ".git").exists()
+        checks.append(dr.check_git_repo(is_git))
+        base = self._doctor_base_branch(project)
+        if is_git:
+            checks.append(dr.check_clean_tree(self._working_tree_dirty(project)))
+            checks.append(
+                dr.check_on_base_branch(self._doctor_current_branch(project), base)
+            )
+            checks.append(
+                dr.check_leftover_task_branches(self._doctor_task_branches(project))
+            )
+            checks.append(dr.check_dangling_worktrees(self._doctor_worktrees(project)))
+        try:
+            ok, detail = project.llm_client.health_check()
+        except Exception as e:  # a gathering error is not a model verdict
+            ok, detail = False, str(e)
+        checks.append(dr.check_models(ok, detail))
+        if is_git:
+            checks.append(self._doctor_worktree_probe(project))
+        checks.append(
+            dr.check_requirements(self._doctor_unsatisfied_requirements(project))
+        )
+
+        out = dr.aggregate(checks)
+        out["checks"] = checks
+        return out
+
+    @staticmethod
+    def _doctor_base_branch(project) -> str:
+        """The repo's base branch: ``main`` or ``master`` if present, else HEAD."""
+        for name in ("main", "master"):
+            proc = run_git(
+                f"git rev-parse --verify --quiet {shlex.quote(name)}", project.path
+            )
+            if proc is not None and proc.returncode == 0 and proc.stdout.strip():
+                return name
+        return ProjectOrchestrator._doctor_current_branch(project) or "main"
+
+    @staticmethod
+    def _doctor_current_branch(project) -> Optional[str]:
+        proc = run_git("git rev-parse --abbrev-ref HEAD", project.path)
+        if proc is None or proc.returncode != 0:
+            return None
+        return proc.stdout.strip() or None
+
+    @staticmethod
+    def _doctor_task_branches(project) -> list:
+        proc = run_git("git branch --list task/*", project.path)
+        if proc is None or proc.returncode != 0:
+            return []
+        return [ln.strip(" *").strip() for ln in proc.stdout.splitlines() if ln.strip()]
+
+    @staticmethod
+    def _doctor_worktrees(project) -> list:
+        """Registered worktrees under the orchestrator's worktree dir (excludes the
+        main checkout), i.e. leftovers a prior run did not clean up."""
+        proc = run_git("git worktree list --porcelain", project.path)
+        if proc is None or proc.returncode != 0:
+            return []
+        found = []
+        marker = str(Path(project.path) / ".orchestrator" / "worktrees")
+        for ln in proc.stdout.splitlines():
+            if ln.startswith("worktree ") and marker in ln:
+                found.append(ln[len("worktree ") :].strip())
+        return found
+
+    def _doctor_worktree_probe(self, project):
+        """Create a throwaway worktree, prime deps + run the healthcheck, remove it.
+        Best-effort — any failure becomes a WARN, never crashes the doctor."""
+        from misterdev.core.execution import doctor as dr
+
+        setup_cmd = self._worktree_setup_command(project)
+        health_cmd = self._worktree_healthcheck_command(project)
+        if not setup_cmd and not health_cmd:
+            return dr.check_worktree_prime(None, None)
+        import uuid
+        from misterdev.tools.command import CommandTool
+        from misterdev.tools.git_tool import GitTool
+
+        git = GitTool({})
+        wt_root = Path(project.path) / ".orchestrator" / "worktrees"
+        wt_root.mkdir(parents=True, exist_ok=True)
+        git.worktree_prune(project)
+        run_id = uuid.uuid4().hex[:6]
+        branch = f"doctor/{run_id}"
+        wt_path = wt_root / f"doctor-{run_id}"
+        ok, out = git.worktree_add(project, str(wt_path), branch, new_branch=True)
+        if not ok:
+            return dr.Check(
+                "worktree prime + healthcheck",
+                dr.WARN,
+                f"could not create a throwaway worktree: {out[-120:]}",
+                "check git worktree support and disk space",
+            )
+        timeout = get_setting(project.config, "orchestrator", "worktree_setup_timeout")
+        cmd = CommandTool({})
+        prime_ok = None
+        health_ok = None
+        detail = ""
+        try:
+            if setup_cmd:
+                prime_ok, pout = cmd.execute(
+                    project, setup_cmd, cwd=str(wt_path), timeout=timeout
+                )
+                if not prime_ok:
+                    detail = pout[-160:]
+            if health_cmd:
+                health_ok, hout = cmd.execute(
+                    project, health_cmd, cwd=str(wt_path), timeout=timeout
+                )
+                if not health_ok:
+                    detail = hout[-160:]
+        finally:
+            git.worktree_remove(project, str(wt_path))
+            git.branch_delete(project, branch)
+        return dr.check_worktree_prime(prime_ok, health_ok, detail)
+
+    def _doctor_unsatisfied_requirements(self, project) -> list:
+        """Keys in .orchestrator/REQUIREMENTS.md marked MISSING with no typed answer.
+        Empty when the file is absent (nothing reviewed yet) or all are provided."""
+        md = Path(project.path) / ".orchestrator" / "REQUIREMENTS.md"
+        if not md.exists():
+            return []
+        try:
+            from misterdev.core.planning.requirements import RequirementsBook
+
+            answers = RequirementsBook(
+                Path(project.path) / ".orchestrator"
+            ).load_answers()
+            text = md.read_text(encoding="utf-8")
+        except OSError:
+            return []
+        unsatisfied = []
+        key = ""
+        missing = False
+        for line in text.splitlines():
+            if line.startswith("## "):
+                if key and missing and key not in answers:
+                    unsatisfied.append(key)
+                key = line[3:].split("—", 1)[0].strip().strip("`")
+                missing = False
+            elif line.strip().lower().startswith("- status:"):
+                missing = "missing" in line.lower()
+        if key and missing and key not in answers:
+            unsatisfied.append(key)
+        return unsatisfied
+
     def _run_pipeline(
         self,
         project: Project,
@@ -789,6 +1244,8 @@ class ProjectOrchestrator:
         env_activate: Optional[str],
         report: BuildReport,
         confirm_plan: bool = False,
+        reference_digest: str = "",
+        progress_cb: Optional[Callable[..., None]] = None,
     ) -> str:
         """Phases 1.5-6: probes, spec, decompose, (confirm), execute, validate.
 
@@ -797,6 +1254,17 @@ class ProjectOrchestrator:
         task executes.
         """
         _check_golden_config(project.config)
+        # Cross-run env memory: pre-tune this run from durable facts learned in
+        # prior runs (effective setup/healthcheck command, a backed-off max_workers)
+        # WITHOUT overriding any explicit project.yaml value. Best-effort: a missing
+        # or unreadable ledger just means no pre-tuning. Applied here, before any
+        # gate/worktree code reads the config.
+        try:
+            applied = EnvLearnings.load(project.path).apply_to_config(project.config)
+            for a in applied:
+                logger.info(f"Env-memory: pre-tuned {a} from a prior run")
+        except Exception as e:
+            logger.debug(f"Env-memory pre-tune skipped (non-fatal): {e}")
         # Make the analysis baseline failure count available to the per-task test
         # gate so a RED baseline doesn't reject every task: the gate then accepts a
         # task that leaves the suite no worse, letting a multi-failure project be
@@ -859,6 +1327,12 @@ class ProjectOrchestrator:
         spec = self._generate_spec(
             mode, prompt, assessment, project, facts=verified_facts
         )
+
+        # Prepend the reference-implementation digest (when porting from one) so
+        # decomposition and every task see the reference's real module/symbol map
+        # alongside the spec. Read-only and offline; empty when no --reference.
+        if reference_digest:
+            spec = f"{reference_digest}\n\n{spec}"
 
         # Sovereign enhancements (metacognition, AB-MCTS) are best-effort: they
         # refine the spec but must not crash the build, so each degrades to the
@@ -924,6 +1398,9 @@ class ProjectOrchestrator:
             targets=targets,
             staging_hint=self._staging_hint(project),
         )
+        # Proactively split a high-fan-in keystone before ordering, so its whole
+        # fan-out is not blocked on one all-or-nothing attempt.
+        tasks = split_keystone_tasks(tasks)
         tasks = topological_sort(tasks)
 
         if flags.dry_run:
@@ -958,7 +1435,7 @@ class ProjectOrchestrator:
             tasks_this_iter = len(tasks)
 
             # Phase 4: Execution
-            self._execute_tasks(tasks, project, flags, report)
+            self._execute_tasks(tasks, project, flags, report, progress_cb=progress_cb)
 
             # Phase 5: Gates
             if flags.no_verify:
@@ -1253,338 +1730,50 @@ class ProjectOrchestrator:
         return "\n".join(parts)
 
     @staticmethod
-    def _wave_commits(executor, project, tasks) -> list:
-        """Collect ``(task_id, sha)`` for each task that has a recorded commit,
-        skipping tasks with none. Shared by the regression-revert and
-        integration-gate paths."""
-        commits = []
-        for t in tasks:
-            sha = executor.find_task_commit(project, t.id)
-            if sha:
-                commits.append((t.id, sha))
-        return commits
+    def _wave_infra_count(results: list) -> int:
+        """How many of a wave's tasks FAILED on an ENVIRONMENT fault (not code).
 
-    def _maybe_rollback_regression(
-        self,
-        project: Project,
-        report: BuildReport,
-        assessment: ProjectAssessment,
-        flags: BuildFlags,
-    ) -> None:
-        """If the post-build gate failed, bisect task commits and revert the culprit."""
-        if flags.no_rollback or not report.completed_tasks:
-            return
-        test_cmd = assessment.structure.test_command
-        if not test_cmd:
-            return
-        ex = MarkdownPlanExecutor()
-        if not ex._is_git_repo(project):
-            return
-        commits = self._wave_commits(ex, project, report.completed_tasks)
-        if not commits:
-            return
-        logger.warning("Post-build regression detected; bisecting task commits...")
-        culprit = ex.bisect_regression(project, commits, test_cmd)
-        if not culprit:
-            logger.info("Bisect did not isolate a single task commit.")
-            return
-        sha = dict(commits)[culprit]
-        if ex.revert_task_commit(project, sha):
-            logger.warning(
-                f"Regression bisected to {culprit}; commit {sha[:8]} reverted."
-            )
-            report.key_decisions.append(
-                f"Regression from {culprit} auto-reverted (bisect)"
-            )
-
-    def _suite_failures(
-        self,
-        project: Project,
-        executor: MarkdownPlanExecutor,
-        test_cmd: str,
-        timeout: int,
-        cwd=None,
-    ) -> Optional[int]:
-        """Full-suite failure count: 0 when green, the parsed count when red, or
-        None when the count can't be parsed (caller then can't count-compare).
-
-        ``cwd`` runs the command in a sub-project (target) directory; defaults to
-        the repo root."""
-        from misterdev.core.verification.validator import (
-            _parse_test_counts,
-        )
-
-        ok, output = executor._run_command(project, test_cmd, timeout=timeout, cwd=cwd)
-        if ok:
-            return 0
-        total, failures = _parse_test_counts(output)
-        return failures if total > 0 else None
-
-    @staticmethod
-    def _failing_ids_from_output(output: str, project: Project) -> Optional[set]:
-        """The SET of failing test identifiers parsed from runner output, or None
-        when none can be parsed (caller falls back to the count).
-
-        Identity beats a bare count: it lets the integration gate revert a wave
-        that offsets a genuine fix against a NEW break (net-zero count, which
-        count mode waves through) and stays correct if a fix renames/reorders
-        tests. Reuses the FailureView parsers already validated per runner."""
-        from misterdev.core.execution.failure_view import extract_failures
-
-        lang = (
-            (project.config.get("language") or "")
-            if getattr(project, "config", None)
-            else ""
-        )
-        ids = {
-            f.test
-            for f in extract_failures(output, language=lang)
-            if getattr(f, "test", "")
-        }
-        return ids or None
-
-    def _suite_failing_ids(
-        self,
-        project: Project,
-        executor: MarkdownPlanExecutor,
-        test_cmd: str,
-        timeout: int,
-        cwd=None,
-    ) -> Optional[set]:
-        """Full-suite failing-test id SET: empty when green, the parsed ids when
-        red, or None when unparseable (caller falls back to the count)."""
-        ok, output = executor._run_command(project, test_cmd, timeout=timeout, cwd=cwd)
-        if ok:
-            return set()
-        return self._failing_ids_from_output(output, project)
-
-    def _integration_gate_count(
-        self,
-        project: Project,
-        executor: MarkdownPlanExecutor,
-        test_cmd: str,
-        wave_tasks: list[Task],
-        timeout: int,
-        baseline_failures: int,
-    ) -> list[str]:
-        """Count-mode gate for a RED baseline: revert wave commits (newest first)
-        only when the wave RAISED the full-suite failure count above the baseline.
-
-        This closes the gap where, with the binary gate disabled by a red
-        baseline, a task gated on its own scoped tests could worsen the overall
-        suite and still commit. An unparseable post-wave count is left alone (we
-        do not revert on a number we can't read).
+        Scans each unsuccessful task's error/logs for an infra signature (timeout,
+        locked store, OOM, ...). A completed task never counts — a transient fault
+        it self-healed past is not contention worth backing off for. Only an
+        UN-recovered infra failure, the exact signal that concurrency is too high,
+        is counted.
         """
-        after = self._suite_failures(project, executor, test_cmd, timeout)
-        if after is None or after <= baseline_failures:
-            return []
-        logger.warning(
-            f"Integration gate (count): failures rose {baseline_failures} -> "
-            f"{after}; reverting wave commits until restored."
-        )
-        commits = self._wave_commits(executor, project, wave_tasks)
-        reverted: list[str] = []
-        for tid, sha in reversed(commits):
-            if executor.revert_task_commit(project, sha):
-                reverted.append(tid)
-            now = self._suite_failures(project, executor, test_cmd, timeout)
-            if now is not None and now <= baseline_failures:
-                break
-        return reverted
+        from misterdev.core.execution.infra import infra_failure
 
-    def _integration_gate_ids(
-        self,
-        project: Project,
-        executor: MarkdownPlanExecutor,
-        test_cmd: str,
-        wave_tasks: list[Task],
-        timeout: int,
-        baseline_ids: set,
-    ) -> list[str]:
-        """Identity-mode gate for a RED baseline: revert the wave iff it introduced
-        a NEW failing test (one not failing at baseline), regardless of the failure
-        COUNT.
-
-        Stricter and more correct than count mode: a wave that fixes test A but
-        breaks test B nets zero on the count and slips past ``_integration_gate_count``,
-        yet it introduced a real regression (B) — identity mode reverts it. A wave
-        that resolves none of the baseline failures and adds none (a no-op "fix"
-        that still merged) is surfaced as no-progress rather than silently blessed.
-        """
-        after = self._suite_failing_ids(project, executor, test_cmd, timeout)
-        if after is None:
-            return []  # unparseable post-wave count of ids; don't revert blind
-        new_failures = after - baseline_ids
-        if not new_failures:
-            if baseline_ids - after:
-                logger.info(
-                    "Integration gate (identity): resolved "
-                    f"{len(baseline_ids - after)} baseline failure(s), no regressions."
-                )
-            else:
-                logger.info(
-                    "Integration gate (identity): wave added no new failures but "
-                    "resolved none either — no progress on the failing suite."
-                )
-            return []
-        logger.warning(
-            f"Integration gate (identity): {len(new_failures)} new failing test(s) "
-            f"(e.g. {sorted(new_failures)[:2]}); reverting wave commits until restored."
-        )
-        commits = self._wave_commits(executor, project, wave_tasks)
-        reverted: list[str] = []
-        for tid, sha in reversed(commits):
-            if executor.revert_task_commit(project, sha):
-                reverted.append(tid)
-            now = self._suite_failing_ids(project, executor, test_cmd, timeout)
-            if now is not None and not (now - baseline_ids):
-                break
-        return reverted
-
-    @staticmethod
-    def _target_regressed(after: Optional[int], baseline: Optional[int]) -> bool:
-        """Did a target's gate regress vs its baseline?
-
-        ``after``/``baseline`` are :meth:`_suite_failures` results (0 green, N
-        count, None unparseable). A green-now gate never regressed. With no
-        countable baseline we can't compare, so we don't revert. A binary failure
-        now (None) is a regression only if the target was green (baseline 0);
-        otherwise compare counts.
-        """
-        if after == 0:
-            return False
-        if baseline is None:
-            return False
-        if after is None:
-            return baseline == 0
-        return after > baseline
-
-    def _integration_gate_targets(
-        self,
-        project: Project,
-        executor: MarkdownPlanExecutor,
-        targets: list[dict],
-        wave_tasks: list[Task],
-        timeout: int,
-        target_baselines: dict,
-    ) -> list[str]:
-        """Per-target integration gate: validate each sub-project the wave touched
-        with ITS own toolchain (in ITS directory), reverting only the wave commits
-        belonging to a target that regressed. This is the multi-target analogue of
-        :meth:`_integration_gate` — the last place a polyglot run would otherwise
-        gate with the wrong toolchain.
-        """
-        from misterdev.core.planning.targets import select_target
-
-        reverted: list[str] = []
-        for tgt in targets:
-            gate_cmd = tgt.get("test_command") or tgt.get("build_command")
-            if not gate_cmd:
+        count = 0
+        for _task, result, error in results:
+            if result is not None and getattr(result, "status", None) == "completed":
                 continue
-            tname = tgt.get("name") or tgt.get("path")
-            tp = (tgt.get("path") or "").strip("/")
-            run_dir = project.path / tp if tp else project.path
-            owned = [
-                t
-                for t in wave_tasks
-                if (
-                    select_target(
-                        targets, list(t.files_to_modify) + list(t.files_to_create)
-                    )
-                    or {}
-                ).get("path")
-                == tgt.get("path")
-            ]
-            if not owned:
-                continue
-            baseline = target_baselines.get(tname)
-            after = self._suite_failures(
-                project, executor, gate_cmd, timeout, cwd=run_dir
-            )
-            if not self._target_regressed(after, baseline):
-                continue
-            logger.warning(
-                f"Integration gate [{tname}]: regressed (baseline={baseline}, "
-                f"after={after}); reverting this target's wave commits."
-            )
-            commits = [(t.id, executor.find_task_commit(project, t.id)) for t in owned]
-            commits = [(tid, sha) for tid, sha in commits if sha]
-            for tid, sha in reversed(commits):
-                if executor.revert_task_commit(project, sha):
-                    reverted.append(tid)
-                now = self._suite_failures(
-                    project, executor, gate_cmd, timeout, cwd=run_dir
-                )
-                if not self._target_regressed(now, baseline):
-                    break
-        return reverted
+            text = ""
+            if error is not None:
+                text += str(error)
+            if result is not None:
+                text += " " + str(getattr(result, "logs", "") or "")
+                text += " " + str(getattr(result, "message", "") or "")
+            if infra_failure(text):
+                count += 1
+        return count
 
-    def _integration_gate(
-        self,
-        project: Project,
-        executor: MarkdownPlanExecutor,
-        test_cmd: str,
-        wave_tasks: list[Task],
-        timeout: int,
-        baseline_failures: int = 0,
-    ) -> list[str]:
-        """Run the full suite after a wave; revert task commits that regressed it.
+    def _apply_wave_tuning(self, project: Project, tuning, base: dict) -> None:
+        """Apply a wave's tuning by scaling the config the deep gate paths read.
 
-        Returns the task_ids whose commits were reverted (empty if the suite
-        still passes). Bisects to the single culprit when possible; if that
-        can't isolate it or the tree is still red afterward, reverts the
-        remaining wave commits (newest first) to restore a green baseline. On a
-        RED baseline it prefers IDENTITY mode (revert a wave that adds any new
-        failing test, so an offsetting fix/break can't slip through) when the
-        baseline's failing set was parseable, falling back to COUNT mode (revert
-        only a wave that raises the failure count) otherwise.
+        max_workers and the gate/setup timeouts are resolved via ``get_setting``
+        throughout the executor and worktree code, so the one central way to make
+        an adapted value reach all of them is to set it on the config for the
+        wave. Always computed from the captured ``base`` (never the last wave's
+        already-scaled value) so repeated application cannot drift. Safe between
+        waves: the wave loop is serial here, and each wave's workers read the value
+        once before the parallel section starts.
         """
-        # Prefer identity mode (revert on any NEW failing test) over count mode
-        # (revert only when the count rises) whenever the baseline's failing set
-        # was parseable: it also catches an offsetting fix/break that count mode
-        # nets to zero. Count mode remains the fallback for unparseable output.
-        baseline_ids = getattr(project, "baseline_test_failing_ids", None)
-        if baseline_ids:
-            return self._integration_gate_ids(
-                project, executor, test_cmd, wave_tasks, timeout, baseline_ids
-            )
-        if baseline_failures > 0:
-            return self._integration_gate_count(
-                project, executor, test_cmd, wave_tasks, timeout, baseline_failures
-            )
-        ok, _ = executor._run_command(project, test_cmd, timeout=timeout)
-        if ok:
-            return []
-
-        commits = self._wave_commits(executor, project, wave_tasks)
-        if not commits:
-            logger.warning(
-                "Integration gate: suite regressed but no task commits found to revert."
-            )
-            return []
-
-        logger.warning("Integration gate: suite regressed; isolating culprit...")
-        reverted: list[str] = []
-        culprit = executor.bisect_regression(
-            project, commits, test_cmd, timeout=timeout
+        orch = project.config.setdefault("orchestrator", {})
+        orch["max_workers"] = tuning.max_workers
+        orch["worktree_setup_timeout"] = int(
+            round(base["setup"] * tuning.timeout_factor)
         )
-        if culprit:
-            sha = dict(commits)[culprit]
-            if executor.revert_task_commit(project, sha):
-                reverted.append(culprit)
-                ok, _ = executor._run_command(project, test_cmd, timeout=timeout)
-                if ok:
-                    return reverted
-
-        for tid, sha in reversed(commits):
-            if tid in reverted:
-                continue
-            if executor.revert_task_commit(project, sha):
-                reverted.append(tid)
-            ok, _ = executor._run_command(project, test_cmd, timeout=timeout)
-            if ok:
-                break
-        return reverted
+        build = project.config.setdefault("build", {})
+        build["build_timeout"] = int(round(base["build"] * tuning.timeout_factor))
+        build["test_timeout"] = int(round(base["test"] * tuning.timeout_factor))
 
     def _execute_tasks(
         self,
@@ -1592,6 +1781,7 @@ class ProjectOrchestrator:
         project: Project,
         flags: BuildFlags,
         report: BuildReport,
+        progress_cb: Optional[Callable[..., None]] = None,
     ) -> None:
         scratchpad = Scratchpad()
         aligner = RealTimeAligner(project.path)
@@ -1608,6 +1798,38 @@ class ProjectOrchestrator:
 
         completed_ids = set(progress.completed)
         failed_ids: set[str] = set()
+
+        def _emit_progress(phase: str) -> None:
+            """Best-effort task-level progress to an async job's reporter."""
+            if progress_cb is None:
+                return
+            try:
+                progress_cb(done=len(completed_ids), total=len(tasks), phase=phase)
+            except Exception as e:  # a progress callback must never break the build
+                logger.debug(f"Progress callback failed (non-fatal): {e}")
+
+        _emit_progress("executing")
+        # Skip a ready task before spawning a worktree when it is already
+        # satisfied (content hash unchanged since a recorded completion). Default
+        # on; false forces every ready task to re-run.
+        skip_satisfied = get_setting(
+            project.config, "orchestrator", "skip_satisfied_tasks"
+        )
+        # Adaptive concurrency/timeout backoff: capture the CONFIGURED values as the
+        # recovery ceiling, start each run at full concurrency (factor 1.0), and
+        # re-tune between waves from each wave's infra-failure count.
+        from misterdev.core.execution.adaptive import WaveTuning, next_wave_tuning
+
+        adaptive = get_setting(project.config, "orchestrator", "adaptive_concurrency")
+        adaptive_base = {
+            "workers": get_setting(project.config, "orchestrator", "max_workers"),
+            "setup": get_setting(
+                project.config, "orchestrator", "worktree_setup_timeout"
+            ),
+            "build": get_setting(project.config, "build", "build_timeout"),
+            "test": get_setting(project.config, "build", "test_timeout"),
+        }
+        wave_tuning = WaveTuning(int(adaptive_base["workers"]), 1.0)
         consecutive_failures = 0
         aborted = False
         max_cost_per_task = get_setting(
@@ -1724,10 +1946,14 @@ class ProjectOrchestrator:
             still_waiting = []
             for task in remaining:
                 # Skip only if this exact task (id AND content hash) already
-                # completed. Hash-aware so a freshly decomposed plan that reuses
-                # generic ids (T-001...) from a prior build is not wrongly
-                # skipped against stale progress state.
-                if not progress.needs_rerun(
+                # completed — mark it done WITHOUT spawning a worktree, so an
+                # already-satisfied task doesn't pay a prime/install just to be
+                # re-recognized. Hash-aware so a freshly decomposed plan that
+                # reuses generic ids (T-001...) from a prior build is not wrongly
+                # skipped against stale progress state. Gated by
+                # skip_satisfied_tasks (default on); no gate is run on the base
+                # branch for this — it rests on the content hash plus the ledger.
+                if skip_satisfied and not progress.needs_rerun(
                     task.id, compute_task_hash(task, project.path)
                 ):
                     report.completed_tasks.append(task)
@@ -1789,6 +2015,12 @@ class ProjectOrchestrator:
                 remaining = still_waiting
                 continue
 
+            # Apply this wave's adapted concurrency/timeouts (a no-op at full
+            # tuning) before dispatch, so the worktree/gate code reads the backed-
+            # off values under contention.
+            if adaptive:
+                self._apply_wave_tuning(project, wave_tuning, adaptive_base)
+
             # Execute: parallel or sequential
             wave_completed: list[Task] = []
             if flags.parallel and len(ready) > 1:
@@ -1849,6 +2081,11 @@ class ProjectOrchestrator:
                     continue
                 if error:
                     logger.error(f"Task {task.id} raised: {error}")
+                    # Preserve the failure text (merge conflict, worktree add, a
+                    # raised exception) so the end-of-run taxonomy can classify it;
+                    # this path records no ExecutionResult to read it back from.
+                    if isinstance(getattr(task, "processor_data", None), dict):
+                        task.processor_data["failure_text"] = str(error)
                     failed_ids.add(task.id)
                     progress.mark_failed(task.id)
                     report.failed_tasks.append(task)
@@ -1874,6 +2111,16 @@ class ProjectOrchestrator:
                         changes.record_task_changes(task.id, modified)
                     if task.complexity == "architectural":
                         aligner.certify_decision(task.title, task.description)
+                elif result.status == "deferred":
+                    # Parked (walk-away input needed, or escalated to decomposition)
+                    # — NOT a code failure, so it must not trip the consecutive-
+                    # failure abort or be recorded as terminally failed (a re-run
+                    # retries it). It still blocks dependents and feeds the
+                    # convergence loop's re-decomposition, like a non-success.
+                    task.execution_history.append(result)
+                    failed_ids.add(task.id)
+                    report.deferred_tasks.append(task)
+                    consecutive_failures = 0
                 else:
                     task.execution_history.append(result)
                     failed_ids.add(task.id)
@@ -1881,6 +2128,7 @@ class ProjectOrchestrator:
                     report.failed_tasks.append(task)
                     consecutive_failures += 1
 
+                _emit_progress("building")
                 if consecutive_failures >= max_consecutive_failures:
                     aborted = True
                     break
@@ -1924,7 +2172,45 @@ class ProjectOrchestrator:
                 if reverted and consecutive_failures >= max_consecutive_failures:
                     aborted = True
 
+            # Re-tune concurrency/timeouts for the NEXT wave from THIS wave's infra
+            # faults: back off under contention, recover gradually when clean.
+            if adaptive:
+                infra_count = self._wave_infra_count(results)
+                nxt = next_wave_tuning(
+                    infra_count,
+                    wave_tuning,
+                    base_workers=int(adaptive_base["workers"]),
+                    threshold=get_setting(
+                        project.config, "orchestrator", "adaptive_infra_threshold"
+                    ),
+                    timeout_factor=get_setting(
+                        project.config, "orchestrator", "adaptive_timeout_factor"
+                    ),
+                    max_timeout_factor=get_setting(
+                        project.config, "orchestrator", "adaptive_max_timeout_factor"
+                    ),
+                )
+                if nxt != wave_tuning:
+                    logger.info(
+                        f"Adaptive tuning: {infra_count} infra fault(s) this wave; "
+                        f"next wave workers {wave_tuning.max_workers}->"
+                        f"{nxt.max_workers}, timeout x{wave_tuning.timeout_factor:g}"
+                        f"->x{nxt.timeout_factor:g}."
+                    )
+                wave_tuning = nxt
+
             remaining = still_waiting
+
+        # Restore the configured concurrency/timeouts so nothing downstream sees a
+        # backed-off value left over from an infra-heavy wave. Expose the value the
+        # run settled on (and the base it started from) so the cross-run env memory
+        # can persist a contention-driven reduction for the next run.
+        if adaptive:
+            project.env_settled_workers = wave_tuning.max_workers
+            project.env_base_workers = int(adaptive_base["workers"])
+            self._apply_wave_tuning(
+                project, WaveTuning(int(adaptive_base["workers"]), 1.0), adaptive_base
+            )
 
         # Defer any unprocessed tasks
         processed_ids = (
@@ -1933,152 +2219,6 @@ class ProjectOrchestrator:
         for task in tasks:
             if task.id not in processed_ids:
                 report.deferred_tasks.append(task)
-
-    @staticmethod
-    def _task_file_set(task: Task) -> set:
-        """Declared files a task will touch (modify + create).
-
-        Tolerates non-list values (e.g. unconfigured mocks): only real lists
-        contribute paths, anything else is treated as "unknown / no claim".
-        """
-        files: set = set()
-        for attr in ("files_to_modify", "files_to_create"):
-            value = getattr(task, attr, None)
-            if isinstance(value, list):
-                files.update(str(p) for p in value)
-        return files
-
-    @classmethod
-    def _partition_disjoint(cls, ready: list[Task]) -> tuple[list, list]:
-        """Split tasks into a concurrent-safe group + a serial remainder.
-
-        A task joins the concurrent group only if its declared file set is
-        disjoint from every task already in that group; otherwise it is
-        deferred to the serial remainder so overlapping writes can't interleave.
-        """
-        concurrent_group: list = []
-        serial_remainder: list = []
-        claimed: set = set()
-        for task in ready:
-            files = cls._task_file_set(task)
-            if files & claimed:
-                serial_remainder.append(task)
-            else:
-                concurrent_group.append(task)
-                claimed |= files
-        return concurrent_group, serial_remainder
-
-    def _execute_parallel(
-        self, ready: list[Task], executor: MarkdownPlanExecutor, project: Project
-    ) -> list:
-        """Execute a batch of independent tasks concurrently.
-
-        In "worktree" mode each task runs in its own git worktree so parallel
-        edits can't collide. When the mode is left at its default and the
-        project is a git repo, worktree isolation is preferred automatically;
-        "shared" must be requested explicitly to opt out. In shared mode only
-        tasks with disjoint declared file sets run in the same concurrent batch;
-        tasks whose file sets overlap are run serially afterwards.
-        """
-        mode = get_setting(project.config, "orchestrator", "parallel_mode")
-        is_git_repo = (project.path / ".git").exists() is True
-        # "auto" (default) isolates via worktrees on a git repo; the value itself
-        # carries the intent, so no fragile "was it explicitly set" detection.
-        prefer_worktrees = mode == "worktree" or (mode == "auto" and is_git_repo)
-        if prefer_worktrees and is_git_repo:
-            return self._execute_parallel_worktrees(ready, executor, project)
-
-        concurrent_group, serial_remainder = self._partition_disjoint(ready)
-        results = []
-        max_workers = get_setting(project.config, "orchestrator", "max_workers")
-        if concurrent_group:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=min(len(concurrent_group), max_workers)
-            ) as pool:
-                future_to_task = {
-                    pool.submit(
-                        executor.execute, task, project, use_git_branch=False
-                    ): task
-                    for task in concurrent_group
-                }
-                for future in concurrent.futures.as_completed(future_to_task):
-                    task = future_to_task[future]
-                    try:
-                        result = future.result()
-                        results.append((task, result, None))
-                    except Exception as e:
-                        results.append((task, None, e))
-
-        # Tasks with overlapping file claims run one at a time.
-        for task in serial_remainder:
-            try:
-                result = executor.execute(task, project, use_git_branch=False)
-                results.append((task, result, None))
-            except Exception as e:
-                results.append((task, None, e))
-        return results
-
-    def _execute_parallel_worktrees(
-        self, ready: list[Task], executor: MarkdownPlanExecutor, project: Project
-    ) -> list:
-        """Run each task in an isolated git worktree, then merge successes back.
-
-        Worktrees are created and merged serially (git's index/worktree metadata
-        is not concurrency-safe); only the task bodies run in parallel.
-        """
-        import uuid
-        from misterdev.tools.git_tool import GitTool
-
-        git = GitTool({})
-        wt_root = project.path / ".orchestrator" / "worktrees"
-        wt_root.mkdir(parents=True, exist_ok=True)
-        results: list = []
-        prepared: list = []
-
-        for task in ready:
-            branch = f"task/{task.id}"
-            wt_path = wt_root / f"{task.id}-{uuid.uuid4().hex[:6]}"
-            ok, out = git.worktree_add(project, str(wt_path), branch, new_branch=True)
-            if ok:
-                prepared.append((task, wt_path, branch))
-            else:
-                logger.error(f"Worktree add failed for {task.id}: {out}")
-                results.append(
-                    (task, None, RuntimeError(f"worktree add failed: {out}"))
-                )
-
-        def run_one(item):
-            task, wt_path, branch = item
-            view = _WorktreeProjectView(project, wt_path)
-            try:
-                return (
-                    task,
-                    executor.execute(task, view, use_git_branch=False),
-                    None,
-                    wt_path,
-                    branch,
-                )
-            except Exception as e:
-                return (task, None, e, wt_path, branch)
-
-        max_workers = get_setting(project.config, "orchestrator", "max_workers")
-        raw = []
-        if prepared:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=min(len(prepared), max_workers)
-            ) as pool:
-                futures = [pool.submit(run_one, item) for item in prepared]
-                raw = [f.result() for f in concurrent.futures.as_completed(futures)]
-
-        for task, result, error, wt_path, branch in raw:
-            if result is not None and getattr(result, "status", None) == "completed":
-                merged, mout = git.merge_worktree(project, branch)
-                if not merged:
-                    logger.error(f"Worktree merge failed for {task.id}: {mout}")
-                    error, result = RuntimeError(f"merge failed: {mout}"), None
-            git.worktree_remove(project, str(wt_path))
-            results.append((task, result, error))
-        return results
 
     def _interactive_prompt(self, task: Task, strategy: str = "iterative") -> str:
         console.print(

@@ -54,13 +54,27 @@ class GitTool(CommandTool):
             project, command=f"git worktree remove --force {shlex.quote(path)}"
         )
 
+    def worktree_prune(self, project: Any) -> Tuple[bool, str]:
+        """Drop administrative metadata for worktrees whose directory is gone
+        (e.g. a prior run crashed mid-task), so a fresh run starts clean."""
+        return super().execute(project, command="git worktree prune")
+
     def merge_worktree(self, project: Any, branch: str) -> Tuple[bool, str]:
-        """Merge a worktree's branch into the current branch, then delete it."""
+        """Merge a worktree's branch into the current branch, then delete it.
+
+        A conflicting or otherwise failed merge leaves the tree mid-merge
+        (``MERGE_HEAD`` set, conflict markers written), which would block the next
+        merge and leave the base branch dirty. So on failure we ``git merge
+        --abort`` to restore the pre-merge base cleanly and never force-merge — the
+        caller re-queues the task instead. The abort is best-effort (a no-op if no
+        merge was actually started)."""
         success, out = super().execute(
             project, command=f"git merge --no-ff {shlex.quote(branch)} --no-edit"
         )
         if success:
             super().execute(project, command=f"git branch -d {shlex.quote(branch)}")
+        else:
+            super().execute(project, command="git merge --abort")
         return success, out
 
     def branch_create(self, project: Any, branch: str) -> Tuple[bool, str]:
@@ -76,6 +90,14 @@ class GitTool(CommandTool):
 
     def checkout(self, project: Any, branch: str) -> Tuple[bool, str]:
         return super().execute(project, command=f"git checkout {shlex.quote(branch)}")
+
+    def reset_hard(self, project: Any, ref: str = "HEAD") -> Tuple[bool, str]:
+        """Hard-reset the current branch to ``ref`` (drops the commits after it).
+
+        Used to roll back a wave merge that broke the base branch: the merge is
+        ``--no-ff`` so it is the tip, and ``HEAD^`` is the pre-merge base tip.
+        """
+        return super().execute(project, command=f"git reset --hard {shlex.quote(ref)}")
 
     def status(self, project: Any) -> Tuple[bool, str]:
         return super().execute(project, command="git status")

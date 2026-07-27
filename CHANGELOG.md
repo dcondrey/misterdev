@@ -9,6 +9,71 @@ type.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-23
+
+A large hardening + feature run: all planned tiers, the critical/high/medium audit
+findings, and the async-job lifecycle over MCP.
+
+### Added
+
+- **Async job lifecycle over MCP.** `build_async`/`run_async` jobs now persist
+  across a server restart (a job still `running` when the process died reloads as
+  `interrupted`) and expose task-level progress — `done`/`total`/`phase`/`message` —
+  surfaced by `job_status`. Persistent by default (`~/.misterdev/jobs.json`,
+  `MISTERDEV_STATE_DIR` override).
+- **`full_rewrite` escalation rung** — a structurally different retry (rewrite the
+  whole target region) between context-widen and model-swap.
+- **Escalation sub-steps execute as real gated child tasks** (depth-guarded);
+  **proactive keystone splitting** of high-fan-in tasks; a **size/verifiability
+  invariant** flags over-large or unverifiable decomposed tasks.
+- **Runtime FailureLog read-back** (a task sees its own prior failures within the
+  run) and a **schedulable, benchmark-gated evolution pass**.
+- **compile_view per-language adapter registry** — real rust/typescript/go/swift/
+  csharp diagnostic parsers — and **named-symbol definitions surfaced** on
+  "cannot find X" / type-mismatch diagnostics.
+- **Documentation tool (context7/fetch) mounted by default** (isolation-gated,
+  opt-out via `mcp.docs_tool`).
+
+### Changed
+
+- **spec-as-tests is default-on** (advisory). The **mutation gate scores every
+  changed source file**, not just the largest. The **edit region is never
+  truncated** by the context budget. The **independent judge** detects a
+  same-model config as non-independent instead of silently claiming independence.
+
+### Fixed
+
+- **CRITICAL — the integration gate reverts a wave that breaks the build.** A
+  post-wave suite that no longer compiles/collects was waved through as unparseable
+  (a false-GREEN); it is now reverted while genuinely ambiguous failures are still
+  left alone.
+- A **zero-test gate** and a **MANIFEST acceptance pass-through with no prior
+  objective gate** are hard-rejected. **dotnet/VSTest counts sum across all
+  projects**; the **C# classifier anchors on the Roslyn `error CSxxxx:` prefix**.
+  The decomposer **prunes dependencies pointing at trimmed tasks**; model selection
+  **widens instead of silently defaulting** when the top tier is empty;
+  `RealTimeAligner` tolerates a malformed `consensus.json`; an unchanged file is no
+  longer treated as fully mutated; deferral task ids containing ` - ` are preserved.
+
+### Security
+
+- **Reject an untrusted MCP `runtimeHint`** outside the npx/uvx allowlist, closing
+  arbitrary-binary execution via a discovered server.
+
+### Performance
+
+- **SymbolGraph per-file index** (file-scoped queries are no longer
+  O(all-symbols)); the **Gatekeeper git-diff is memoized** within one gate run
+  (3 subprocess passes → 1).
+
+### Removed / robustness
+
+- **web-verify no longer leaks a dev-server** on a silent readiness wait;
+  **worktrees are torn down** if batch prep raises; **venv setup is
+  timeout-bounded**.
+- Orphaned dead modules `held_out_oracle` and `early_abort`, and the unused
+  `ModelSelector.is_ready`.
+
 ### Changed
 
 - **Integration gate: identity-based regression detection on a red baseline.** The

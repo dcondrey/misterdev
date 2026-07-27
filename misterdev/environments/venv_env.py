@@ -24,13 +24,27 @@ class VenvEnvironmentManager(BaseEnvironmentManager):
             "setup_commands", [f"python -m venv {self.root_dir}"]
         )
 
+        timeout = float(self.config.get("setup_timeout", 600))
         for cmd_template in setup_commands:
             command = cmd_template.format(root_dir=self.root_dir)
             logger.info(f"Running env setup command: {command}")
             try:
-                subprocess.run(command, shell=True, cwd=self.project_path, check=True)
+                subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=self.project_path,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired:
+                logger.error(f"Env setup command timed out after {timeout}s: {command}")
+                return False
             except subprocess.CalledProcessError as e:
-                logger.error(f"Failed to setup environment: {e}")
+                logger.error(
+                    f"Failed to setup environment: {e}; {e.stderr or e.stdout or ''}"
+                )
                 return False
         return True
 

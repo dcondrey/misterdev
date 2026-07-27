@@ -33,19 +33,23 @@ _SIGNALS: Tuple[Tuple[re.Pattern, str], ...] = (
         "a Cloudflare account_id is required",
     ),
     # Credential-ish terms (env-var style ``_TOKEN`` / ``_KEY`` included) paired
-    # with a "needed" word — but NOT bare "token", so a parser's "unexpected
-    # token" / "invalid token" is not misread as a credential block.
+    # with an ABSENCE word only — never "invalid"/"expired", which are validation
+    # RESULTS a normal test emits ("expected api key to be valid, got invalid" is a
+    # feature test, not a missing-credential block; a genuinely bad credential
+    # surfaces as 401/unauthorized below). This keeps a task that IMPLEMENTS
+    # api-key issuance from being misread as needing an external key.
     (
         re.compile(
             r"(?:api[_ ]?key|api[_ ]?token|access[_ ]?token|auth[_ ]?token|"
             r"bearer\s+token|_token\b|_key\b|secret|credentials?)"
-            r".{0,30}(?:required|missing|not set|unset|undefined|invalid|empty|expired)|"
-            r"(?:required|missing|not set|unset|undefined|invalid|empty|expired)"
-            r".{0,30}(?:api[_ ]?key|api[_ ]?token|access[_ ]?token|auth[_ ]?token|"
-            r"_token\b|_key\b|secret|credentials?)",
+            r".{0,30}(?:is required|are required|required\b|missing(?!\s+from)|"
+            r"not set|not configured|not provided|unset|undefined)|"
+            r"(?:required|missing|no|unset|undefined|set the|provide (?:a|the|your))"
+            r"\s.{0,20}(?:api[_ ]?key|api[_ ]?token|access[_ ]?token|auth[_ ]?token|"
+            r"_token\b|_key\b|credentials?)",
             re.I,
         ),
-        "a required API key / token / secret is missing or invalid",
+        "a required API key / token / secret is missing",
     ),
     (
         re.compile(
@@ -88,11 +92,36 @@ _SIGNALS: Tuple[Tuple[re.Pattern, str], ...] = (
 )
 
 
+# A bare 401/403 emitted INSIDE a test run is NOT a missing-credential block: it is
+# either a test asserting on a 401/403 response, or local harness noise (a
+# workers/miniflare pool probe). Parking the task there freezes a whole subtree on
+# a "needs your credential" that the code should just fix (observed: a countless
+# server keystone gated by @cloudflare/vitest-pool-workers). So the two BROAD
+# HTTP-status auth rules are suppressed under test context; the SPECIFIC rules
+# (an explicit `wrangler login`, a named missing key/token) still fire — those
+# name a real external resource, not an HTTP status a test can legitimately emit.
+_TEST_CONTEXT = re.compile(
+    r"\bvitest\b|\bjest\b|\bminiflare\b|vitest-pool-workers|"
+    r"\bexpect\(|\.toBe\b|\.toEqual\b|\bdescribe\(|\bit\(|"
+    r"\bTest Files\b|\.test\.|\.spec\.",
+    re.I,
+)
+_TEST_SUPPRESSIBLE = frozenset(
+    {
+        "authentication failed (401 / invalid credentials)",
+        "access forbidden (403) — the account lacks permission",
+    }
+)
+
+
 def blocked_reason(output: str) -> Optional[str]:
     """A short human reason when ``output`` shows an external-resource block, else
     None. None means "treat as an ordinary (retryable / real) failure"."""
     text = output or ""
+    in_test = bool(_TEST_CONTEXT.search(text))
     for pattern, reason in _SIGNALS:
         if pattern.search(text):
+            if in_test and reason in _TEST_SUPPRESSIBLE:
+                continue  # a 401/403 inside a test run is code to fix, not a block
             return reason
     return None

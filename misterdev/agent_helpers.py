@@ -108,6 +108,89 @@ class ProgressReporter:
         )
 
 
+def worktree_setup_command(config, root) -> Optional[str]:
+    """The command that primes a worktree's dependencies before gating, or None.
+
+    An explicit ``orchestrator.worktree_setup_command`` wins (``""`` disables);
+    otherwise it is auto-detected from the project's lockfile so a gate never pays
+    a full dependency install inside its own timeout. Pure (config + path in,
+    string out) so both the parallel worktree creation path and the per-gate
+    infra-reprime helper resolve the same command from one place.
+    """
+    explicit = get_setting(config, "orchestrator", "worktree_setup_command")
+    if explicit is not None:
+        return explicit or None
+    if (root / "pnpm-lock.yaml").exists():
+        return "pnpm install --prefer-offline"
+    if (root / "yarn.lock").exists():
+        return "yarn install --frozen-lockfile"
+    if (root / "bun.lockb").exists():
+        return "bun install"
+    if (root / "package-lock.json").exists():
+        return "npm ci"
+    if (root / "package.json").exists():
+        return "npm install --no-audit --no-fund"
+    return None
+
+
+def _first_declared_dependency(root) -> Optional[str]:
+    """The first package name in a project's package.json dependencies (prod then
+    dev), or None. Used to probe that the primed node_modules actually resolves a
+    real dependency, not just that node runs. Best-effort: any read/parse error
+    yields None (the caller then skips the auto probe)."""
+    import json
+
+    pkg = root / "package.json"
+    if not pkg.is_file():
+        return None
+    try:
+        data = json.loads(pkg.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    for key in ("dependencies", "devDependencies"):
+        deps = data.get(key)
+        if isinstance(deps, dict):
+            for name in deps:
+                if isinstance(name, str) and name:
+                    return name
+    return None
+
+
+def worktree_healthcheck_command(config, root) -> Optional[str]:
+    """A fast probe confirming a primed worktree's toolchain resolves, or None.
+
+    An explicit ``orchestrator.worktree_healthcheck_command`` wins (``""`` disables);
+    otherwise it is auto-detected for node/pnpm projects — the case where a broken
+    or partial ``node_modules`` install silently poisons the gate. Prefers a
+    TypeScript toolchain resolve when the project uses TS (the dominant fresh-
+    worktree false-failure), else confirms the first declared dependency resolves
+    from the primed store. A non-node project (nothing to probe cheaply) yields
+    None. Pure (config + path in) so it is resolved from one place.
+    """
+    explicit = get_setting(config, "orchestrator", "worktree_healthcheck_command")
+    if explicit is not None:
+        return explicit or None
+    is_node = any(
+        (root / f).exists()
+        for f in (
+            "pnpm-lock.yaml",
+            "yarn.lock",
+            "bun.lockb",
+            "package-lock.json",
+            "package.json",
+        )
+    )
+    if not is_node:
+        return None
+    if (root / "tsconfig.json").exists():
+        # --no-install: resolve tsc from the primed node_modules and fail fast if
+        # it is not there, rather than triggering a download (which would mask the
+        # partial-install signal we are probing for).
+        return "npx --no-install tsc --version"
+    dep = _first_declared_dependency(root)
+    return f"node -e \"require.resolve('{dep}')\"" if dep else None
+
+
 def _combine_commands(*cmds: Optional[str]) -> Optional[str]:
     """Join shell commands with ``&&`` (each parenthesised), or None if all empty.
 

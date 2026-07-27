@@ -308,3 +308,25 @@ def test_run_health_check_explicit_lint_timeout(monkeypatch):
     )
     assert calls["lint"] == 240  # explicit lint_timeout, not test_timeout
     assert calls["t"] == 300
+
+
+def test_parse_test_counts_sums_multiple_dotnet_projects():
+    # A multi-project VSTest solution prints one summary block per project; the gate
+    # must sum them, not read only the first (an undercount can hide a regression).
+    out = (
+        "Failed: 1, Passed: 5, Skipped: 0, Total: 6\n"
+        "Failed: 3, Passed: 2, Skipped: 0, Total: 5\n"
+    )
+    assert _parse_test_counts(out) == (11, 4)
+
+
+def test_parse_test_counts_sums_multiple_dotnet_alt_projects():
+    out = (
+        "Total tests: 6. Passed: 5. Failed: 1.\n"
+        "Total tests: 5. Passed: 2. Failed: 3.\n"
+    )
+    assert _parse_test_counts(out) == (11, 4)
+
+
+def test_parse_test_counts_single_dotnet_project_unchanged():
+    assert _parse_test_counts("Failed: 2, Passed: 3, Skipped: 0, Total: 5") == (5, 2)

@@ -231,13 +231,16 @@ def decompose_spec(
     # repo). Run before dependency detection so reclassified files participate.
     _ground_task_paths(tasks, project_ref)
 
-    # Detect implicit dependencies from file overlaps
+    # Cap BEFORE wiring implicit deps so overlap-derived edges are only drawn among
+    # kept tasks, and prune any explicit dep pointing at a trimmed task.
+    tasks = _cap_tasks(tasks, max_tasks)
+
+    # Detect implicit dependencies from file overlaps (kept tasks only)
     _add_implicit_dependencies(tasks)
 
-    # Validate and cap
-    if len(tasks) > max_tasks:
-        logger.warning(f"LLM returned {len(tasks)} tasks, capping at {max_tasks}")
-        tasks = tasks[:max_tasks]
+    # Flag any task that breaks the size/verifiability invariant so the executor
+    # can split or reject it rather than silently trying to land it in one attempt.
+    enforce_task_invariants(tasks)
 
     return tasks
 
@@ -319,6 +322,156 @@ def _ground_task_paths(tasks: list[Task], project_ref: str) -> None:
             else:
                 still_create.append(f)
         t.files_to_create = still_create
+
+
+def _cap_tasks(tasks: list[Task], max_tasks: int) -> list[Task]:
+    """Cap the task list to ``max_tasks`` and drop any dependency that now points
+    at a trimmed task.
+
+    Trimming after dependency wiring would leave a surviving task depending on a
+    task that no longer exists; topological_sort ignores unknown deps, so the
+    survivor would be treated as if that (never-run) prerequisite were satisfied.
+    Pruning the dangling edge makes the loss explicit instead of silent.
+    """
+    if len(tasks) <= max_tasks:
+        return tasks
+    kept = tasks[:max_tasks]
+    dropped = {t.id for t in tasks[max_tasks:]}
+    depended_on = dropped & {d for t in kept for d in t.dependencies}
+    logger.warning(
+        "Decomposer: %d tasks > cap %d; dropping %s%s.",
+        len(tasks),
+        max_tasks,
+        sorted(dropped),
+        f" (some were depended-on, edges pruned: {sorted(depended_on)})"
+        if depended_on
+        else "",
+    )
+    kept_ids = {t.id for t in kept}
+    for t in kept:
+        t.dependencies = [d for d in t.dependencies if d in kept_ids]
+    return kept
+
+
+def enforce_task_invariants(tasks: list[Task], max_files: int = 20) -> list[Task]:
+    """Flag decomposed tasks that violate the size/verifiability invariant.
+
+    Pure (no LLM/no I/O). A task is well-formed when it (a) touches at most
+    ``max_files`` distinct files (create+modify) and (b) carries a concrete,
+    non-empty acceptance criterion. Violations are recorded on
+    ``task.processor_data["invariant_violations"]`` and logged, so downstream
+    (the decompose rung / keystone split) can act on an over-large or unverifiable
+    task instead of silently trying to land it in one attempt.
+    """
+    # Low-signal acceptance strings that encode nothing a gate can check.
+    _PLACEHOLDERS = {"works", "done", "ok", "todo", "tbd", "n/a", "it works"}
+    for task in tasks:
+        violations: list[str] = []
+        touched = {
+            f for f in (list(task.files_to_create) + list(task.files_to_modify)) if f
+        }
+        if len(touched) > max_files:
+            violations.append(
+                f"touches {len(touched)} files > max {max_files}; split it"
+            )
+        crit = (getattr(task, "acceptance_criteria", "") or "").strip()
+        if len(crit) < 8 or crit.lower() in _PLACEHOLDERS:
+            violations.append("acceptance criteria missing or not concrete/verifiable")
+        if violations:
+            if not isinstance(task.processor_data, dict):
+                task.processor_data = {}
+            task.processor_data["invariant_violations"] = violations
+            logger.warning(
+                "Task %s violates the size/verifiability invariant: %s",
+                task.id,
+                "; ".join(violations),
+            )
+    return tasks
+
+
+def _partition(items: list, n: int) -> list:
+    """Split ``items`` into ``n`` contiguous, near-equal chunks."""
+    k, m = divmod(len(items), n)
+    out, start = [], 0
+    for i in range(n):
+        size = k + (1 if i < m else 0)
+        out.append(items[start : start + size])
+        start += size
+    return out
+
+
+def split_keystone_tasks(
+    tasks: list[Task], *, fanin_threshold: int = 3, min_units: int = 2
+) -> list[Task]:
+    """Proactively split a keystone (high-fan-in) task into chained sub-units.
+
+    A keystone — a task many others depend on — landing all its behavior in one
+    attempt has a low per-attempt success rate AND blocks its whole fan-out on that
+    single attempt. When such a task touches at least ``min_units`` files it is
+    split BEFORE execution into smaller sub-tasks partitioned by file and chained in
+    order; every task that depended on the keystone is rewired to depend on the
+    FINAL sub-unit, so the dependency semantics are preserved (dependents still wait
+    for all of the keystone's work). Pure: no LLM, no I/O. A task with fewer than
+    ``fanin_threshold`` dependents, or too few files to partition, is unchanged.
+    """
+    by_id = {t.id: t for t in tasks}
+    dependents: dict[str, list[str]] = {t.id: [] for t in tasks}
+    for t in tasks:
+        for dep in t.dependencies:
+            if dep in by_id:
+                dependents[dep].append(t.id)
+
+    plans: dict[str, list[Task]] = {}
+    for t in tasks:
+        seen: set = set()
+        files = [
+            f
+            for f in (list(t.files_to_create) + list(t.files_to_modify))
+            if f and not (f in seen or seen.add(f))
+        ]
+        if len(dependents[t.id]) < fanin_threshold or len(files) < min_units:
+            continue
+        creates = set(t.files_to_create)
+        chunks = _partition(files, min_units)
+        subs: list[Task] = []
+        for i, chunk in enumerate(chunks):
+            subs.append(
+                Task(
+                    id=f"{t.id}-part{i + 1}",
+                    title=(t.title or t.id) + f" (part {i + 1}/{len(chunks)})",
+                    description=t.description,
+                    acceptance_criteria=t.acceptance_criteria,
+                    files_to_create=[f for f in chunk if f in creates],
+                    files_to_modify=[f for f in chunk if f not in creates],
+                    context_files=list(t.context_files),
+                    dependencies=(
+                        list(t.dependencies) if i == 0 else [f"{t.id}-part{i}"]
+                    ),
+                    complexity=t.complexity,
+                    category=t.category,
+                    type=t.type,
+                    status="pending",
+                    project_ref=t.project_ref,
+                    processor_data=(
+                        dict(t.processor_data)
+                        if isinstance(t.processor_data, dict)
+                        else {}
+                    ),
+                )
+            )
+        plans[t.id] = subs
+
+    if not plans:
+        return tasks
+
+    # A dependency on a split keystone now points at that keystone's FINAL sub-unit.
+    final_of = {kid: subs[-1].id for kid, subs in plans.items()}
+    result: list[Task] = []
+    for t in tasks:
+        result.extend(plans[t.id] if t.id in plans else [t])
+    for t in result:
+        t.dependencies = [final_of.get(d, d) for d in t.dependencies]
+    return result
 
 
 def _add_implicit_dependencies(tasks: list[Task]) -> None:

@@ -4,7 +4,10 @@ from typing import Dict, List, Optional
 
 from misterdev.core.models import Task
 from misterdev.core.execution.project import Project
+from misterdev.core.execution.infra import infra_failure
 from misterdev.core.verification.validator import _run_cmd
+from misterdev.agent_helpers import worktree_setup_command
+from misterdev.config import get_setting
 from misterdev.utils.file_utils import write_file
 
 from .helpers import logger
@@ -14,6 +17,58 @@ class CommandsMixin:
     # ----------------------------------------------------------------
     # Command execution and file operations
     # ----------------------------------------------------------------
+
+    def _run_gate(
+        self, project: Project, command: str, timeout: int, cwd=None
+    ) -> tuple:
+        """Run a build/typecheck/test gate command, self-healing an ENVIRONMENT
+        fault before trusting the failure.
+
+        Runs ``command`` once. If it fails AND the output carries an
+        infrastructure signature (a timeout, a missing dependency, a locked store,
+        ENOSPC, OOM — see ``infra_failure``), the fault is in the worktree, not the
+        code: re-prime the worktree's dependencies and re-run the gate exactly
+        ONCE, returning that result. A plain code failure (a type error, a failed
+        assertion) has no infra signature, so it is returned as-is with no re-run.
+        Same timeout on both runs. Returns ``(success, output)``.
+        """
+        success, output = self._run_command(project, command, timeout=timeout, cwd=cwd)
+        if success:
+            return success, output
+        reason = infra_failure(output)
+        if not reason:
+            return success, output
+        logger.warning(
+            "Gate failed on an environment fault (%s), not the code; re-priming "
+            "worktree dependencies and re-running once: %s",
+            reason,
+            command,
+        )
+        self._reprime_worktree_deps(project)
+        return self._run_command(project, command, timeout=timeout, cwd=cwd)
+
+    def _reprime_worktree_deps(self, project: Project) -> None:
+        """Re-run the project's dependency-priming command in the worktree root.
+
+        Best-effort: no configured/detected setup command is a no-op, and a failed
+        re-prime only logs — the gate re-runs regardless so a genuine code failure
+        still surfaces. Runs at ``project.path`` (the worktree root, where the
+        lockfile lives), matching the priming done at worktree creation.
+        """
+        setup_cmd = worktree_setup_command(project.config, project.path)
+        if not setup_cmd:
+            return
+        setup_timeout = get_setting(
+            project.config, "orchestrator", "worktree_setup_timeout"
+        )
+        logger.info(f"Re-priming worktree dependencies: {setup_cmd}")
+        ok, out = self._run_command(
+            project, setup_cmd, timeout=setup_timeout, cwd=project.path
+        )
+        if not ok:
+            logger.warning(
+                f"Dependency re-prime failed (re-running gate anyway): {out[-200:]}"
+            )
 
     def _run_command(
         self, project: Project, command: str, timeout: int = 120, cwd=None

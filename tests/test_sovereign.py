@@ -170,3 +170,43 @@ def test_extract_code_block_no_fence():
 def test_extract_code_block_multiple():
     response = "First:\n```\nblock1\n```\nSecond:\n```\nblock2\n```"
     assert _extract_code_block(response) == "block1"
+
+
+def test_load_tolerates_valid_json_of_wrong_shape(tmp_path):
+    import json
+
+    from misterdev.core.planning.sovereign import RealTimeAligner
+
+    d = tmp_path / ".orchestrator"
+    d.mkdir(parents=True)
+    (d / "consensus.json").write_text(json.dumps([1, 2, 3]))  # valid JSON, wrong shape
+    a = RealTimeAligner(tmp_path)
+    assert a.get_consensus_context() == "No prior decisions recorded."
+    a.certify_decision("use X", "because")
+    assert "use X" in a.get_consensus_context()
+
+
+def test_load_missing_keys_default(tmp_path):
+    import json
+
+    from misterdev.core.planning.sovereign import RealTimeAligner
+
+    d = tmp_path / ".orchestrator"
+    d.mkdir(parents=True)
+    (d / "consensus.json").write_text(json.dumps({"unrelated": 1}))
+    a = RealTimeAligner(tmp_path)
+    a.certify_decision("d", "r")
+    assert "d" in a.get_consensus_context()
+
+
+def test_load_preserves_valid_decisions(tmp_path):
+    import json
+
+    from misterdev.core.planning.sovereign import RealTimeAligner
+
+    d = tmp_path / ".orchestrator"
+    d.mkdir(parents=True)
+    (d / "consensus.json").write_text(
+        json.dumps({"invariants": [], "decisions": [{"decision": "keep", "rationale": "r"}]})
+    )
+    assert "keep" in RealTimeAligner(tmp_path).get_consensus_context()

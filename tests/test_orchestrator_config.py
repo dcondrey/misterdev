@@ -139,7 +139,7 @@ class TestExecuteParallelMaxWorkers:
         tasks = self._make_tasks(3)  # 3 tasks, max_workers=8 → min(3,8)=3
 
         with patch(
-            "misterdev.agent.concurrent.futures.ThreadPoolExecutor"
+            "misterdev.core.execution.parallel.concurrent.futures.ThreadPoolExecutor"
         ) as MockPool:
             mock_ctx = MagicMock()
             MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
@@ -147,7 +147,7 @@ class TestExecuteParallelMaxWorkers:
             mock_ctx.submit.return_value = MagicMock()
 
             with patch(
-                "misterdev.agent.concurrent.futures.as_completed",
+                "misterdev.core.execution.parallel.concurrent.futures.as_completed",
                 return_value=[],
             ):
                 orchestrator._execute_parallel(tasks, executor, project)
@@ -162,7 +162,7 @@ class TestExecuteParallelMaxWorkers:
         tasks = self._make_tasks(2)
 
         with patch(
-            "misterdev.agent.concurrent.futures.ThreadPoolExecutor"
+            "misterdev.core.execution.parallel.concurrent.futures.ThreadPoolExecutor"
         ) as MockPool:
             mock_ctx = MagicMock()
             MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
@@ -170,7 +170,7 @@ class TestExecuteParallelMaxWorkers:
             mock_ctx.submit.return_value = MagicMock()
 
             with patch(
-                "misterdev.agent.concurrent.futures.as_completed",
+                "misterdev.core.execution.parallel.concurrent.futures.as_completed",
                 return_value=[],
             ):
                 orchestrator._execute_parallel(tasks, executor, project)
@@ -186,7 +186,7 @@ class TestExecuteParallelMaxWorkers:
         tasks = self._make_tasks(6)  # 6 tasks, default max_workers=4 → min(6,4)=4
 
         with patch(
-            "misterdev.agent.concurrent.futures.ThreadPoolExecutor"
+            "misterdev.core.execution.parallel.concurrent.futures.ThreadPoolExecutor"
         ) as MockPool:
             mock_ctx = MagicMock()
             MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
@@ -194,7 +194,7 @@ class TestExecuteParallelMaxWorkers:
             mock_ctx.submit.return_value = MagicMock()
 
             with patch(
-                "misterdev.agent.concurrent.futures.as_completed",
+                "misterdev.core.execution.parallel.concurrent.futures.as_completed",
                 return_value=[],
             ):
                 orchestrator._execute_parallel(tasks, executor, project)
@@ -209,7 +209,7 @@ class TestExecuteParallelMaxWorkers:
         tasks = self._make_tasks(10)  # 10 tasks, default max_workers=4 → min(10,4)=4
 
         with patch(
-            "misterdev.agent.concurrent.futures.ThreadPoolExecutor"
+            "misterdev.core.execution.parallel.concurrent.futures.ThreadPoolExecutor"
         ) as MockPool:
             mock_ctx = MagicMock()
             MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
@@ -217,7 +217,7 @@ class TestExecuteParallelMaxWorkers:
             mock_ctx.submit.return_value = MagicMock()
 
             with patch(
-                "misterdev.agent.concurrent.futures.as_completed",
+                "misterdev.core.execution.parallel.concurrent.futures.as_completed",
                 return_value=[],
             ):
                 orchestrator._execute_parallel(tasks, executor, project)
@@ -276,7 +276,7 @@ class TestExecuteParallelDisjoint:
             return fut
 
         with patch(
-            "misterdev.agent.concurrent.futures.ThreadPoolExecutor"
+            "misterdev.core.execution.parallel.concurrent.futures.ThreadPoolExecutor"
         ) as MockPool:
             mock_ctx = MagicMock()
             MockPool.return_value.__enter__ = MagicMock(return_value=mock_ctx)
@@ -284,7 +284,7 @@ class TestExecuteParallelDisjoint:
             mock_ctx.submit.side_effect = fake_submit
 
             with patch(
-                "misterdev.agent.concurrent.futures.as_completed",
+                "misterdev.core.execution.parallel.concurrent.futures.as_completed",
                 side_effect=lambda d: list(d),
             ):
                 results = orchestrator._execute_parallel(tasks, executor, project)

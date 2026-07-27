@@ -143,16 +143,18 @@ def test_write_spec_test_creates_dir_and_file(tmp_path):
 # --- wiring into the executor (per-task) ------------------------------------
 
 
-def test_spec_as_tests_flags_readable_and_off_by_default():
+def test_spec_as_tests_flags_readable_and_on_by_default():
     from misterdev.config import get_setting, DEFAULT_CONFIG
 
-    assert DEFAULT_CONFIG["orchestrator"]["spec_as_tests"] is False
+    # Default-on (reproduction-first is the default), but still ADVISORY: a red
+    # spec test does not block acceptance unless spec_as_tests_block is set.
+    assert DEFAULT_CONFIG["orchestrator"]["spec_as_tests"] is True
     assert DEFAULT_CONFIG["orchestrator"]["spec_as_tests_block"] is False
     assert (
         get_setting(
-            {"orchestrator": {"spec_as_tests": True}}, "orchestrator", "spec_as_tests"
+            {"orchestrator": {"spec_as_tests": False}}, "orchestrator", "spec_as_tests"
         )
-        is True
+        is False
     )
 
 
@@ -202,7 +204,9 @@ def test_maybe_generate_writes_outside_project_suite(tmp_path):
     assert ".orchestrator" in p.parts and "spec_tests" in p.parts
 
 
-def test_maybe_generate_off_by_default(tmp_path):
+def test_maybe_generate_on_by_default(tmp_path):
+    # Default-on: an empty config resolves spec_as_tests to the default (True) via
+    # DEFAULT_CONFIG, so generation proceeds without any explicit opt-in.
     from misterdev.task_executors.markdown_plan_executor import (
         MarkdownPlanExecutor,
     )
@@ -210,6 +214,22 @@ def test_maybe_generate_off_by_default(tmp_path):
     class _Proj:
         path = tmp_path
         config = {}
+        llm_client = _SpecClient()
+
+    path, source = MarkdownPlanExecutor()._maybe_generate_spec_test(
+        _Proj(), _task(tid="t1")
+    )
+    assert path is not None and source
+
+
+def test_maybe_generate_explicit_off_disables(tmp_path):
+    from misterdev.task_executors.markdown_plan_executor import (
+        MarkdownPlanExecutor,
+    )
+
+    class _Proj:
+        path = tmp_path
+        config = {"orchestrator": {"spec_as_tests": False}}
         llm_client = _SpecClient()
 
     assert MarkdownPlanExecutor()._maybe_generate_spec_test(

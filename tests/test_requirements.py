@@ -84,6 +84,27 @@ def test_gating_only_foundational_missing_accounts():
     ]
     gating = R.gating_requirements(reqs, tasks, threshold=3)
     assert [g["key"] for g in gating] == ["CLOUDFLARE_ACCOUNT"]  # env is advisory
+
+
+def test_gating_skips_answered_accounts():
+    # A foundational account need the user has answered (a typed decision, e.g. "skip
+    # the deploy") no longer stops the run — the user made the call.
+    tasks = [
+        _t("T1", "deploy to cloudflare"),
+        _t("T2", deps=["T1"]),
+        _t("T3", deps=["T2"]),
+        _t("T4", deps=["T1"]),
+    ]
+    reqs = [
+        {
+            "key": "CLOUDFLARE_ACCOUNT",
+            "kind": "account",
+            "task_ids": ["T1"],
+            "satisfied": False,
+            "answered": True,
+        },
+    ]
+    assert R.gating_requirements(reqs, tasks, threshold=3) == []
     # Same account need but leaf (no dependents) does not gate.
     leaf = [_t("L1", "deploy to cloudflare")]
     assert (
@@ -143,11 +164,38 @@ def test_requirements_book_writes_and_reads_decisions(tmp_path: Path):
     )
     assert book.md_path.exists()
     assert book.load_answers() == {}
-    txt = book.md_path.read_text(encoding="utf-8").replace(
-        "_(provide this, or write your decision here)_", "use D1", 1
-    )
+    # Every unsatisfied requirement is answerable, not just decisions: the account
+    # and the decision each carry an Answer line to fill.
+    assert book.md_path.read_text(encoding="utf-8").count("- Answer:") == 2
+    # Fill the account requirement (the first block) and the decision one.
+    txt = book.md_path.read_text(encoding="utf-8")
+    txt = txt.replace(
+        "_(provide this, or write your decision here)_", "skip the deploy", 1
+    ).replace("_(provide this, or write your decision here)_", "use D1", 1)
     book.md_path.write_text(txt, encoding="utf-8")
-    assert book.load_answers().get("DB_CHOICE") == "use D1"
+    answers = book.load_answers()
+    assert answers.get("CLOUDFLARE_ACCOUNT") == "skip the deploy"
+    assert answers.get("DB_CHOICE") == "use D1"
+    # A re-write preserves both typed answers.
+    book.write(
+        [
+            {
+                "key": "CLOUDFLARE_ACCOUNT",
+                "kind": "account",
+                "summary": "cf",
+                "task_ids": ["T1"],
+                "satisfied": False,
+            },
+            {
+                "key": "DB_CHOICE",
+                "kind": "decision",
+                "summary": "which db",
+                "task_ids": ["T2"],
+                "satisfied": False,
+            },
+        ]
+    )
+    assert book.load_answers().get("CLOUDFLARE_ACCOUNT") == "skip the deploy"
 
 
 # --- run_project smart gate: stop vs proceed --------------------------------

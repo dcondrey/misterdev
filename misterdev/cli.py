@@ -88,6 +88,25 @@ def _print_report(project_path: str) -> None:
         console.print("[dim]No audit trail yet.[/]")
 
 
+def _print_doctor(result: dict) -> None:
+    """Render the doctor checklist and return nothing (caller handles exit)."""
+    glyph = {"pass": "[green]✓[/]", "warn": "[yellow]⚠[/]", "fail": "[red]✗[/]"}
+    console.print("[bold]misterdev doctor[/] — preflight for an unattended run\n")
+    for c in result.get("checks", []):
+        console.print(f"{glyph.get(c.status, '?')} {c.name}[dim] — {c.detail}[/]")
+        if c.status != "pass" and c.fix:
+            console.print(f"    [dim]fix:[/] {c.fix}")
+    verdict = (
+        "[bold green]READY[/]"
+        if result.get("ready")
+        else "[bold red]NOT READY[/] (hard blocker present)"
+    )
+    console.print(
+        f"\n{verdict} · {result.get('passed', 0)} ok · "
+        f"{result.get('warnings', 0)} warning(s) · {result.get('failures', 0)} failure(s)"
+    )
+
+
 def main():
     # Natural-language mode: when the first argument isn't a known subcommand
     # (and isn't a flag), treat the whole line as plain English and let
@@ -100,6 +119,7 @@ def main():
         "list",
         "status",
         "report",
+        "doctor",
         "run",
         "plan",
         "build",
@@ -139,6 +159,16 @@ def main():
         help="Summarize cost, model performance, and the audit trail for a project",
     )
     report_parser.add_argument(
+        "project_path", type=str, nargs="?", default=".", help="Path to the project"
+    )
+
+    # 'doctor' command — preflight a project before an unattended run
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Preflight a project for an unattended run (clean tree, models, "
+        "worktree prime, requirements); exits non-zero on a hard blocker",
+    )
+    doctor_parser.add_argument(
         "project_path", type=str, nargs="?", default=".", help="Path to the project"
     )
 
@@ -273,6 +303,13 @@ def main():
         default=None,
         help="Cap the number of tasks this run will plan/execute (bounds cost)",
     )
+    build_parser.add_argument(
+        "--reference",
+        type=str,
+        default=None,
+        help="Path to a reference implementation to port from (analyzed "
+        "read-only; its module/symbol map guides the plan)",
+    )
 
     # 'mcp' — serve misterdev as an MCP server over stdio (same as the
     # misterdev-mcp console script; exposed as a subcommand so runners like uvx
@@ -332,6 +369,10 @@ def main():
                 console.print(table)
     elif args.command == "report":
         _print_report(args.project_path)
+    elif args.command == "doctor":
+        result = orchestrator.run_doctor(args.project_path)
+        _print_doctor(result)
+        sys.exit(result.get("exit_code", 1))
     elif args.command == "run":
         if args.task:
             logger.info(
@@ -375,7 +416,9 @@ def main():
         if args.max_tasks is not None:
             build_args.extend(["--max-tasks", str(args.max_tasks)])
 
-        report = orchestrator.build(args.project_path, " ".join(build_args))
+        report = orchestrator.build(
+            args.project_path, " ".join(build_args), reference_dir=args.reference
+        )
         console.print("\n")
         if orchestrator.last_build_succeeded:
             console.print(

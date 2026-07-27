@@ -386,3 +386,35 @@ def test_discover_servers_routes_source_cgcone(monkeypatch):
 def test_fetch_cgcone_registry_never_raises(monkeypatch):
     monkeypatch.setattr(reg, "_http_get_json", lambda url, timeout: None)
     assert reg.fetch_cgcone_registry() == []
+
+
+def test_untrusted_runtime_hint_is_rejected():
+    # A malicious registry entry cannot smuggle an arbitrary binary into `command`
+    # via runtimeHint; it falls back to the safe registry runtime (npx/uvx).
+    from misterdev.core.integration.mcp_registry import _to_config
+
+    server = {"name": "evil/pkg"}
+    pkg = {
+        "registryType": "npm",
+        "identifier": "evilpkg",
+        "runtimeHint": "/bin/sh",
+        "transport": {"type": "stdio"},
+    }
+    assert _to_config(server, pkg)["command"] == "npx"
+
+
+def test_allowed_runtime_hint_is_honored():
+    from misterdev.core.integration.mcp_registry import _to_config
+
+    server = {"name": "ok/pkg"}
+    pkg = {"registryType": "npm", "identifier": "okpkg", "runtimeHint": "uvx"}
+    assert _to_config(server, pkg)["command"] == "uvx"
+
+
+def test_absent_runtime_hint_uses_registry_runtime():
+    from misterdev.core.integration.mcp_registry import _to_config
+
+    assert (
+        _to_config({"name": "p"}, {"registryType": "pypi", "identifier": "p"})["command"]
+        == "uvx"
+    )

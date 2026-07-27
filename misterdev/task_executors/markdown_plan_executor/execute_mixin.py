@@ -13,6 +13,10 @@ from misterdev.core.execution.error_resolver import ErrorResolver
 from misterdev.core.execution.error_classifier import (
     format_classified_error,
 )
+from misterdev.core.execution.escalation import (
+    choose_rung,
+    should_count_failure,
+)
 from misterdev.llm.client import CACHE_BREAKPOINT, SYSTEM_CACHE_SPLIT
 from misterdev.llm.prompt_manager import PromptManager
 from misterdev.config import get_setting
@@ -271,6 +275,11 @@ class ExecuteMixin:
         # matches. Closes the learning loop at the executor, not just the planner.
         solved_priors = self._solved_task_priors(project, task)
 
+        # Runtime read-back of this task's own prior failures (T5.1): a later attempt
+        # sees what already went wrong this run instead of rediscovering it. "" when
+        # the FailureLog has nothing for this task.
+        failure_priors = self._failure_priors(project, task)
+
         # Shared task-list preamble: the global conventions a numbered devplan
         # states once up front (canonical constants, locked dependency versions,
         # "never guess" rules) that every task must honor. The tasklist parser
@@ -303,11 +312,45 @@ class ExecuteMixin:
         attempt_cap = max_retries
         no_output_forgiven = 0
         forgiveness_cap = 2
+        # Escalation ladder: count only NON-infra (real code) gate failures, and
+        # climb widen_context -> stronger_model -> decompose as they accumulate.
+        # Infra faults self-heal and must never advance the ladder. Off -> the
+        # counter stays 0 and every attempt is the plain "normal" rung.
+        escalation_on = get_setting(
+            project.config, "orchestrator", "escalation_enabled"
+        )
+        code_failures = 0
         while True:
             attempt += 1
             if attempt >= attempt_cap:
                 break
             logger.info(f"Attempt {attempt + 1}/{attempt_cap} for task {task.id}")
+            # Pick this attempt's rung from the code-failure count so far. On the
+            # decompose rung, stop retrying the whole task and request a split into
+            # named sub-steps instead of burning the remaining attempts.
+            rung = (
+                self._escalation_rung(project, code_failures)
+                if escalation_on
+                else "normal"
+            )
+            if rung == "decompose":
+                logger.info(
+                    f"Task {task.id} escalated to DECOMPOSE after {code_failures} "
+                    "code failure(s); requesting a split into sub-steps."
+                )
+                self._abort_task(
+                    project, branch_name, base_branch, snapshot, untracked_before
+                )
+                return self._escalate_decompose(
+                    project,
+                    task,
+                    error_logs,
+                    use_git_branch=use_git_branch,
+                    _depth=_depth,
+                )
+            widen_context = rung in ("widen_context", "full_rewrite", "stronger_model")
+            force_stronger = rung == "stronger_model"
+            force_full_rewrite = rung == "full_rewrite"
             # Diagnostic: sizes of the context that ACCUMULATES across attempts,
             # so growth (or a runaway component) is visible per retry.
             logger.debug(
@@ -384,10 +427,14 @@ class ExecuteMixin:
 
             # Budget-aware context allocation using configured token limit
             budget = ContextBudget(max_tokens=context_budget_tokens)
-            budget.set("code_context", code_context, priority=1)
+            # The edit region: the exact lines a SEARCH/REPLACE must match, kept
+            # verbatim so the model never edits blind against a dropped tail.
+            budget.set("code_context", code_context, priority=1, truncatable=False)
             # Correctness-critical: the complete reference set must survive
             # truncation, or a rename/delete misses sites and the build fails.
-            budget.set("reference_sites", reference_sites, priority=1, min_lines=0)
+            budget.set(
+                "reference_sites", reference_sites, priority=1, truncatable=False
+            )
             # The self-authored reproduction test IS the task's concrete target;
             # it must survive truncation so the model always edits toward it.
             budget.set("spec_test", spec_test_source or "", priority=1, min_lines=0)
@@ -401,6 +448,7 @@ class ExecuteMixin:
             budget.set("error_logs", error_logs or "", priority=1, min_lines=20)
             budget.set("scratchpad", scratchpad_context, priority=3)
             budget.set("solved_priors", solved_priors, priority=3, min_lines=0)
+            budget.set("failure_priors", failure_priors, priority=2, min_lines=0)
             # The user's own directive for this task must survive truncation.
             budget.set("user_answer", user_answer, priority=1, min_lines=0)
             budget.set("interface_contracts", interface_contracts, priority=2)
@@ -441,6 +489,8 @@ class ExecuteMixin:
                 full_code_context += "\n\n" + allocated["recent_changes"]
             if allocated["solved_priors"]:
                 full_code_context += "\n\n" + allocated["solved_priors"]
+            if allocated["failure_priors"]:
+                full_code_context += "\n\n" + allocated["failure_priors"]
             if allocated["user_answer"]:
                 full_code_context += (
                     "\n\n## The user's answer to your earlier question (follow this)\n"
@@ -455,6 +505,16 @@ class ExecuteMixin:
                 full_code_context += mcp_gathered
             if runtime_tool_ctx:
                 full_code_context += runtime_tool_ctx
+            # Escalation: at the widen rung, re-anchor the model on the FULL,
+            # verbatim task spec (description + acceptance) and the exact target
+            # files and their dependents, so a fix that kept missing the point
+            # under a truncated/partial view sees the whole picture.
+            if widen_context:
+                full_code_context += self._escalation_spec_block(
+                    project, task, target_files
+                )
+            if force_full_rewrite:
+                full_code_context += self._full_rewrite_directive(target_files)
             full_code_context += self._mcp_awareness(project)
 
             guidance_context = " ".join(
@@ -542,6 +602,19 @@ class ExecuteMixin:
             routed_model = self._select_model(
                 project, task, strategy, attempt, attempt_cap
             )
+            # Escalation: at the stronger-model rung, override the routed model
+            # with the configured stronger one (if any) — the cheap/default model
+            # has failed on real code repeatedly, so pay for a more capable one.
+            if force_stronger:
+                stronger = get_setting(
+                    project.config, "orchestrator", "escalation_model"
+                )
+                if stronger:
+                    logger.info(
+                        f"Escalation: routing {task.id} to stronger model "
+                        f"{stronger} after {code_failures} code failure(s)."
+                    )
+                    routed_model = stronger
             try:
                 with project.llm_client.track_task(task.id):
                     llm_response, aborted, pending_attempt = self._invoke_routed(
@@ -670,7 +743,24 @@ class ExecuteMixin:
                 if stall_risk > 0.7:
                     logger.warning(f"High stall risk detected ({stall_risk:.2f}).")
                     if attempt > 1:
+                        # A stall — the model reproduced the same edit — is a
+                        # genuine failure to make progress, so it advances the
+                        # escalation ladder just like a red gate. Otherwise a
+                        # staller would only ever see "try a different approach"
+                        # and spin until attempts run out, never widening context
+                        # / switching model / decomposing (the fix T005 needed).
+                        code_failures += 1
                         error_logs = "ERROR: Stalling detected. Try a fundamentally different approach."
+                        # Reset to the clean task base so the next attempt is a
+                        # FRESH candidate, not another edit piled onto the stuck one
+                        # the model keeps failing to fix (T3.2). Stays on the branch.
+                        self._reset_to_task_base(
+                            project,
+                            branch_name,
+                            base_branch,
+                            snapshot,
+                            untracked_before,
+                        )
                         continue
 
                 validation_failed = False
@@ -761,13 +851,15 @@ class ExecuteMixin:
             gate_verified = False
             build_cmd = task_build_command
             if build_cmd:
-                success, output = self._run_command(
-                    project, build_cmd, timeout=build_timeout, cwd=task_cwd
+                success, output = self._run_gate(
+                    project, build_cmd, build_timeout, task_cwd
                 )
                 if not success:
                     logger.warning(f"Build failed on attempt {attempt + 1}")
+                    if should_count_failure(output):
+                        code_failures += 1
                     locations = resolver.resolve_errors(output)
-                    attributed_error = resolver.format_for_llm(locations)
+                    attributed_error = resolver.format_for_llm(locations, output)
                     classified = format_classified_error(output)
                     error_logs = self._build_error_context(
                         prior_errors,
@@ -784,13 +876,15 @@ class ExecuteMixin:
                 gate_verified = True
 
             if typecheck_command:
-                success, output = self._run_command(
-                    project, typecheck_command, timeout=build_timeout, cwd=task_cwd
+                success, output = self._run_gate(
+                    project, typecheck_command, build_timeout, task_cwd
                 )
                 if not success:
                     logger.warning(f"Type check failed on attempt {attempt + 1}")
+                    if should_count_failure(output):
+                        code_failures += 1
                     locations = resolver.resolve_errors(output)
-                    attributed_error = resolver.format_for_llm(locations)
+                    attributed_error = resolver.format_for_llm(locations, output)
                     classified = format_classified_error(output)
                     error_logs = self._build_error_context(
                         prior_errors,
@@ -807,8 +901,8 @@ class ExecuteMixin:
                 gate_verified = True
 
             if test_command:
-                success, output = self._run_command(
-                    project, test_command, timeout=test_timeout, cwd=task_cwd
+                success, output = self._run_gate(
+                    project, test_command, test_timeout, task_cwd
                 )
                 # Whether the command genuinely exited zero on THIS tree — kept
                 # separate from a flake rescue below so the acceptance short-circuit
@@ -847,11 +941,14 @@ class ExecuteMixin:
                         # baseline run OR a flake-rescued one must still be
                         # re-checked, so key on the raw result, not the flake flip.
                         already_passed=test_command if test_exited_green else None,
+                        prior_gate_passed=True,
                     )
                     if not acc_ok:
                         logger.warning(
                             f"Acceptance criteria not met on attempt {attempt + 1}."
                         )
+                        if should_count_failure(acc_output):
+                            code_failures += 1
                         classified = format_classified_error(acc_output)
                         error_logs = self._build_acceptance_error_context(
                             prior_errors, attempt, task, classified
@@ -914,8 +1011,10 @@ class ExecuteMixin:
                     )
                 else:
                     logger.warning(f"Tests failed on attempt {attempt + 1}.")
+                    if should_count_failure(output):
+                        code_failures += 1
                     locations = resolver.resolve_errors(output)
-                    attributed_error = resolver.format_for_llm(locations)
+                    attributed_error = resolver.format_for_llm(locations, output)
                     classified = format_classified_error(output)
                     error_logs = self._build_error_context(
                         prior_errors,
@@ -953,11 +1052,14 @@ class ExecuteMixin:
                     llm_acceptance_judge,
                     test_timeout,
                     cwd=task_cwd,
+                    prior_gate_passed=gate_verified,
                 )
                 if not acc_ok:
                     logger.warning(
                         f"Acceptance criteria not met on attempt {attempt + 1}."
                     )
+                    if should_count_failure(acc_output):
+                        code_failures += 1
                     classified = format_classified_error(acc_output)
                     error_logs = self._build_acceptance_error_context(
                         prior_errors, attempt, task, classified
@@ -999,6 +1101,31 @@ class ExecuteMixin:
         if pending_attempt is not None:
             self._ledger_record(project, task, pending_attempt, success=False)
             pending_attempt = None
+
+        # Escalation ladder top rung, reached by EXHAUSTION. The in-loop decompose
+        # check can never fire when escalation_decompose_after >= the attempt cap
+        # (the default 3 == 3), because the loop breaks the moment code_failures
+        # reaches the threshold — so a keystone that failed decompose_after times
+        # would dead-end at a vague park instead of decomposing. Fire it here so
+        # the rung is reachable: split the too-large task into named sub-steps
+        # (the build pipeline re-decomposes them; a run --tasks park at least
+        # surfaces concrete steps) rather than burn a surgical retry that won't
+        # crack a structural failure. Only when the ladder genuinely climbed to
+        # decompose; otherwise fall through to the surgical retry unchanged.
+        if (
+            escalation_on
+            and _depth < 1
+            and not task.processor_data.get("_escalation_decomposed")
+            and self._escalation_rung(project, code_failures) == "decompose"
+        ):
+            logger.info(
+                f"Task {task.id} exhausted attempts at the decompose rung "
+                f"({code_failures} code failure(s)); requesting a split into sub-steps."
+            )
+            self._abort_task(
+                project, branch_name, base_branch, snapshot, untracked_before
+            )
+            return self._escalate_decompose(project, task, error_logs)
 
         # Strategy escalation: if current strategy failed, try one more attempt
         # with "surgical". Guarded by _depth so escalation can never recurse more
@@ -1054,3 +1181,153 @@ class ExecuteMixin:
             f"Task failed after {max_retries} attempts + escalation.",
             error_logs,
         )
+
+    def _escalation_rung(self, project: Project, code_failures: int) -> str:
+        """The escalation rung for the next attempt, from the config thresholds."""
+        return choose_rung(
+            code_failures,
+            widen_after=get_setting(
+                project.config, "orchestrator", "escalation_widen_after"
+            ),
+            rewrite_after=get_setting(
+                project.config, "orchestrator", "escalation_rewrite_after"
+            ),
+            model_after=get_setting(
+                project.config, "orchestrator", "escalation_model_after"
+            ),
+            decompose_after=get_setting(
+                project.config, "orchestrator", "escalation_decompose_after"
+            ),
+        )
+
+    def _escalation_spec_block(self, project: Project, task: Task, target_files) -> str:
+        """The verbatim task spec injected at the widen rung.
+
+        A repeatedly-failing attempt was likely editing against a truncated view
+        or drifting from the goal, so re-anchor it on the FULL objective and
+        acceptance criteria plus the exact target files (shown in full above)."""
+        parts = ["\n\n## Escalation — full task spec (re-read; do not deviate)"]
+        if task.description:
+            parts.append(f"### Objective\n{task.description}")
+        criteria = (getattr(task, "acceptance_criteria", "") or "").strip()
+        if criteria:
+            parts.append(f"### Acceptance criteria (must be satisfied)\n{criteria}")
+        if target_files:
+            listed = "\n".join(f"- {f}" for f in target_files)
+            parts.append(
+                "### Target files (edit ONLY these; they are shown in full above "
+                f"and their call sites are listed)\n{listed}"
+            )
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _full_rewrite_directive(target_files) -> str:
+        """The directive injected at the full_rewrite rung — a structurally
+        different attempt.
+
+        Incremental SEARCH/REPLACE patching has failed repeatedly (the model keeps
+        mis-anchoring against the view). Instruct it to abandon patching and emit
+        the COMPLETE new contents of the target file(s) from scratch, so the next
+        attempt is a different kind of edit rather than another reprompt."""
+        listed = "\n".join(f"- {f}" for f in (target_files or []))
+        return (
+            "\n\n## Escalation — FULL REWRITE (incremental patches keep failing)\n"
+            "Stop patching. Do NOT produce small SEARCH/REPLACE edits — they have "
+            "failed to land repeatedly. Instead, rewrite the COMPLETE, final "
+            "contents of each target file below from scratch (the whole file), "
+            "correct and self-consistent, satisfying the acceptance criteria:\n"
+            f"{listed}"
+        )
+
+    @staticmethod
+    def _decompose_substeps(task: Task) -> list:
+        """Named sub-steps to split a stuck task into. Prefers the task's own
+        acceptance criteria (each line becomes a sub-step); falls back to a generic
+        isolate-then-extend split when there is nothing structured to lean on."""
+        criteria = (getattr(task, "acceptance_criteria", "") or "").strip()
+        items = []
+        for line in criteria.splitlines():
+            s = line.strip().lstrip("-*0123456789.) ").strip()
+            if len(s) > 8:
+                items.append(f"Implement and verify: {s}")
+        if len(items) >= 2:
+            return items[:5]
+        label = task.title or (task.description or "")[:60] or task.id
+        return [
+            f"Isolate the smallest failing part of '{label}' and make it pass alone",
+            f"Wire the remaining behavior of '{label}' on top, keeping the suite green",
+        ]
+
+    def _build_substep_tasks(self, task: Task, substeps: list) -> list:
+        """Real child Tasks for a decomposed task's sub-steps.
+
+        Each child carries one sub-step as both its description AND its acceptance
+        criterion (so it runs the full per-task gate), scoped to the parent's files,
+        and flagged as an escalation sub-step so it is never itself re-decomposed."""
+        # The task reaching the decompose rung may be a duck object, so read every
+        # optional field defensively.
+        creates = list(getattr(task, "files_to_create", []) or [])
+        modifies = list(getattr(task, "files_to_modify", []) or [])
+        ctx = list(getattr(task, "context_files", []) or [])
+        children = []
+        for i, step in enumerate(substeps):
+            children.append(
+                Task(
+                    id=f"{task.id}-sub{i + 1}",
+                    title=step[:80],
+                    description=step,
+                    acceptance_criteria=step,
+                    files_to_create=creates,
+                    files_to_modify=modifies,
+                    context_files=ctx,
+                    complexity=getattr(task, "complexity", "medium"),
+                    category=getattr(task, "category", "feature"),
+                    type=getattr(task, "type", "markdown_planner"),
+                    status="pending",
+                    project_ref=getattr(task, "project_ref", "."),
+                    processor_data={"_is_escalation_substep": True, "parent": task.id},
+                )
+            )
+        return children
+
+    def _escalate_decompose(
+        self,
+        project: Project,
+        task: Task,
+        error_logs,
+        *,
+        use_git_branch: bool = True,
+        _depth: int = 0,
+    ):
+        """Top escalation rung: split the too-large task into named sub-steps and
+        EXECUTE each as a real child task (running the full per-task gate pipeline).
+
+        Guarded by ``_depth``: a sub-step runs at depth+1 and can never itself
+        re-decompose, so recursion is bounded to one level. If every sub-step
+        completes, the parent is satisfied; otherwise (or at depth >= 1) the task is
+        parked (deferred) with the decomposition request as before. The caller has
+        already reverted this task's work, so the children start from a clean base.
+        """
+        substeps = self._decompose_substeps(task)
+        task.processor_data["_escalation_decomposed"] = True
+        task.processor_data["escalation_substeps"] = substeps
+        if _depth < 1 and substeps:
+            results = [
+                self.execute(
+                    child, project, use_git_branch=use_git_branch, _depth=_depth + 1
+                )
+                for child in self._build_substep_tasks(task, substeps)
+            ]
+            if results and all(r.status == "completed" for r in results):
+                return self._complete_task(
+                    project,
+                    task,
+                    f"Completed via {len(results)} executed sub-step(s).",
+                    error_logs or "",
+                )
+        reason = (
+            f"escalated to decomposition: '{task.title or task.id}' failed "
+            "repeatedly and is too large to land in one edit. Split it into the "
+            "sub-steps below and run them."
+        )
+        return self._defer_task(project, task, reason, substeps, error_logs)

@@ -152,6 +152,9 @@ class GateKeeper:
         self, commands: Dict[str, Optional[str]]
     ) -> Tuple[bool, List[str], HealthCheck]:
         """Run the gate sequence. Returns (success, issues, final_health)."""
+        # The tree may have changed since the last run_gates; recompute the diff
+        # once for this run (G5/G6/G9 then share the memoized result).
+        self._diff_cache_valid = False
         issues: List[str] = []
         health = HealthCheck()
 
@@ -516,6 +519,19 @@ class GateKeeper:
         return flagged
 
     def _iter_diff_added_lines(self) -> Optional[List[Tuple[str, str]]]:
+        """Memoized ``(file_path, added_line)`` diff pairs for THIS run_gates.
+
+        G5/G6/G9 all consume the same union diff, and the tree does not change
+        between gates within one run_gates call, so the 3+ git subprocesses and
+        untracked-file reads are computed once and reused. ``run_gates`` clears the
+        cache at its start so a later run over a changed tree recomputes."""
+        if getattr(self, "_diff_cache_valid", False):
+            return self._diff_cache
+        self._diff_cache = self._compute_diff_added_lines()
+        self._diff_cache_valid = True
+        return self._diff_cache
+
+    def _compute_diff_added_lines(self) -> Optional[List[Tuple[str, str]]]:
         """Return ``(file_path, added_line)`` pairs from the git diff.
 
         Covers both staged and unstaged changes against HEAD (the union of

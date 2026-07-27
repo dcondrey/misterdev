@@ -211,13 +211,22 @@ class GatesMixin:
         the whole suite green. An unparseable red result stays strict (rejected),
         since we will not accept on a number we cannot read.
         """
+        from misterdev.core.verification.validator import (
+            _parse_test_counts,
+            gate_ran_no_tests,
+        )
+
         if success:
+            # A command that exits 0 having collected nothing is a false-GREEN
+            # gate: it greenlights any edit while catching no regression. Pair an
+            # explicit "no tests ran" signal with a parsed total of 0 (high
+            # precision — the phrase alone can appear per-crate in a healthy
+            # workspace) and reject it as hard as a real failure.
+            if gate_ran_no_tests(output) and _parse_test_counts(output)[0] == 0:
+                return False, None
             return True, 0
         if baseline_failures <= 0:
             return False, None
-        from misterdev.core.verification.validator import (
-            _parse_test_counts,
-        )
 
         total, post = _parse_test_counts(output)
         if total > 0 and post <= baseline_failures:
@@ -234,15 +243,28 @@ class GatesMixin:
         a misleading error and, on final failure, reverts a correct task. Re-runs
         the SAME command on the SAME (unchanged) tree, so a non-reproducing failure
         is nondeterministic by construction and must not block. ``reruns`` <= 0
-        disables it (the default), preserving the strict single-run gate."""
-        if reruns <= 0:
+        disables it (the default), preserving the strict single-run gate — EXCEPT
+        when the failure carries an environment/infra signature (a timeout, a
+        missing dependency, a locked store), where a self-healing re-run is always
+        warranted because the fault is not in the code."""
+        from misterdev.core.execution.infra import infra_failure
+
+        infra = infra_failure(output)
+        effective_reruns = reruns if reruns > 0 else (1 if infra else 0)
+        if effective_reruns <= 0:
             return False
+        if infra:
+            logger.warning(
+                "Test gate failed on an environment fault (%s), not the code; "
+                "re-running once before trusting it.",
+                infra,
+            )
         from misterdev.core.verification.flaky import confirm_test_failure
 
         def _rerun():
             return self._run_command(project, test_command, timeout=timeout, cwd=cwd)
 
-        verdict = confirm_test_failure(_rerun, output, reruns)
+        verdict = confirm_test_failure(_rerun, output, effective_reruns)
         if not verdict.is_real_failure:
             logger.warning(
                 "Per-task test failure did not reproduce (%s); treating as a flake, "
@@ -261,6 +283,7 @@ class GatesMixin:
         timeout: int,
         cwd=None,
         already_passed: Optional[str] = None,
+        prior_gate_passed: bool = True,
     ) -> Tuple[bool, str]:
         """Verify the task's acceptance_criteria after build/test gates pass.
 
@@ -306,7 +329,7 @@ class GatesMixin:
             # false-failed on `cargo test` from the repo root). Treat it as a
             # pass-through. A genuine missing test path (FILE_NOT_FOUND) is left
             # as a real failure.
-            if classify_error(output) == ErrorCategory.MANIFEST:
+            if prior_gate_passed and classify_error(output) == ErrorCategory.MANIFEST:
                 logger.warning(
                     "Acceptance command could not locate the project manifest; "
                     "the build/test gates already passed, so treating acceptance "
@@ -347,11 +370,14 @@ class GatesMixin:
         on the generator's own model. Routed through ``with_model`` when possible.
         """
         from misterdev.core.verification.independent import (
-            generate_independent,
+            build_independent_call,
         )
 
         judge_model = (project.config.get("judge") or {}).get("model")
-        return generate_independent(project.llm_client, prompt, "", model=judge_model)
+        call = build_independent_call(
+            project.llm_client, "", judge_model, "Acceptance judge"
+        )
+        return call(prompt) if call is not None else ""
 
     def _llm_acceptance_judge(
         self, project: Project, task: Task, criteria: str

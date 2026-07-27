@@ -171,3 +171,23 @@ def test_seam_falls_back_to_project_test_command(tmp_path, caplog, monkeypatch):
         ex._changed_region_mutation_check(proj, {"mod.py": "orig"}, None, None)
     assert seen.get("cmd") == "python -m pytest -q"  # used the project fallback
     assert any("Changed-region mutation [mod.py]" in r.message for r in caplog.records)
+
+
+def test_changed_line_indices_unchanged_file_is_empty():
+    from misterdev.core.verification.changed_region_mutation import changed_line_indices
+
+    src = "def f():\n    return 1\n"
+    assert changed_line_indices(src, src) == set()
+
+
+def test_changed_line_indices_new_file_is_all_changed():
+    from misterdev.core.verification.changed_region_mutation import changed_line_indices
+
+    assert changed_line_indices("", "a\nb\nc") == {0, 1, 2}
+
+
+def test_changed_line_indices_real_change_is_scoped():
+    from misterdev.core.verification.changed_region_mutation import changed_line_indices
+
+    idx = changed_line_indices("a\nb\nc", "a\nX\nc")
+    assert 1 in idx and 0 not in idx and 2 not in idx

@@ -25,6 +25,7 @@ beyond threshold) is a RED.
                              check is treated as seeded (SKIP-like), not RED.
 """
 
+import select
 import subprocess
 import time
 from pathlib import Path
@@ -171,21 +172,36 @@ def _start_server(
         text=True,
         bufsize=1,
     )
-    if ready:
-        captured: List[str] = []
-        while time.monotonic() < deadline:
-            if "".join(captured).find(ready) != -1:
-                break
-            if proc.poll() is not None:
-                break
-            if proc.stdout is not None:
-                line = proc.stdout.readline()
-                if line:
-                    captured.append(line)
-    else:
-        # No readiness signal: give the server a brief moment to bind its port.
-        time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
-    return proc
+    try:
+        if ready:
+            captured: List[str] = []
+            while time.monotonic() < deadline:
+                if "".join(captured).find(ready) != -1:
+                    break
+                if proc.poll() is not None:
+                    break
+                if proc.stdout is None:
+                    break
+                # Bounded wait: a raw readline() blocks until the server emits a
+                # line, which for a silent server never returns and would run past
+                # the deadline (leaking this process past the gate's outer bound).
+                # select re-checks the deadline at most every 0.5s.
+                rlist, _, _ = select.select([proc.stdout], [], [], 0.5)
+                if rlist:
+                    line = proc.stdout.readline()
+                    if line:
+                        captured.append(line)
+                    elif proc.poll() is not None:
+                        break
+        else:
+            # No readiness signal: give the server a brief moment to bind its port.
+            time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
+        return proc
+    except Exception:
+        # A failure while waiting (e.g. select unsupported on this platform) must
+        # not orphan the process we just launched.
+        _terminate(proc)
+        raise
 
 
 def _drive_browser(

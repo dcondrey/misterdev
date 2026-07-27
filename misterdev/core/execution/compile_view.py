@@ -17,7 +17,7 @@ compressed view), so this can only add signal, never remove the fallback.
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Callable, Dict, List, Optional
 
 
 @dataclass
@@ -28,6 +28,42 @@ class CompileError:
     code: Optional[str] = None  # e.g. "E0308"
     location: Optional[str] = None  # "file:line:col"
     detail: Optional[str] = None  # e.g. "expected `u32`, found `&str`"
+
+
+@dataclass(frozen=True)
+class CompilerAdapter:
+    """A per-language compiler-diagnostic adapter.
+
+    ``language`` is the canonical lowercase language key ("rust", "typescript").
+    ``name`` is the tool the parser targets ("rustc", "tsc"). ``parse`` turns raw
+    compiler output into ``CompileError`` records (empty when it recognizes
+    nothing). ``detect`` reports whether this adapter's compiler produced the
+    output, so a caller with no language hint can route by content. New languages
+    register an adapter instead of extending an if/else on language name.
+    """
+
+    language: str
+    name: str
+    parse: Callable[[str], List[CompileError]]
+    detect: Callable[[str], bool]
+
+
+_REGISTRY: Dict[str, CompilerAdapter] = {}
+
+
+def register_adapter(adapter: CompilerAdapter) -> None:
+    """Register (or replace) the adapter for ``adapter.language``."""
+    _REGISTRY[adapter.language] = adapter
+
+
+def get_adapter(language: Optional[str]) -> Optional[CompilerAdapter]:
+    """The adapter for a language key, or None when none is registered."""
+    return _REGISTRY.get((language or "").lower())
+
+
+def registered_languages() -> List[str]:
+    """The languages that currently have a registered adapter."""
+    return sorted(_REGISTRY)
 
 
 # --- rustc ------------------------------------------------------------------
@@ -70,31 +106,155 @@ def _parse_rustc(output: str) -> List[CompileError]:
     return out
 
 
-_COMPILERS = {"rustc": _parse_rustc}
+def _detect_rustc(output: str) -> bool:
+    return bool(re.search(r"^error(?:\[E\d+\])?: ", output, re.M)) and "-->" in output
 
 
-def _detect_compiler(output: str) -> Optional[str]:
-    if re.search(r"^error(?:\[E\d+\])?: ", output, re.M) and "-->" in output:
-        return "rustc"
-    return None
+# --- tsc (TypeScript) -------------------------------------------------------
+
+# Classic tsc: `src/app.ts(12,5): error TS2322: Type 'string' is not ...`
+_TSC_CLASSIC = re.compile(
+    r"^(?P<file>.+?)\((?P<line>\d+),(?P<col>\d+)\):\s*"
+    r"error\s+(?P<code>TS\d+):\s*(?P<message>.+)$"
+)
+# Pretty tsc (`--pretty`): `src/app.ts:12:5 - error TS2322: Type 'string' ...`
+_TSC_PRETTY = re.compile(
+    r"^(?P<file>\S+):(?P<line>\d+):(?P<col>\d+)\s*-\s*"
+    r"error\s+(?P<code>TS\d+):\s*(?P<message>.+)$"
+)
+
+
+def _parse_tsc(output: str) -> List[CompileError]:
+    out: List[CompileError] = []
+    for line in output.splitlines():
+        m = _TSC_CLASSIC.match(line) or _TSC_PRETTY.match(line)
+        if not m:
+            continue
+        out.append(
+            CompileError(
+                message=m.group("message").strip(),
+                code=m.group("code"),
+                location=f"{m.group('file').strip()}:{m.group('line')}:{m.group('col')}",
+            )
+        )
+    return out
+
+
+def _detect_tsc(output: str) -> bool:
+    return bool(re.search(r"error\s+TS\d+:", output))
+
+
+# --- go (go build / go vet) -------------------------------------------------
+
+# `./main.go:10:6: undefined: helper` — the column is optional.
+_GO_ERROR = re.compile(
+    r"^(?P<file>\S+\.go):(?P<line>\d+):(?:(?P<col>\d+):)?\s+(?P<message>.+)$"
+)
+
+
+def _parse_go(output: str) -> List[CompileError]:
+    out: List[CompileError] = []
+    for line in output.splitlines():
+        m = _GO_ERROR.match(line)
+        if not m:
+            continue
+        loc = f"{m.group('file')}:{m.group('line')}"
+        if m.group("col"):
+            loc += f":{m.group('col')}"
+        out.append(CompileError(message=m.group("message").strip(), location=loc))
+    return out
+
+
+def _detect_go(output: str) -> bool:
+    return bool(re.search(r"^\S+\.go:\d+:", output, re.M))
+
+
+# --- swiftc -----------------------------------------------------------------
+
+# `/src/App.swift:12:15: error: cannot find 'foo' in scope`
+_SWIFT_ERROR = re.compile(
+    r"^(?P<file>.+?\.swift):(?P<line>\d+):(?P<col>\d+):\s*error:\s*(?P<message>.+)$"
+)
+
+
+def _parse_swift(output: str) -> List[CompileError]:
+    out: List[CompileError] = []
+    for line in output.splitlines():
+        m = _SWIFT_ERROR.match(line)
+        if not m:
+            continue
+        out.append(
+            CompileError(
+                message=m.group("message").strip(),
+                location=f"{m.group('file')}:{m.group('line')}:{m.group('col')}",
+            )
+        )
+    return out
+
+
+def _detect_swift(output: str) -> bool:
+    return bool(re.search(r"\.swift:\d+:\d+:\s*error:", output))
+
+
+# --- csc / dotnet (MSBuild) -------------------------------------------------
+
+# `Program.cs(12,20): error CS0103: <message>` with an optional trailing
+# ` [project.csproj]` MSBuild tag, which is stripped from the message.
+_CSC_ERROR = re.compile(
+    r"^(?P<file>.+?)\((?P<line>\d+),(?P<col>\d+)\):\s*error\s+(?P<code>CS\d+):\s*"
+    r"(?P<message>.+?)(?:\s*\[[^\]]+\])?$"
+)
+
+
+def _parse_csharp(output: str) -> List[CompileError]:
+    out: List[CompileError] = []
+    for line in output.splitlines():
+        m = _CSC_ERROR.match(line)
+        if not m:
+            continue
+        out.append(
+            CompileError(
+                message=m.group("message").strip(),
+                code=m.group("code"),
+                location=f"{m.group('file')}:{m.group('line')}:{m.group('col')}",
+            )
+        )
+    return out
+
+
+def _detect_csharp(output: str) -> bool:
+    return bool(re.search(r"error\s+CS\d+:", output))
+
+
+register_adapter(CompilerAdapter("rust", "rustc", _parse_rustc, _detect_rustc))
+register_adapter(CompilerAdapter("typescript", "tsc", _parse_tsc, _detect_tsc))
+register_adapter(CompilerAdapter("go", "go build", _parse_go, _detect_go))
+register_adapter(CompilerAdapter("swift", "swiftc", _parse_swift, _detect_swift))
+register_adapter(CompilerAdapter("csharp", "csc", _parse_csharp, _detect_csharp))
 
 
 def extract_compile_errors(
     output: str, language: Optional[str] = None
 ) -> List[CompileError]:
-    """Parse compiler output into diagnostic records. Empty on unrecognized output."""
+    """Parse compiler output into diagnostic records. Empty on unrecognized output.
+
+    Routes by the explicit ``language`` when its adapter recognizes the output;
+    otherwise falls back to content detection across the registry, so a caller
+    with the wrong or no language hint still gets the right diagnostics.
+    """
     if not output:
         return []
-    compiler = {"rust": "rustc"}.get((language or "").lower())
-    if (
-        compiler is None
-        or compiler not in _COMPILERS
-        or not _COMPILERS[compiler](output)
-    ):
-        compiler = _detect_compiler(output)
-    if compiler is None:
-        return []
-    return _COMPILERS[compiler](output)
+    adapter = get_adapter(language)
+    if adapter is not None:
+        errors = adapter.parse(output)
+        if errors:
+            return errors
+    for candidate in _REGISTRY.values():
+        if candidate.detect(output):
+            errors = candidate.parse(output)
+            if errors:
+                return errors
+    return []
 
 
 def render_compile_view(errors: List[CompileError], max_errors: int = 5) -> str:

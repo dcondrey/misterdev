@@ -262,15 +262,15 @@ class OrchestratorSettings:
     goal_check: bool = False
     block_on_goal_gap: bool = False
     goal_check_timeout: int = 60
-    # Spec-as-tests (CONSERVATIVE, opt-in, currently DEFERRED): generate a failing
-    # test from a task's acceptance criteria before it is implemented. Off by
-    # default. The generation primitive lives in core/spec_tests.py and is tested,
-    # but it is NOT wired into the execute loop yet: writing a failing test inside
-    # the wave loop would flip the integration-gate baseline red and silently
-    # disable that gate, which is not control-flow-neutral. When set true today it
-    # only logs that the feature is staged-but-not-wired (see the seam in
-    # core/spec_tests.py); it never alters the build loop.
-    spec_as_tests: bool = False
+    # Spec-as-tests (reproduction-first / TDD): before a task is implemented,
+    # generate a failing test from its acceptance criteria so "done" means "this
+    # test now passes", not a self-report. DEFAULT-ON. Wired in the executor
+    # (_maybe_generate_spec_test / _run_spec_test): the test is written under
+    # .orchestrator/spec_tests/ — OUTSIDE the project suite — so it can never flip
+    # the integration-gate baseline red, and it is run scoped to that one file
+    # after the task's own gates pass. ADVISORY unless spec_as_tests_block is set.
+    # Generation is best-effort and timeout-bounded.
+    spec_as_tests: bool = True
     # When spec_as_tests is on, a per-task generated spec test is run (scoped,
     # from .orchestrator/spec_tests/) after the task's gates pass. ADVISORY by
     # default: a still-failing spec test is logged/recorded but does not fail the
@@ -298,12 +298,78 @@ class OrchestratorSettings:
     # working tree), or "worktree" (always isolate each parallel task).
     parallel_mode: str = "auto"
     # Run independent tasks within a wave concurrently in `run --tasks` (they are
-    # worktree-isolated on a git repo; `max_workers`/`parallel_mode` apply). Gates
-    # resolve deps natively in a worktree (pnpm/npm populate node_modules from their
-    # store on first run — verified; do NOT symlink node_modules, it breaks pnpm).
+    # worktree-isolated on a git repo; `max_workers`/`parallel_mode` apply).
     # Off by default because concurrent gates contend for CPU/the store; enable per
     # project after a live check, and keep `max_workers` modest on a laptop.
     run_parallel: bool = False
+    # Prime a fresh worktree's dependencies ONCE at setup (serially, before the
+    # parallel gate phase). A new git worktree has no node_modules, so an un-primed
+    # gate pays a full install (~15-20s) INSIDE its own timeout while N worktrees
+    # hammer the package store at once — which intermittently times out and fails
+    # correct code. Priming moves that install out of the gate and off the hot path.
+    # None auto-detects the command from the lockfile; "" disables; or set an
+    # explicit command. Do NOT symlink node_modules to skip this — it breaks pnpm.
+    worktree_setup_command: Optional[str] = None
+    worktree_setup_timeout: int = 600
+    # Prime a worktree by CLONING the base checkout's node_modules (copy-on-write:
+    # APFS clonefile / Linux hardlinks) instead of reinstalling — near-instant vs a
+    # full ``pnpm install``. On by default; automatically falls back to the setup
+    # command on a non-CoW filesystem (e.g. HFS+) or if the clone fails the P3
+    # sanity probe, so it is always safe. Set false to force a plain install.
+    worktree_clone_deps: bool = True
+    # Fast sanity probe run right after priming to confirm the worktree's
+    # toolchain actually resolves — a broken/partial install (a killed download,
+    # a locked store) otherwise masquerades as a code failure in the gate. None
+    # auto-detects (e.g. ``npx tsc --version`` for a node/pnpm project); "" disables;
+    # or set an explicit command. Cheap and bounded by ``worktree_setup_timeout``.
+    worktree_healthcheck_command: Optional[str] = None
+    # Before dispatching a ready task, skip it (mark completed) when it is already
+    # satisfied — its content hash is unchanged since a recorded completion
+    # (compute_task_hash + the committed ledger). Avoids spawning a worktree and
+    # paying a full prime/install just to re-recognize done work. On by default;
+    # set false to force every ready task to re-run regardless of the ledger. No
+    # gates are run on the base branch for this decision (that would serialize and
+    # contend); it rests purely on the content hash and the ledger.
+    skip_satisfied_tasks: bool = True
+    # Split a parallel wave into conflict-free sub-waves: tasks that DECLARE a
+    # shared file (env.ts, a route registry, a schema) run in different sub-waves
+    # (serially) so their worktree merges can't race or clobber; disjoint tasks
+    # stay parallel. On by default. Set false to run every ready task in one wave.
+    serialize_conflicting_tasks: bool = True
+    # Escalation ladder for a task that keeps failing (real code failures only —
+    # infra faults self-heal and never advance it). After N non-infra failures the
+    # executor climbs: widen context -> stronger model -> request decomposition.
+    # Bounded and config-driven; thresholds are cumulative code-failure counts.
+    escalation_enabled: bool = True
+    escalation_widen_after: int = 1
+    # full_rewrite rung: after this many code failures, stop patching and rewrite
+    # the whole target region from scratch — a structurally different attempt.
+    escalation_rewrite_after: int = 2
+    # model/decompose coincide at 3 by default so a 3-attempt task climbs
+    # normal -> widen -> full_rewrite and decomposes at exhaustion; raise
+    # decompose_after to make the stronger_model rung reachable.
+    escalation_model_after: int = 3
+    escalation_decompose_after: int = 3
+    # The stronger model id to route generation to at the model rung (None -> keep
+    # the routed/default model, i.e. that rung only widens context).
+    escalation_model: Optional[str] = None
+    # After each successful worktree merge into the base branch, run the merged
+    # task's owning-target gate (typecheck/test) on the base checkout. If it fails
+    # with a real (non-infra) error the merge broke the base, so roll it back
+    # (reset the merge commit) and treat the task as unfinished — the base branch
+    # is never left red at wave end. On by default; a transient/infra failure is
+    # NOT rolled back (it is an environment fault, not a code break).
+    post_merge_healthcheck: bool = True
+    # Adapt concurrency/timeouts to ENVIRONMENT faults between waves: when a wave's
+    # infra-failure count exceeds ``adaptive_infra_threshold``, the NEXT wave halves
+    # effective max_workers (floor 1) and multiplies gate/setup timeouts by
+    # ``adaptive_timeout_factor`` (bounded by ``adaptive_max_timeout_factor``);
+    # clean waves recover gradually toward the configured values. On by default —
+    # it only engages under sustained contention and is otherwise a no-op.
+    adaptive_concurrency: bool = True
+    adaptive_infra_threshold: int = 1
+    adaptive_timeout_factor: float = 2.0
+    adaptive_max_timeout_factor: float = 4.0
     auto_detect_dependencies: bool = False
     # Optional MCP (Model Context Protocol) tool awareness: when on, the tools
     # discovered from the servers in the top-level ``mcp.servers`` list are

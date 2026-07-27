@@ -201,6 +201,34 @@ class GitMixin:
         if topo is not None and hasattr(topo, "invalidate"):
             topo.invalidate()
 
+    def _reset_to_task_base(
+        self,
+        project: Project,
+        branch_name: Optional[str],
+        base_branch: Optional[str],
+        snapshot: Optional[Dict],
+        untracked_before: Optional[set] = None,
+    ) -> None:
+        """Discard the current stuck candidate and return the tree to the task's
+        clean base WITHOUT leaving the branch or the retry loop.
+
+        Unlike :meth:`_abort_task` (which checks out the base and deletes the
+        branch to end the task), this stays ON the task branch so the loop can make
+        a FRESH attempt that re-derives from the clean base — the T3.2 stall reset —
+        instead of piling the next edit onto edits the model keeps failing to fix.
+        Task edits during the loop are uncommitted, so ``git reset --hard`` drops
+        them back to base; untracked orphans the stuck attempt wrote are cleaned.
+        """
+        if branch_name and base_branch:
+            self._git(project, "git reset --hard")
+            self._clean_task_orphans(project, untracked_before)
+        elif snapshot is not None:
+            self._revert_files(project, snapshot)
+            self._clean_task_orphans(project, untracked_before)
+        topo = getattr(project, "topography", None)
+        if topo is not None and hasattr(topo, "invalidate"):
+            topo.invalidate()
+
     def _clean_task_orphans(
         self, project: Project, untracked_before: Optional[set]
     ) -> None:

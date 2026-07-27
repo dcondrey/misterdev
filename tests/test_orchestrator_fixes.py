@@ -445,6 +445,497 @@ def test_execute_parallel_worktrees_merges_back():
         assert not any(wt_root.iterdir()) if wt_root.exists() else True
 
 
+def test_execute_parallel_worktrees_tolerates_stale_task_branch():
+    """Regression: a leftover ``task/<id>`` branch from a prior failed run must not
+    collide with this run's worktree creation, and no throwaway branch is left
+    behind (whether the task succeeds or fails)."""
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    def _branches(path):
+        out = subprocess.run(
+            ["git", "branch", "--format=%(refname:short)"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+        ).stdout
+        return [b.strip() for b in out.splitlines() if b.strip()]
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _git(td, "init")
+        _git(td, "config", "user.email", "t@t.t")
+        _git(td, "config", "user.name", "t")
+        (td / "base.txt").write_text("base\n")
+        _git(td, "add", "-A")
+        _git(td, "commit", "-m", "init")
+        # Two stale leftover branches from an imagined prior run — the exact names
+        # the old fixed-name scheme would try to re-create and fail on.
+        _git(td, "branch", "task/T-A")
+        _git(td, "branch", "task/T-B")
+
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {"parallel_mode": "worktree", "max_workers": 2}
+        }
+
+        class FakeExec:
+            def execute(self, task, proj, use_git_branch=True):
+                if task.id == "T-B":  # this one fails: it must still clean up
+                    raise RuntimeError("boom")
+                f = Path(proj.path) / f"{task.id}.txt"
+                f.write_text(task.id)
+                _git(proj.path, "add", "-A")
+                _git(proj.path, "commit", "-m", f"task({task.id}): work")
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+        orch = agent_mod.ProjectOrchestrator()
+        results = orch._execute_parallel_worktrees(
+            [_mock_task("T-A"), _mock_task("T-B")], FakeExec(), project
+        )
+
+        by_id = {t.id: (r, e) for t, r, e in results}
+        # The stale branch did not block T-A; its work merged despite the collision.
+        assert by_id["T-A"][0] is not None and by_id["T-A"][0].status == "completed"
+        assert (td / "T-A.txt").exists()
+        assert by_id["T-B"][1] is not None  # T-B surfaced its error, didn't wedge
+        # No run-created throwaway branches remain (only the two inert stale names).
+        assert sorted(_branches(td)) == ["main", "task/T-A", "task/T-B"] or sorted(
+            _branches(td)
+        ) == ["master", "task/T-A", "task/T-B"]
+
+
+def test_worktree_setup_command_detection(tmp_path):
+    """Priming command: explicit config wins ('' disables); else auto-detect from
+    the lockfile so a gate never pays a full install inside its own timeout."""
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    orch = agent_mod.ProjectOrchestrator()
+
+    def proj(sub, files=(), cfg=None):
+        d = tmp_path / sub
+        d.mkdir()
+        for f in files:
+            (d / f).write_text("")
+        p = MagicMock()
+        p.path = d
+        p.config = cfg or {}
+        return p
+
+    explicit = proj("a", cfg={"orchestrator": {"worktree_setup_command": "make deps"}})
+    assert orch._worktree_setup_command(explicit) == "make deps"
+    disabled = proj("b", cfg={"orchestrator": {"worktree_setup_command": ""}})
+    assert orch._worktree_setup_command(disabled) is None
+    assert "pnpm install" in orch._worktree_setup_command(proj("c", ["pnpm-lock.yaml"]))
+    assert orch._worktree_setup_command(proj("d", ["package-lock.json"])) == "npm ci"
+    assert "yarn install" in orch._worktree_setup_command(proj("e", ["yarn.lock"]))
+    assert orch._worktree_setup_command(proj("f")) is None  # nothing to install
+
+
+def test_execute_parallel_worktrees_primes_deps_before_gate():
+    """The setup command runs INSIDE each worktree before the task body, so the
+    gate finds dependencies already present instead of installing on the hot path."""
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _git(td, "init")
+        _git(td, "config", "user.email", "t@t.t")
+        _git(td, "config", "user.name", "t")
+        (td / "base.txt").write_text("base\n")
+        _git(td, "add", "-A")
+        _git(td, "commit", "-m", "init")
+
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {
+                "parallel_mode": "worktree",
+                "max_workers": 2,
+                # a marker-writing stand-in for `pnpm install`
+                "worktree_setup_command": "touch .primed",
+            }
+        }
+
+        seen = {}
+
+        class FakeExec:
+            def execute(self, task, proj, use_git_branch=True):
+                # The prime step must have already run in this worktree.
+                seen[task.id] = (Path(proj.path) / ".primed").exists()
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+        orch = agent_mod.ProjectOrchestrator()
+        orch._execute_parallel_worktrees(
+            [_mock_task("T-A"), _mock_task("T-B")], FakeExec(), project
+        )
+        assert seen == {"T-A": True, "T-B": True}
+
+
+def _worktree_repo(td: Path):
+    """A minimal committed git repo usable as a parallel-worktree base."""
+    _git(td, "init")
+    _git(td, "config", "user.email", "t@t.t")
+    _git(td, "config", "user.name", "t")
+    (td / "base.txt").write_text("base\n")
+    _git(td, "add", "-A")
+    _git(td, "commit", "-m", "init")
+
+
+def test_worktree_healthcheck_probes_after_prime():
+    """The health probe runs INSIDE each primed worktree; a passing probe lets the
+    task proceed and leaves its marker behind."""
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _worktree_repo(td)
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {
+                "parallel_mode": "worktree",
+                "max_workers": 2,
+                "worktree_setup_command": "touch .primed",
+                # passes only if priming ran first, and records that it ran
+                "worktree_healthcheck_command": "test -f .primed && touch .probed",
+            }
+        }
+
+        seen = {}
+
+        class FakeExec:
+            def execute(self, task, proj, use_git_branch=True):
+                seen[task.id] = (Path(proj.path) / ".probed").exists()
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+        agent_mod.ProjectOrchestrator()._execute_parallel_worktrees(
+            [_mock_task("T-A")], FakeExec(), project
+        )
+        assert seen == {"T-A": True}  # probe ran (and passed) before the task body
+
+
+def test_worktree_healthcheck_reprimes_once_on_failure():
+    """A failing probe re-primes the deps exactly once and re-probes; a probe that
+    then passes lets the task run without flagging the environment."""
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _worktree_repo(td)
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {
+                "parallel_mode": "worktree",
+                "max_workers": 1,
+                # each prime appends one line; the probe passes only after TWO primes
+                "worktree_setup_command": "echo x >> .primes",
+                "worktree_healthcheck_command": "test $(wc -l < .primes) -ge 2",
+            }
+        }
+
+        primes = {}
+
+        class FakeExec:
+            def execute(self, task, proj, use_git_branch=True):
+                primes[task.id] = (Path(proj.path) / ".primes").read_text().count("x")
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+        agent_mod.ProjectOrchestrator()._execute_parallel_worktrees(
+            [_mock_task("T-A")], FakeExec(), project
+        )
+        # Primed exactly twice: the initial prime plus one re-prime after the
+        # probe failed. A third prime would mean the "once" bound was violated.
+        assert primes == {"T-A": 2}
+
+
+def test_worktree_healthcheck_flags_unhealthy_environment(caplog):
+    """A probe that stays red after the single re-prime logs the worktree as an
+    ENVIRONMENT fault (not the code), and does not re-prime more than once."""
+    import logging
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _worktree_repo(td)
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {
+                "parallel_mode": "worktree",
+                "max_workers": 1,
+                "worktree_setup_command": "echo x >> .primes",
+                "worktree_healthcheck_command": "false",  # never resolves
+            }
+        }
+
+        class FakeExec:
+            def execute(self, task, proj, use_git_branch=True):
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+        with caplog.at_level(logging.WARNING, logger="project_orchestrator"):
+            agent_mod.ProjectOrchestrator()._execute_parallel_worktrees(
+                [_mock_task("T-A")], FakeExec(), project
+            )
+        # Exactly one re-prime attempt (the "once" bound) and one unhealthy report.
+        assert caplog.text.count("re-priming deps once") == 1
+        assert caplog.text.count("ENVIRONMENT unhealthy for T-A") == 1
+
+
+def test_post_merge_healthcheck_reverts_broken_base_keeps_clean():
+    """A merged change that fails the base-branch gate is rolled back (base tree
+    restored, task returned unfinished); a clean merge is kept."""
+    import subprocess
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _worktree_repo(td)
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {"parallel_mode": "worktree", "max_workers": 1},
+            # top-level gate (no targets): the base is broken iff `.broken` exists
+            "typecheck_command": "test ! -f .broken",
+        }
+
+        class FakeExec:
+            def execute(self, task, proj, use_git_branch=True):
+                wt = Path(proj.path)
+                if task.id == "T-break":
+                    (wt / ".broken").write_text("boom\n")
+                else:
+                    (wt / f"ok-{task.id}.txt").write_text("ok\n")
+                subprocess.run(["git", "add", "-A"], cwd=wt, check=True)
+                subprocess.run(
+                    ["git", "commit", "-m", f"task {task.id}"],
+                    cwd=wt,
+                    check=True,
+                    capture_output=True,
+                )
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+            def _run_command(self, project, command, timeout=120, cwd=None):
+                p = subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=cwd or project.path,
+                    capture_output=True,
+                    text=True,
+                )
+                return p.returncode == 0, (p.stdout or "") + (p.stderr or "")
+
+        results = agent_mod.ProjectOrchestrator()._execute_parallel_worktrees(
+            [_mock_task("T-break"), _mock_task("T-ok")], FakeExec(), project
+        )
+
+        # Base branch is NOT left broken: the breaking merge was rolled back...
+        assert not (td / ".broken").exists()
+        # ...and the clean merge was kept.
+        assert (td / "ok-T-ok.txt").exists()
+
+        by_id = {t.id: (res, err) for t, res, err in results}
+        # The broken task is returned unfinished (no completed result, error set).
+        assert by_id["T-break"][0] is None and by_id["T-break"][1] is not None
+        # The clean task stays completed.
+        assert getattr(by_id["T-ok"][0], "status", None) == "completed"
+
+
+def test_post_merge_healthcheck_disabled_keeps_broken_merge():
+    """With orchestrator.post_merge_healthcheck false, a merge is never gated, so a
+    base-breaking change is kept (the opt-out path)."""
+    import subprocess
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _worktree_repo(td)
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {
+                "parallel_mode": "worktree",
+                "max_workers": 1,
+                "post_merge_healthcheck": False,
+            },
+            "typecheck_command": "test ! -f .broken",
+        }
+
+        class FakeExec:
+            def execute(self, task, proj, use_git_branch=True):
+                (Path(proj.path) / ".broken").write_text("boom\n")
+                subprocess.run(["git", "add", "-A"], cwd=proj.path, check=True)
+                subprocess.run(
+                    ["git", "commit", "-m", "break"],
+                    cwd=proj.path,
+                    check=True,
+                    capture_output=True,
+                )
+                r = MagicMock()
+                r.status = "completed"
+                return r
+
+            def _run_command(self, *a, **k):  # gate must not be consulted
+                raise AssertionError("post-merge gate ran while disabled")
+
+        agent_mod.ProjectOrchestrator()._execute_parallel_worktrees(
+            [_mock_task("T-break")], FakeExec(), project
+        )
+        assert (td / ".broken").exists()  # merge kept, no gate, no revert
+
+
+class _SharedFileExec:
+    """FakeExec whose tasks all append to the SAME file and commit in their
+    worktree — so two run in parallel would race and conflict on merge."""
+
+    def execute(self, task, proj, use_git_branch=True):
+        import subprocess
+        from unittest.mock import MagicMock
+
+        wt = Path(proj.path)
+        f = wt / "shared.txt"
+        f.write_text(f.read_text() + f"{task.id}\n")
+        subprocess.run(["git", "add", "-A"], cwd=wt, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", f"task {task.id}"],
+            cwd=wt,
+            check=True,
+            capture_output=True,
+        )
+        r = MagicMock()
+        r.status = "completed"
+        return r
+
+
+def _shared_file_repo(td: Path):
+    _git(td, "init")
+    _git(td, "config", "user.email", "t@t.t")
+    _git(td, "config", "user.name", "t")
+    (td / "shared.txt").write_text("line0\n")
+    _git(td, "add", "-A")
+    _git(td, "commit", "-m", "init")
+
+
+def test_conflicting_wave_serialized_completes_without_conflict():
+    """Two tasks that DECLARE the same file are split into separate sub-waves, so
+    the second builds on the first's merge and neither conflicts — both complete
+    and the shared file carries both edits."""
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _shared_file_repo(td)
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {"parallel_mode": "worktree", "max_workers": 4}
+        }
+
+        a, b = _mock_task("T-A"), _mock_task("T-B")
+        a.files_to_modify = ["shared.txt"]
+        b.files_to_modify = ["shared.txt"]
+
+        results = agent_mod.ProjectOrchestrator()._execute_parallel_worktrees(
+            [a, b], _SharedFileExec(), project
+        )
+        by_id = {t.id: (res, err) for t, res, err in results}
+        assert getattr(by_id["T-A"][0], "status", None) == "completed"
+        assert getattr(by_id["T-B"][0], "status", None) == "completed"
+        # Both edits landed serially on the shared file — no conflict, no clobber.
+        text = (td / "shared.txt").read_text()
+        assert "T-A" in text and "T-B" in text
+        assert "<<<<<<<" not in text  # no conflict markers
+
+
+def test_unserialized_conflict_aborts_cleanly_and_requeues():
+    """With serialization off, two tasks editing the same file race: one merges,
+    the other conflicts. The conflicted merge is ABORTED (base left clean, not
+    mid-merge) and that task is returned unfinished for re-queue."""
+    import subprocess
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        _shared_file_repo(td)
+        project = MagicMock()
+        project.path = td
+        project.config = {
+            "orchestrator": {
+                "parallel_mode": "worktree",
+                "max_workers": 4,
+                "serialize_conflicting_tasks": False,  # force the race
+            }
+        }
+
+        a, b = _mock_task("T-A"), _mock_task("T-B")
+        a.files_to_modify = ["shared.txt"]
+        b.files_to_modify = ["shared.txt"]
+
+        results = agent_mod.ProjectOrchestrator()._execute_parallel_worktrees(
+            [a, b], _SharedFileExec(), project
+        )
+        statuses = [getattr(res, "status", None) for _t, res, _e in results]
+        errors = [err for _t, _res, err in results]
+        # Exactly one merged; the other conflicted and was returned unfinished.
+        assert statuses.count("completed") == 1
+        assert sum(1 for e in errors if e is not None) == 1
+
+        # The base is CLEAN: the conflicted merge was aborted, not left mid-merge.
+        assert not (td / ".git" / "MERGE_HEAD").exists()
+        porcelain = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=td, capture_output=True, text=True
+        ).stdout
+        assert porcelain.strip() == ""  # no conflict markers / unmerged paths
+        assert "<<<<<<<" not in (td / "shared.txt").read_text()
+
+
+def test_worktree_healthcheck_command_resolution(tmp_path: Path):
+    """Explicit config wins and "" disables; otherwise a node project auto-detects
+    a toolchain probe (tsc when TS is used, else a dependency resolve) and a
+    non-node project has no probe."""
+    from misterdev.agent_helpers import worktree_healthcheck_command
+
+    assert worktree_healthcheck_command({}, tmp_path) is None  # non-node: no probe
+    cfg = {"orchestrator": {"worktree_healthcheck_command": "make check"}}
+    assert worktree_healthcheck_command(cfg, tmp_path) == "make check"
+    off = {"orchestrator": {"worktree_healthcheck_command": ""}}
+    (tmp_path / "package.json").write_text('{"dependencies":{"hono":"^4"}}')
+    assert worktree_healthcheck_command(off, tmp_path) is None  # "" disables
+    # package.json with a dependency but no tsconfig -> resolve the first dep.
+    assert (
+        worktree_healthcheck_command({}, tmp_path)
+        == "node -e \"require.resolve('hono')\""
+    )
+    # tsconfig.json present -> prefer the TypeScript toolchain probe.
+    (tmp_path / "tsconfig.json").write_text("{}")
+    assert (
+        worktree_healthcheck_command({}, tmp_path) == "npx --no-install tsc --version"
+    )
+
+
 # --- streaming with early abort (028) ---------------------------------------
 
 
@@ -955,6 +1446,63 @@ def test_run_project_executes_in_dependency_order():
         assert executed == ["001-a", "002-b"]
 
 
+def test_run_project_writes_classified_run_summary():
+    """The `run --tasks` path now emits run_summary.json with the failure taxonomy
+    (it previously had no summary at all), so a run is diagnosable at a glance."""
+    import json
+    from unittest.mock import patch, MagicMock
+    import misterdev.agent as agent_mod
+    from misterdev.utils.file_utils import orchestrator_state_file
+
+    with tempfile.TemporaryDirectory() as td:
+        project = MagicMock()
+        project.name = "p"
+        project.path = Path(td)
+        project.env_manager = None
+        project.config = {
+            "language": "python",
+            "orchestrator": {"max_consecutive_failures": 3},
+        }
+        done, parked = _mock_task("T-done"), _mock_task("T-park")
+        project.task_manager.get_pending_tasks.return_value = [done, parked]
+
+        def _exec(task, proj, *a, **k):
+            r = MagicMock()
+            if task.id == "T-park":
+                r.status = "deferred"
+                r.message = "could not complete after all attempts"
+                r.questions = []
+            else:
+                r.status = "completed"
+            return r
+
+        with (
+            patch.object(
+                agent_mod.ProjectOrchestrator, "_get_or_register", return_value=project
+            ),
+            patch("misterdev.agent.topological_sort", side_effect=lambda x: x),
+            patch("misterdev.agent.Scratchpad"),
+            patch("misterdev.agent.ContractRegistry"),
+            patch("misterdev.agent.ChangeTracker"),
+            patch("misterdev.agent.StrategyOptimizer") as MockStrat,
+            patch("misterdev.agent.ProgressTracker") as MockProg,
+            patch("misterdev.agent.MarkdownPlanExecutor") as MockExec,
+        ):
+            MockProg.return_value.completed = []
+            MockProg.return_value.is_done.return_value = False
+            MockStrat.return_value.select_best_strategy.return_value = "iterative"
+            MockExec.return_value.execute.side_effect = _exec
+            agent_mod.ProjectOrchestrator().run_project(td)
+
+        data = json.loads(
+            orchestrator_state_file(Path(td), "run_summary.json").read_text()
+        )
+        assert data["completed"] == 1
+        assert data["deferred"] == 1
+        assert data["failure_breakdown"] == {"deferred-needs-input": 1}
+        assert data["top_obstacle"] == "deferred-needs-input"
+
+
 # --- budget kill-switch / graceful checkpointing ----------------------------
 
 
@@ -1061,6 +1609,400 @@ def test_per_task_cost_cap_reverts_and_defers_not_failure():
         assert task in report.deferred_tasks
         assert task not in report.failed_tasks
         assert any("per-task cost cap" in d for d in report.key_decisions)
+
+
+class _SkipExec:
+    """Executor stand-in that records every task it is asked to run, so a test can
+    assert an already-satisfied task never reaches execution (no worktree)."""
+
+    executed: list
+
+    def __init__(self, *a, **k):
+        pass
+
+    def execute(self, t, proj, *a, **k):
+        from unittest.mock import MagicMock
+
+        type(self).executed.append(t.id)
+        r = MagicMock()
+        r.status = "completed"
+        return r
+
+    def _run_command(self, *a, **k):
+        return True, ""
+
+    def find_task_commit(self, *a, **k):
+        return None
+
+
+def _run_execute_tasks(project, tasks):
+    from unittest.mock import patch
+    import misterdev.agent as agent_mod
+    from misterdev.core.modes import BuildFlags
+
+    _SkipExec.executed = []
+    # Patch the peripheral collaborators (as the other _execute_tasks tests do),
+    # but keep a REAL ProgressTracker so it loads the on-disk ledger this test
+    # pre-populated — that ledger is what the skip decision reads.
+    with (
+        patch.object(agent_mod, "MarkdownPlanExecutor", _SkipExec),
+        patch("misterdev.agent.Scratchpad"),
+        patch("misterdev.agent.RealTimeAligner"),
+        patch("misterdev.agent.ContractRegistry"),
+        patch("misterdev.agent.ChangeTracker"),
+        patch("misterdev.agent.StrategyOptimizer") as MockStrat,
+    ):
+        MockStrat.return_value.select_best_strategy.return_value = "iterative"
+        orch = agent_mod.ProjectOrchestrator()
+        report = _fresh_report()
+        orch._execute_tasks(tasks, project, BuildFlags(no_rollback=True), report)
+    return report, list(_SkipExec.executed)
+
+
+def test_satisfied_task_skipped_before_worktree():
+    """A ready task whose content hash matches its recorded completion is marked
+    done WITHOUT ever reaching the executor (so no worktree is spawned)."""
+    from misterdev.core.execution.progress import ProgressTracker, compute_task_hash
+
+    with tempfile.TemporaryDirectory() as td:
+        project = _budget_project(td)
+        task = _mock_task("T-done")
+        task.acceptance_criteria = ""  # a real str -> a deterministic hash
+        # Record a prior completion at the task's CURRENT content hash.
+        ProgressTracker(Path(td)).mark_completed(
+            task.id, compute_task_hash(task, Path(td))
+        )
+
+        report, executed = _run_execute_tasks(project, [task])
+
+        assert executed == []  # never dispatched -> no worktree
+        assert task in report.completed_tasks
+
+
+def test_changed_or_absent_hash_still_runs():
+    """A recorded completion at a STALE hash, and a task with no recorded
+    completion at all, both re-run — the skip keys on the content hash, not the id
+    alone."""
+    from misterdev.core.execution.progress import ProgressTracker
+
+    with tempfile.TemporaryDirectory() as td:
+        project = _budget_project(td)
+        stale = _mock_task("T-stale")
+        stale.acceptance_criteria = ""
+        absent = _mock_task("T-absent")
+        absent.acceptance_criteria = ""
+        # 'stale' is recorded completed but at a hash that no longer matches;
+        # 'absent' has no record. Neither may be skipped.
+        ProgressTracker(Path(td)).mark_completed("T-stale", "0000stalehash000")
+
+        _, executed = _run_execute_tasks(project, [stale, absent])
+
+        assert set(executed) == {"T-stale", "T-absent"}
+
+
+def test_skip_satisfied_tasks_flag_off_forces_rerun():
+    """With orchestrator.skip_satisfied_tasks false, even a hash-matched completion
+    re-runs (the skip is opt-out)."""
+    from misterdev.core.execution.progress import ProgressTracker, compute_task_hash
+
+    with tempfile.TemporaryDirectory() as td:
+        project = _budget_project(td)
+        project.config["orchestrator"]["skip_satisfied_tasks"] = False
+        task = _mock_task("T-done")
+        task.acceptance_criteria = ""
+        ProgressTracker(Path(td)).mark_completed(
+            task.id, compute_task_hash(task, Path(td))
+        )
+
+        _, executed = _run_execute_tasks(project, [task])
+
+        assert executed == ["T-done"]  # flag off -> re-run despite the match
+
+
+def test_wave_infra_count_counts_only_unrecovered_infra_failures():
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+
+    def _res(status, logs=""):
+        r = MagicMock()
+        r.status = status
+        r.logs = logs
+        r.message = ""
+        return r
+
+    results = [
+        (_mock_task("A"), _res("failed", "Command timed out after 120s"), None),
+        (_mock_task("B"), _res("completed", "Command timed out after 120s"), None),
+        (_mock_task("C"), _res("failed", "AssertionError: 1 != 2"), None),
+        (_mock_task("D"), None, RuntimeError("waiting for the lock on the store")),
+    ]
+    # A (infra, failed) and D (infra, in the raised error) count; B completed
+    # (self-healed) and C (a real code error) do not.
+    assert agent_mod.ProjectOrchestrator._wave_infra_count(results) == 2
+
+
+def test_apply_wave_tuning_scales_config_from_base():
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+    from misterdev.core.execution.adaptive import WaveTuning
+
+    project = MagicMock()
+    project.config = {"orchestrator": {}, "build": {}}
+    base = {"workers": 8, "setup": 600, "build": 120, "test": 180}
+    agent_mod.ProjectOrchestrator()._apply_wave_tuning(
+        project, WaveTuning(2, 2.0), base
+    )
+    assert project.config["orchestrator"]["max_workers"] == 2
+    assert project.config["orchestrator"]["worktree_setup_timeout"] == 1200
+    assert project.config["build"]["build_timeout"] == 240
+    assert project.config["build"]["test_timeout"] == 360
+
+
+def test_adaptive_backoff_applies_to_next_wave():
+    """An infra failure in wave 1 backs off concurrency for wave 2: the wave-2
+    task sees a halved max_workers and a doubled timeout in the live config."""
+    from unittest.mock import patch, MagicMock
+    import misterdev.agent as agent_mod
+    from misterdev.core.modes import BuildFlags
+    from misterdev.config import get_setting
+
+    with tempfile.TemporaryDirectory() as td:
+        project = _budget_project(td)
+        project.config["orchestrator"].update(
+            {
+                "max_workers": 4,
+                "adaptive_infra_threshold": 0,  # any infra fault triggers backoff
+            }
+        )
+        # A fails on infra; B completes (wave 1). C depends on B (wave 2).
+        a = _mock_task("A")
+        b = _mock_task("B")
+        c = _mock_task("C", deps=["B"])
+
+        seen_workers = {}
+
+        class _Exec:
+            def __init__(self, *a, **k):
+                pass
+
+            def execute(self, t, proj):
+                seen_workers[t.id] = get_setting(
+                    proj.config, "orchestrator", "max_workers"
+                )
+                r = MagicMock()
+                if t.id == "A":
+                    r.status = "failed"
+                    r.logs = "Command timed out after 120s"
+                else:
+                    r.status = "completed"
+                    r.logs = ""
+                r.message = ""
+                return r
+
+            def _run_command(self, *a, **k):
+                return True, ""
+
+        with (
+            patch.object(agent_mod, "MarkdownPlanExecutor", _Exec),
+            patch("misterdev.agent.Scratchpad"),
+            patch("misterdev.agent.RealTimeAligner"),
+            patch("misterdev.agent.ContractRegistry"),
+            patch("misterdev.agent.ChangeTracker"),
+            patch("misterdev.agent.StrategyOptimizer") as MockStrat,
+        ):
+            MockStrat.return_value.select_best_strategy.return_value = "iterative"
+            orch = agent_mod.ProjectOrchestrator()
+            orch._execute_tasks(
+                [a, b, c], project, BuildFlags(no_rollback=True), _fresh_report()
+            )
+
+        assert seen_workers["A"] == 4  # wave 1: full concurrency
+        assert seen_workers["C"] == 2  # wave 2: halved after the infra fault
+        # Config is restored to the configured base after the run.
+        assert get_setting(project.config, "orchestrator", "max_workers") == 4
+
+
+# --- run summary / failure taxonomy (P11) -----------------------------------
+def test_write_run_summary_writes_json_and_classifies():
+    import json
+    from datetime import datetime, timezone
+    from unittest.mock import MagicMock
+    import misterdev.agent as agent_mod
+    from misterdev.core.models import Task, ExecutionResult
+    from misterdev.utils.file_utils import orchestrator_state_file
+
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        report = _fresh_report()
+        report.start_time = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        report.end_time = datetime(2026, 1, 1, 0, 1, 30, tzinfo=timezone.utc)  # 90s
+        report.completed_tasks = [
+            Task(id="C1", description="d", project_ref="p"),
+            Task(id="C2", description="d", project_ref="p"),
+        ]
+        # A code failure (result logs) and a merge conflict (error stashed).
+        code_fail = Task(id="F1", description="d", project_ref="p")
+        code_fail.execution_history.append(
+            ExecutionResult(status="failed", message="x", logs="error TS2345: bad")
+        )
+        merge_fail = Task(id="F2", description="d", project_ref="p")
+        merge_fail.processor_data["failure_text"] = "merge conflict: CONFLICT in env.ts"
+        report.failed_tasks = [code_fail, merge_fail]
+        # A parked task needing input.
+        parked = Task(id="D1", description="d", project_ref="p")
+        parked.execution_history.append(
+            ExecutionResult(
+                status="deferred", message="clarify the requirement", logs=""
+            )
+        )
+        report.deferred_tasks = [parked]
+
+        project = MagicMock()
+        project.path = td
+        agent_mod.ProjectOrchestrator()._write_run_summary(project, report)
+
+        data = json.loads(orchestrator_state_file(td, "run_summary.json").read_text())
+        assert data["completed"] == 2
+        assert data["failed"] == 2
+        assert data["deferred"] == 1
+        assert data["elapsed_seconds"] == 90.0
+        assert data["failure_breakdown"] == {
+            "merge-conflict": 1,
+            "genuine-code-failure": 1,
+            "deferred-needs-input": 1,
+        }
+
+
+# --- escalation ladder (P10) ------------------------------------------------
+def test_escalation_rung_reads_config_thresholds():
+    from unittest.mock import MagicMock
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+
+    ex = MarkdownPlanExecutor()
+    project = MagicMock()
+    project.config = {
+        "orchestrator": {
+            "escalation_widen_after": 2,
+            "escalation_rewrite_after": 3,
+            "escalation_model_after": 4,
+            "escalation_decompose_after": 5,
+        }
+    }
+    assert ex._escalation_rung(project, 1) == "normal"
+    assert ex._escalation_rung(project, 2) == "widen_context"
+    assert ex._escalation_rung(project, 3) == "full_rewrite"
+    assert ex._escalation_rung(project, 4) == "stronger_model"
+    assert ex._escalation_rung(project, 5) == "decompose"
+
+
+def test_decompose_substeps_from_acceptance_then_fallback():
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+    from misterdev.core.models import Task
+
+    structured = Task(
+        id="T",
+        description="d",
+        project_ref="p",
+        acceptance_criteria="- endpoint returns 200\n- writes an audit row\n",
+    )
+    steps = MarkdownPlanExecutor._decompose_substeps(structured)
+    assert len(steps) == 2
+    assert all(s.startswith("Implement and verify:") for s in steps)
+
+    # No structured criteria -> a generic isolate-then-extend split naming the task.
+    bare = Task(
+        id="T2", description="build the widget", project_ref="p", title="Widget"
+    )
+    generic = MarkdownPlanExecutor._decompose_substeps(bare)
+    assert len(generic) == 2
+    assert "Widget" in generic[0]
+
+
+def test_escalation_spec_block_contains_verbatim_spec():
+    from unittest.mock import MagicMock
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+    from misterdev.core.models import Task
+
+    t = Task(
+        id="T",
+        description="Add rate limiting to the API",
+        project_ref="p",
+        acceptance_criteria="429 after 100 req/min",
+    )
+    block = MarkdownPlanExecutor()._escalation_spec_block(
+        MagicMock(), t, ["src/middleware.ts"]
+    )
+    assert "Add rate limiting to the API" in block  # objective verbatim
+    assert "429 after 100 req/min" in block  # acceptance verbatim
+    assert "src/middleware.ts" in block  # target file
+
+
+def test_escalate_decompose_returns_deferred_with_named_substeps():
+    from unittest.mock import MagicMock
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+    from misterdev.core.models import Task
+
+    t = Task(
+        id="T",
+        description="big task",
+        project_ref="p",
+        title="Big",
+        acceptance_criteria="- part a does X\n- part b does Y\n",
+    )
+    # At depth >= 1 (a sub-step's own decompose) the base case still records the
+    # named sub-steps and defers rather than recursing (T4.1 recursion guard).
+    res = MarkdownPlanExecutor()._escalate_decompose(
+        MagicMock(), t, "last error", _depth=1
+    )
+    assert res.status == "deferred"
+    assert len(res.questions) >= 2  # named sub-steps surfaced as the decomposition
+    assert t.processor_data["_escalation_decomposed"] is True
+    assert t.processor_data["escalation_substeps"] == res.questions
+
+
+def test_deferred_result_routed_to_deferred_not_failed():
+    """A deferred task (walk-away input, or escalated to decomposition) lands in
+    report.deferred_tasks — NOT failed_tasks — and is not recorded as a terminal
+    progress failure, so a later run retries it."""
+    from unittest.mock import patch, MagicMock
+    import misterdev.agent as agent_mod
+    from misterdev.core.modes import BuildFlags
+
+    with tempfile.TemporaryDirectory() as td:
+        project = _budget_project(td)
+        task = _mock_task("T-def")
+
+        class _Exec:
+            def __init__(self, *a, **k):
+                pass
+
+            def execute(self, t, proj):
+                r = MagicMock()
+                r.status = "deferred"
+                return r
+
+            def _run_command(self, *a, **k):
+                return True, ""
+
+        with (
+            patch.object(agent_mod, "MarkdownPlanExecutor", _Exec),
+            patch("misterdev.agent.Scratchpad"),
+            patch("misterdev.agent.RealTimeAligner"),
+            patch("misterdev.agent.ContractRegistry"),
+            patch("misterdev.agent.ChangeTracker"),
+            patch("misterdev.agent.StrategyOptimizer") as MS,
+            patch("misterdev.agent.ProgressTracker") as MP,
+        ):
+            MS.return_value.select_best_strategy.return_value = "iterative"
+            MP.return_value.completed = []
+            MP.return_value.needs_rerun.return_value = True
+            orch = agent_mod.ProjectOrchestrator()
+            report = _fresh_report()
+            orch._execute_tasks([task], project, BuildFlags(no_rollback=True), report)
+
+        assert task in report.deferred_tasks
+        assert task not in report.failed_tasks
+        MP.return_value.mark_failed.assert_not_called()  # deferred != terminal fail
 
 
 def test_budget_exhausted_before_wave_defers_gracefully():
@@ -1776,6 +2718,78 @@ def test_executor_rejects_task_when_build_gate_stays_red(monkeypatch):
         assert not (repo / "feature.py").exists()
 
 
+def test_keystone_decomposes_at_attempt_exhaustion(monkeypatch):
+    """A task that keeps failing real gates now DECOMPOSES (deferred, with named
+    sub-steps) at attempt exhaustion instead of dead-ending on a vague park — the
+    decompose rung is reachable even when escalation_decompose_after == the attempt
+    cap (default 3 == 3), which is the countless T007 keystone case."""
+    from types import SimpleNamespace
+    from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _git(repo, "init")
+        _git(repo, "config", "user.email", "t@t.t")
+        _git(repo, "config", "user.name", "t")
+        (repo / "seed.py").write_text("X = 1\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "init")
+
+        # DISTINCT applied edits (return 0,1,2,3,4) that all fail the build (!= 42):
+        # each is a real applied code failure that advances the ladder, unlike an
+        # identical edit that only applies once.
+        from misterdev.config import DEFAULT_CONFIG
+        from misterdev.core.execution.project import Project
+        from tests.test_llm_client import FakeLLMClient
+        from misterdev.llm.client import LLMResponse, LLMUsage
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        build_cmd = (
+            'python -c "import feature, sys; '
+            'sys.exit(0 if feature.answer() == 42 else 1)"'
+        )
+        cfg = json.loads(json.dumps(DEFAULT_CONFIG))
+        cfg["name"] = "fixture"
+        cfg["build_command"] = build_cmd
+        cfg.pop("test_command", None)
+        # Reflection would consume a FakeLLMClient response per retry and desync the
+        # distinct edits; off, each attempt's edit is the only LLM call.
+        cfg.setdefault("orchestrator", {})["reflection"] = False
+        project = Project(repo, cfg)
+        project.llm_client = FakeLLMClient(
+            responses=[
+                LLMResponse(
+                    content=f"```python:feature.py\ndef answer():\n    return {i}\n```\n",
+                    usage=LLMUsage(),
+                )
+                for i in range(6)
+            ]
+        )
+        task = SimpleNamespace(
+            id="T-keystone",
+            title="Hono app shell",
+            description="implement the app shell",
+            acceptance_criteria="- returns the error envelope\n- adds CORS\n",
+            files_to_modify=[],
+            files_to_create=["feature.py"],
+            context_files=[],
+            dependencies=[],
+            complexity="small",
+            category="feature",
+            processor_data={"strategy": "surgical"},
+            execution_history=[],
+        )
+
+        result = MarkdownPlanExecutor().execute(task, project)
+
+        # Reached the decompose rung at exhaustion instead of a plain fail/park.
+        assert result.status == "deferred"
+        assert task.processor_data.get("_escalation_decomposed") is True
+        assert len(task.processor_data.get("escalation_substeps", [])) >= 2
+        # The named sub-steps are surfaced as the deferral questions.
+        assert result.questions == task.processor_data["escalation_substeps"]
+
+
 def test_completed_status_persists_to_committed_markdown(monkeypatch):
     """A completed task's status:completed is committed into its source .md and
     survives the merge — otherwise a finished devplan still reads 'pending' and a
@@ -2405,7 +3419,7 @@ def _run_convergence_pipeline(gate_sequence, max_iterations, budget=100.0):
         flags = BuildFlags(budget=budget)
         orch = agent_mod.ProjectOrchestrator()
 
-        def fake_exec(tasks, project, flags, report):
+        def fake_exec(tasks, project, flags, report, progress_cb=None):
             counters["exec"] += 1
 
         def fake_decompose(spec, assessment, mode, client, path, **kwargs):
@@ -2468,7 +3482,7 @@ def _run_convergence_pipeline_with_cfg(gate_sequence, orchestrator_cfg):
         flags = BuildFlags(budget=100.0)
         orch = agent_mod.ProjectOrchestrator()
 
-        def fake_exec(tasks, project, flags, report):
+        def fake_exec(tasks, project, flags, report, progress_cb=None):
             counters["exec"] += 1
 
         def fake_decompose(spec, assessment, mode, client, path, **kwargs):
