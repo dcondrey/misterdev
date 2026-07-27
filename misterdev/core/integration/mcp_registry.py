@@ -216,6 +216,10 @@ class RegistryCache:
         with RegistryCache._locks_guard:
             self._lock = RegistryCache._locks.setdefault(key, threading.Lock())
         self._data: Dict[str, Dict[str, Any]] = self._load()
+        try:
+            self._mtime: float = self.path.stat().st_mtime
+        except OSError:
+            self._mtime = 0.0
 
     def _load(self) -> Dict[str, Dict[str, Any]]:
         try:
@@ -235,13 +239,31 @@ class RegistryCache:
             merged = {**self._load(), **self._data}
             self._data = merged
             tmp = self.path.with_suffix(f".{os.getpid()}.{id(self)}.tmp")
-            tmp.write_text(json.dumps(merged), encoding="utf-8")
-            os.replace(tmp, self.path)
+            try:
+                tmp.write_text(json.dumps(merged), encoding="utf-8")
+                os.replace(tmp, self.path)
+                try:
+                    self._mtime = self.path.stat().st_mtime
+                except OSError:
+                    pass
+            except Exception:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
         except (OSError, ValueError) as e:
             logger.debug(f"MCP registry cache flush failed: {e}")
 
     def get(self, key: str) -> Optional[Any]:
         with self._lock:
+            try:
+                mtime = self.path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            if mtime != self._mtime:
+                self._data = self._load()
+                self._mtime = mtime
             entry = self._data.get(key)
             if not entry:
                 return None
