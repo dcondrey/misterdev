@@ -89,12 +89,21 @@ def preview(intent: Dict[str, Any]) -> str:
 
 
 def _dispatch(intent: Dict[str, Any], orchestrator) -> int:
+    from rich.markdown import Markdown
+    from rich.panel import Panel
+
     cmd = intent.get("command")
     path = intent.get("path") or "."
     if cmd == "build":
         report = orchestrator.build(path, _build_args(intent))
-        console.print(report)
-        return 0 if orchestrator.last_build_succeeded else 1
+        succeeded = orchestrator.last_build_succeeded
+        title = (
+            "[bold green]Build Complete[/bold green]"
+            if succeeded
+            else "[bold red]Build Failed Validation[/bold red]"
+        )
+        console.print(Panel(Markdown(report), title=title, expand=False))
+        return 0 if succeeded else 1
     if cmd == "run":
         orchestrator.run_project(path, dry_run=bool(intent.get("dry_run")))
         return 0
@@ -155,6 +164,7 @@ def route(request: str, orchestrator, confirm=input) -> int:
     Returns a process exit code. ``confirm`` is injectable for testing.
     """
     intent = _fast_route(request)
+    needs_confirm = intent is None  # explicit fast-route = user was already clear
     if intent is None:
         cfg = ConfigManager().load_project_config(".")
         try:
@@ -175,7 +185,7 @@ def route(request: str, orchestrator, confirm=input) -> int:
         return 1
 
     console.print(f"[dim]→ I'll run:[/] misterdev {preview(intent)}")
-    if cmd in _MUTATING:
+    if needs_confirm and cmd in _MUTATING:
         answer = confirm("proceed? [Y/n] ").strip().lower()
         if answer and answer not in ("y", "yes"):
             console.print("Cancelled.")

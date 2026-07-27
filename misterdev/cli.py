@@ -374,15 +374,23 @@ def main():
         _print_doctor(result)
         sys.exit(result.get("exit_code", 1))
     elif args.command == "run":
+        from pathlib import Path as _Path
+
+        run_path = args.project_path
+        # If project_path isn't a directory the user likely typed a goal
+        # (e.g. `misterdev run "add feature X"`); route to build instead.
+        if run_path != "." and not _Path(run_path).is_dir() and not args.task:
+            from misterdev.nl_cli import route as _nl_route
+
+            sys.exit(_nl_route(run_path, orchestrator))
+
         if args.task:
-            logger.info(
-                f"Running specific task {args.task} in project {args.project_path}"
-            )
-            orchestrator.run_task(args.project_path, args.task)
+            logger.info(f"Running specific task {args.task} in project {run_path}")
+            orchestrator.run_task(run_path, args.task)
         else:
-            logger.info(f"Running pending tasks for project {args.project_path}")
+            logger.info(f"Running pending tasks for project {run_path}")
             orchestrator.run_project(
-                args.project_path,
+                run_path,
                 dry_run=args.dry_run,
                 skip_preflight=args.skip_preflight,
                 force=args.force,

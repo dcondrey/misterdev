@@ -80,8 +80,10 @@ def test_route_confirms_then_runs_mutating(monkeypatch):
 
 
 def test_route_cancel_skips_execution(monkeypatch):
+    # Use a query-word prefix so the request falls through to the LLM and the
+    # confirm prompt fires; the fast-path skips confirm by design.
     _stub_client(monkeypatch, '{"command": "build", "path": ".", "goal": "x"}')
-    rc = nl_cli.route("x", _FakeOrch(), confirm=lambda _p: "n")
+    rc = nl_cli.route("do build x", _FakeOrch(), confirm=lambda _p: "n")
     assert rc == 0
     assert "build" not in _FakeOrch.calls
 
