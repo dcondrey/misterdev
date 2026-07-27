@@ -14,17 +14,56 @@ misterdev ships the `misterdev-mcp` entry point, a thin adapter over the same `P
 
 The key property: the client only sends a short instruction and receives a short summary. **The entire orchestration — reading the codebase, symbol-graph context, multi-step reasoning, model selection, budget — runs in misterdev's own process with its own LLM key.** Your codebase never enters the client's context window, so the context-scaling misterdev exists to provide is fully preserved.
 
-### The five tools
+### Tools
+
+**Core tools:**
 
 | Tool | Kind | What it does |
 | --- | --- | --- |
 | `list_projects` | read-only | List every project misterdev knows about. Start here. |
 | `status` | read-only | Show a project's tasks and their state. |
 | `scan` | registers | Discover projects under a directory and register them (idempotent). |
+| `report` | read-only | Return the latest build report, per-model ledger, and audit trail for a project. |
 | `build` | destructive | Plan **and** execute a goal from scratch, verifying each change through the gates and reverting regressions. The main tool. |
-| `run` | destructive | Execute an already-planned devplan's pending tasks (does not decompose a goal). |
+| `run` | destructive | Execute pending tasks for a project. Does not decompose a goal. |
 
-`build` parameters: `path`, `goal` (plain English, or a mode word `debug` / `complete` / `review`), `budget` (default $10 — conservative for a client-triggered run; raise it explicitly), `dry_run`, `parallel`, `max_tasks`. `run` takes `path`, optional `task_id`, and `dry_run`.
+**Async variants** (return immediately with a `run_id`; poll with `job_status`):
+
+| Tool | What it does |
+| --- | --- |
+| `build_async` | Same as `build`, non-blocking. |
+| `run_async` | Same as `run`, non-blocking. |
+| `job_status` | Get the current status of an async job by `run_id`. |
+| `stop_job` | Request cancellation of a running async job. |
+| `list_jobs` | List all jobs (running and completed). |
+
+**Planning tools** (propose a plan before executing):
+
+| Tool | What it does |
+| --- | --- |
+| `propose_plan` | Analyze the project and return a proposed plan for review before any execution. |
+| `get_plan` | Get the current proposed plan for a project. |
+| `approve_plan` | Approve specific plan items (by ID) before execution. |
+| `execute_plan` | Execute the approved plan. |
+
+**`build` parameters:** `path`, `goal` (plain English, or a mode word `debug` / `complete` / `review`), `budget` (default $10 — conservative for a client-triggered run; raise it explicitly), `dry_run`, `parallel`, `max_tasks`, `reference_dir`.
+
+**`spec_text` — the Claude handoff parameter.** Pass a complete specification written by the calling AI and misterdev skips its own analysis and spec-generation phases, going straight to decompose → execute → verify. This is the intended Claude Code integration pattern: Claude writes the spec with full project context; misterdev executes it using your codebase's own gate suite. The calling AI's context never needs to hold the full codebase:
+
+```python
+# From Claude Code or any MCP client
+misterdev.build(
+    path="/path/to/repo",
+    spec_text="""
+Feature: token-bucket rate limiter on all /api/v1/* routes
+Acceptance: 429 after 100 req/min per IP; X-RateLimit-* headers on every response
+Files to modify: api/middleware.py, api/app.py, config.py
+...
+"""
+)
+```
+
+`run` takes `path`, optional `task_id`, and `dry_run`.
 
 The mutating tools carry honest MCP annotations. `build` and `run` are destructive (they edit files and make git commits) and refuse a dirty working tree — commit or stash first, or use `dry_run=True` to preview the plan without touching anything.
 
@@ -141,3 +180,14 @@ orchestrator:
 - **`mcp_tool_use`** layers a bounded agentic pre-edit loop on top (and implies `mcp_enabled`). Each round the model sees the available tools and may reply with one line `CALL <server>.<tool> {json-args}` (or `NO_TOOL` to stop). The call runs through the timeout-guarded `call_tool` and its result is prepended to the task context, so the model gathers information *before* editing. `mcp_max_tool_rounds` (default 3) hard-caps the loop.
 
 With `mcp_tool_use` off, the edit path is byte-identical to a build with no MCP configured; any failure degrades to gathering nothing. Plugin tools marked `gather_safe = True` participate in the same loop — see [plugins.md](plugins.md).
+
+## Stability
+
+The following are stable as of v0.6.0 and follow semantic versioning — breaking changes happen only on a major version bump:
+
+- **Tool names**: `list_projects`, `status`, `scan`, `report`, `build`, `run`, `build_async`, `run_async`, `job_status`, `stop_job`, `list_jobs`, `propose_plan`, `get_plan`, `approve_plan`, `execute_plan`
+- **`build` parameters**: `path`, `goal`, `budget`, `dry_run`, `parallel`, `max_tasks`, `reference_dir`, `spec_text`
+- **Return shape**: `build` always returns a string report; `build_async`/`run_async` always return `{run_id, status}`; `job_status` always returns `{status, ...}`
+- **Behavioral guarantees**: `build` and `run` refuse a dirty working tree; read-only tools never modify files; async tools are idempotent to poll
+
+The MCP server entry point (`misterdev-mcp`) and the `misterdev mcp` subcommand are both stable. Server configuration (Claude Desktop JSON) will not require changes within a major version.

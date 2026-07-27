@@ -735,7 +735,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
                 _warn_if_no_test_gate(assessment, project, report)
                 _warn_if_test_gate_is_noop(assessment, report)
 
-            return self._run_pipeline(
+            result = self._run_pipeline(
                 project,
                 prompt,
                 mode,
@@ -747,6 +747,8 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
                 progress_cb=progress_cb,
                 spec_text=spec_text,
             )
+            self._run_promotion_async(project.path)
+            return result
         except BudgetExceededError as e:
             return self._halt_on_budget(project, report, e)
 
@@ -772,6 +774,18 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         self._persist_learning(project, report)
         report.save(project.path)
         return report.to_markdown()
+
+    def _run_promotion_async(self, project_path) -> None:
+        import threading
+        from misterdev.core.evolution.tool_promotion import run_tool_promotion
+
+        def _promote():
+            try:
+                run_tool_promotion(project_path)
+            except Exception as e:
+                logger.debug(f"Background tool promotion skipped: {e}")
+
+        threading.Thread(target=_promote, daemon=True).start()
 
     def _persist_learning(self, project: Project, report: BuildReport) -> None:
         """Record this build's spend, real failures, and solved tasks.

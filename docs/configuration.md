@@ -1,6 +1,6 @@
 # Configuration
 
-misterdev reads a `project.yaml` from the repo root. A minimal config names the language and the build/test/lint commands; everything else defaults. The shipped `project.yaml.example` documents every key — this page organizes the useful ones by area.
+misterdev creates a minimal `project.yaml` automatically the first time it runs in a directory — no config is required to get started. To control build/test/lint commands, model selection, budget, and gates, drop a `project.yaml` in the repo root. The shipped `project.yaml.example` documents every key; this page organizes the useful ones by area.
 
 ## Project basics
 

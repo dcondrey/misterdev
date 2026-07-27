@@ -53,7 +53,8 @@ every SWE-bench system is criticized for.
   runs untrusted model-authored Python at maximum hardening of the existing
   `ContainerEngine` (no network, all caps dropped, `no-new-privileges`,
   memory/CPU/PID caps, isolated non-repo workdir, `--rm`). No host fallback — with
-  no engine it degrades OFF (skip). Verified live: exec works, network is blocked.
+  no engine it degrades OFF (skip) with a clear warning logged at build start so
+  users know the capability is unavailable. Verified live: exec works, network is blocked.
 - **P2b — Runtime invention surface — BUILT.** `evolution/tool_invention.py` +
   the `_runtime_tool` executor seam (mirrors `_mcp_gather`, off-by-default behind
   `orchestrator.runtime_tooling`): the model authors a `tool` block, it runs in
@@ -64,13 +65,16 @@ every SWE-bench system is criticized for.
   normal runs) at the terminal seams; `promote_from_corpus` admits the tools whose
   success-association holds on a held-out task split (same anti-overfit gate) into
   the `ToolLibrary`; `seed()` feeds promoted tools back into future runs so
-  capability compounds. Capture is automatic; promotion is a deliberate pass (a
-  chosen without-tool baseline), like the scaffold-evolution run.
+  capability compounds. Capture is automatic; promotion now runs automatically
+  as a background daemon thread at the end of each successful build — no manual
+  invocation required. The deliberate baseline is still applied; the pass simply
+  happens without user action. Run manually if you want to promote immediately
+  after a specific project run: `python -m misterdev.core.evolution.tool_promotion <path>`.
 - **Remaining — activation, not code.** The mechanisms are complete and tested; the
   loop *closes as data accumulates*: promotion needs enough real-run corpus
-  observations to be meaningful, and the compounding is then measured (does run N
-  start stronger than run 1 on held-out tasks?). That measurement is the honest
-  open item — it needs accumulated data, not more scaffold code.
+  observations to be meaningful (default: 5), and the compounding is then measured
+  (does run N start stronger than run 1 on held-out tasks?). That measurement is
+  the honest open item — it needs accumulated data, not more scaffold code.
 
 ## Security (P2, non-negotiable)
 Runtime tools are model-authored code = untrusted. They execute only inside the

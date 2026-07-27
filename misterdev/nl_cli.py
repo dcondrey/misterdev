@@ -182,11 +182,14 @@ def route(request: str, orchestrator, confirm=input) -> int:
         cfg = ConfigManager().load_project_config(".")
         try:
             client = create_llm_client(cfg)
-        except Exception as e:
-            console.print(
-                "[yellow]Natural-language mode needs an LLM configured "
-                f"(model + API key). {e}[/]\nRun `misterdev --help` for the flag-based CLI."
-            )
+        except (ValueError, ImportError) as e:
+            msg = str(e)
+            console.print(f"\n[red]Error:[/] {msg}")
+            if "api key" in msg.lower() or "api_key" in msg.lower():
+                console.print(
+                    "[dim]Set the environment variable shown above, then retry.\n"
+                    "  export OPENROUTER_API_KEY=sk-or-...[/]"
+                )
             return 1
         intent = parse_intent(request, client)
 

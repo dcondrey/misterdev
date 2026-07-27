@@ -122,18 +122,27 @@ A continuous stress run has solved **20/20** across the three languages with zer
 
 ## CLI reference
 
-**Don't want to remember flags?** If the first argument isn't a subcommand,
-misterdev treats the whole line as plain English, maps it to an action with its
-own model, shows you a preview, and asks before anything mutating:
+**Don't want to remember flags?** Just describe what you want — no project setup
+or devplan required. misterdev routes it with zero friction:
 
 ```console
-$ misterdev "fix the failing tests but keep it cheap, and run stuff in parallel"
-  → I'll run: misterdev build . fix the failing tests --budget 5 --parallel
+$ misterdev "add rate limiting to the public API"
+  ⠸ Building…
+```
+
+Action words (`add`, `fix`, `implement`, `write`, `create`, …) go straight to
+build — no LLM routing call, no confirmation prompt, no ceremony. Query and
+management words (`list`, `status`, `what`, `how`, `check`, `run`, …) are
+mapped with a model call, shown as a preview, and ask before anything mutating:
+
+```console
+$ misterdev "check what's broken and fix it cheaply, run in parallel"
+  → I'll run: misterdev build . fix broken tests --budget 5 --parallel
     proceed? [Y/n]
 ```
 
-The flag-based commands below still work exactly as written, for scripts and
-power users. The `misterdev` command drives everything:
+The flag-based commands below still work for scripts and power users.
+The `misterdev` command drives everything:
 
 | Command | What it does |
 | --- | --- |
@@ -141,9 +150,9 @@ power users. The `misterdev` command drives everything:
 | `misterdev list` | List all registered projects. |
 | `misterdev status [path]` | Show a project's tasks and their state. |
 | `misterdev report [path]` | Summarize the latest build's cost/tokens, per-model ledger performance, and the audit trail. Read-only — nothing is re-run. |
-| `misterdev run [path]` | Run pending (or a specific `--task`) tasks for a project. `--dry-run`, `--force`, `--status`. |
+| `misterdev run [path]` | Run pending tasks, or redirect to `build` if given a goal instead of a path. `--dry-run`, `--force`, `--status`. |
 | `misterdev plan [path]` | Analyze the project, recommend work, and compose a plan interactively. `--budget`, `--no-rollback`. |
-| `misterdev build [path] [prompt]` | The autonomous build/debug/complete workflow. See flags below. |
+| `misterdev build [path] [goal]` | The autonomous build/debug/complete workflow. `path` defaults to `.` if a goal is given directly. See flags below. |
 
 Plain `misterdev` with no subcommand launches interactive planning.
 
@@ -190,7 +199,23 @@ returns to the client — your codebase never enters the client's context window
 
 Then just ask: *"Have misterdev add rate limiting to the API, keep it under $5."*
 Mutating tools (`build`, `run`) refuse a dirty working tree and carry a
-conservative default budget. Requires the `mcp` extra: `pip install 'misterdev[mcp]'`.
+conservative default budget.
+
+**Claude Code integration.** The `build` tool accepts a `spec_text` parameter.
+Pass a complete spec written by Claude and misterdev skips its own analysis and
+spec-generation phases, going straight to decompose → execute → verify using
+your codebase's own gate suite. Claude handles the design; misterdev handles the
+execution, correctness gates, and rollback:
+
+```python
+# In Claude Code / MCP client
+misterdev.build("/path/to/repo", spec_text="""
+Feature: add a token-bucket rate limiter to /api/v1/*
+...full spec...
+""")
+```
+
+Requires the `mcp` extra: `pip install 'misterdev[mcp]'`.
 
 ## Extending misterdev
 
@@ -234,7 +259,7 @@ Targets register the same way through the `misterdev.targets` group. The full, r
 
 ## Configuration
 
-Drop a `project.yaml` in the repo root. A minimal config names the language and the build/test/lint commands; everything else has a sensible default.
+A `project.yaml` is created automatically when you first run misterdev in a directory — no setup required to get started. Drop a custom one in the repo root to specify build/test/lint commands, model, budget, and gates.
 
 ```yaml
 name: "My App"

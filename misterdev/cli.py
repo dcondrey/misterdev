@@ -13,6 +13,24 @@ logger = setup_logger("cli")
 console = Console()
 
 
+def _cli_error(e: Exception) -> None:
+    """Print a user-facing error for a fatal exception, with a hint for API key issues."""
+    msg = str(e)
+    console.print(f"\n[red]Error:[/] {msg}")
+    if "api key" in msg.lower() or "api_key" in msg.lower():
+        console.print(
+            "[dim]Set the environment variable shown above, then retry.\n"
+            "  export OPENROUTER_API_KEY=sk-or-...\n"
+            "  # or for Anthropic:\n"
+            "  export ANTHROPIC_API_KEY=sk-ant-...\n"
+            "  # and set llm.provider: anthropic in project.yaml[/]"
+        )
+    elif isinstance(e, ImportError):
+        console.print(
+            "[dim]Install the required extra:  pip install 'misterdev[mcp]'[/]"
+        )
+
+
 def _print_report(project_path: str) -> None:
     """Render the aggregated cost/model/audit summary for a project."""
     from misterdev.core.reporting.report_view import collect
@@ -130,7 +148,11 @@ def main():
     if argv and not argv[0].startswith("-") and argv[0] not in _known:
         from misterdev.nl_cli import route
 
-        sys.exit(route(" ".join(argv), ProjectOrchestrator()))
+        try:
+            sys.exit(route(" ".join(argv), ProjectOrchestrator()))
+        except (ValueError, ImportError) as e:
+            _cli_error(e)
+            sys.exit(1)
 
     parser = argparse.ArgumentParser(
         description="misterdev — autonomous build orchestrator"
@@ -450,13 +472,17 @@ def main():
         def _on_progress(done, total, phase):
             _spinner.text = f"{phase} [{done}/{total}]" if total else phase
 
-        with Live(_spinner, console=console, transient=True, refresh_per_second=10):
-            report = orchestrator.build(
-                project_path,
-                " ".join(build_args),
-                reference_dir=args.reference,
-                progress_cb=_on_progress,
-            )
+        try:
+            with Live(_spinner, console=console, transient=True, refresh_per_second=10):
+                report = orchestrator.build(
+                    project_path,
+                    " ".join(build_args),
+                    reference_dir=args.reference,
+                    progress_cb=_on_progress,
+                )
+        except (ValueError, ImportError) as e:
+            _cli_error(e)
+            sys.exit(1)
         console.print("\n")
         if orchestrator.last_build_succeeded:
             console.print(
@@ -503,6 +529,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except (ValueError, ImportError) as e:
+        _cli_error(e)
+        sys.exit(1)
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted.[/]")
         sys.exit(130)

@@ -55,6 +55,14 @@ class ContextMixin:
         except Exception as e:  # seeding is best-effort
             logger.debug(f"Tool-library seed skipped: {e}")
         try:
+            from misterdev.core.execution.container import detect_engine
+
+            if detect_engine() is None:
+                logger.warning(
+                    "runtime_tooling is enabled but no container sandbox is available "
+                    "(Docker or Podman not found); tool invention disabled for this run."
+                )
+                return ""
             return invent_tool(
                 ToolRunner(),
                 _ask,

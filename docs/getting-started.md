@@ -1,6 +1,6 @@
 # Getting Started
 
-misterdev is an autonomous LLM build orchestrator. Point it at a repository and a goal; it reads the codebase as a symbol graph, decomposes the goal into tasks, edits your code with anchored SEARCH/REPLACE hunks, and runs every change through correctness gates (build, tests, lint, typecheck) before it reports done. A change that regresses the suite is reverted through git. Nothing merges unless it stays green.
+misterdev is an autonomous LLM build orchestrator. Describe a goal in plain English — no project setup, no devplan required. It reads the codebase as a symbol graph, decomposes the goal into tasks, edits your code with anchored SEARCH/REPLACE hunks, and runs every change through correctness gates (build, tests, lint, typecheck) before it reports done. A change that regresses the suite is reverted through git. Nothing merges unless it stays green.
 
 ## Install
 
@@ -43,9 +43,11 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 If you use Anthropic, set `llm.provider: anthropic` and `llm.api_key_env_var: ANTHROPIC_API_KEY` in your `project.yaml` (see below).
 
-## Create a minimal project.yaml
+## Configure your project (optional)
 
-Drop a `project.yaml` in the repo root. A minimal config names the language and the build/test/lint commands; everything else has a sensible default.
+misterdev creates a minimal `project.yaml` automatically the first time it runs
+in a directory — no setup needed to get started. To specify your own build, test,
+and lint commands, drop a `project.yaml` in the repo root:
 
 ```yaml
 name: "My App"
@@ -55,19 +57,51 @@ test_command: "pytest -q"
 lint_command: "ruff check ."
 llm:
   provider: "openrouter"            # openrouter | anthropic
-  model: "anthropic/claude-sonnet-4.6"
+  model: "anthropic/claude-sonnet-4-6"
   api_key_env_var: "OPENROUTER_API_KEY"
 ```
 
-The commands are the truth misterdev trusts: a gate is only as good as the command behind it. See [configuration.md](configuration.md) for the full surface.
+The commands are what misterdev's gates run. A gate is only as good as the command behind it. See [configuration.md](configuration.md) for the full surface.
 
 ## Run your first build
 
 Three equivalent ways to drive it.
 
-### Interactive form (nothing to remember)
+### Natural-language form (the easiest path)
 
-Just run `misterdev` with no arguments (or `misterdev i`) for a guided menu — pick Build / Run a task list / Debug / Complete / Status / Report, answer a couple of prompts (with sensible defaults), confirm, and it runs:
+Just describe what you want. No project setup required first.
+
+Action words go straight to build — no LLM routing call, no confirmation prompt:
+
+```console
+$ misterdev "add rate limiting to the public API"
+  ⠸ Building…
+```
+
+Query and management words (`list`, `status`, `what`, `how`, `check`, `run`, …)
+are mapped via the LLM, shown as a preview, and ask before anything mutating:
+
+```console
+$ misterdev "check what's broken and fix it cheaply, run in parallel"
+  → I'll run: misterdev build . fix broken tests --budget 5 --parallel
+    proceed? [Y/n]
+```
+
+### Flag form (scripts, power users)
+
+```bash
+misterdev build . "add rate limiting to the public API" --budget 5
+```
+
+`.` is the project path; the quoted text is the goal. `--budget` caps the run's dollar spend (default 100). The path defaults to `.` if you pass a goal directly:
+
+```bash
+misterdev build "add rate limiting to the public API" --budget 5
+```
+
+### Interactive form (guided menu)
+
+Run `misterdev` with no arguments for a guided menu — pick Build / Run a task list / Debug / Complete / Status / Report, answer a couple of prompts, confirm, and it runs:
 
 ```console
 $ misterdev
@@ -77,24 +111,6 @@ $ misterdev
     3. Debug — find and fix everything that's broken
     …
   ? Choose (1)
-```
-
-### Flag form (scripts, power users)
-
-```bash
-misterdev build . "add rate limiting to the public API" --budget 5
-```
-
-`.` is the project path; the quoted text is the goal. `--budget` caps the run's dollar spend (default 100).
-
-### Natural-language form (no flags to remember)
-
-If the first argument isn't a known subcommand, misterdev treats the whole line as plain English, maps it to a command with its own model, previews it, and asks before anything mutating:
-
-```console
-$ misterdev "add rate limiting to the API but keep it cheap"
-  → I'll run: misterdev build . add rate limiting to the API --budget 5
-    proceed? [Y/n]
 ```
 
 ## Expected output
@@ -130,8 +146,8 @@ Each gate reports GREEN (passed), RED (failed, blocks the change), or SKIP (noth
 | `misterdev status [path]` | Show a project's tasks and their state. |
 | `misterdev report [path]` | Summarize the latest build's cost, per-model ledger, and audit trail (read-only). |
 | `misterdev plan [path]` | Analyze, recommend, and compose a plan interactively. |
-| `misterdev run [path]` | Run already-planned pending tasks (`--tasks <file>` for an external list in any format, `--task`, `--dry-run`, `--force`, `--status`). |
-| `misterdev build [path] [prompt]` | The autonomous build/debug/complete workflow. |
+| `misterdev run [path]` | Run already-planned pending tasks. Redirects to `build` if given a goal instead of a path. (`--tasks <file>` for an external list in any format, `--task`, `--dry-run`, `--force`, `--status`.) |
+| `misterdev build [path] [goal]` | The autonomous build/debug/complete workflow. Path defaults to `.` when a goal is given directly. |
 
 Plain `misterdev` with no subcommand launches interactive planning.
 
