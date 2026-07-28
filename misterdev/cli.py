@@ -125,6 +125,45 @@ def _print_doctor(result: dict) -> None:
     )
 
 
+def _run_init(orchestrator, project_path: str) -> int:
+    import os
+    from pathlib import Path
+
+    p = Path(project_path).resolve()
+    console.print(f"[bold]misterdev init[/] — setup check for {p}\n")
+
+    or_key = os.environ.get("OPENROUTER_API_KEY")
+    ant_key = os.environ.get("ANTHROPIC_API_KEY")
+    if or_key:
+        console.print("[green]✓[/] OPENROUTER_API_KEY is set")
+    elif ant_key:
+        console.print("[green]✓[/] ANTHROPIC_API_KEY is set")
+    else:
+        console.print("[red]✗[/] No API key found")
+        console.print(
+            "  [dim]export OPENROUTER_API_KEY=sk-or-...   "
+            "(OpenRouter — many models, recommended)\n"
+            "  export ANTHROPIC_API_KEY=sk-ant-...   "
+            "(Anthropic direct; set llm.provider: anthropic in project.yaml)[/]"
+        )
+
+    yaml_path = p / "project.yaml"
+    if yaml_path.exists():
+        console.print("[green]✓[/] project.yaml found")
+    else:
+        console.print(
+            "[dim]  project.yaml not found — it will be auto-created on your first build.[/]"
+        )
+
+    console.print("")
+    result = orchestrator.run_doctor(str(p))
+    _print_doctor(result)
+
+    if not (or_key or ant_key):
+        return 1
+    return result.get("exit_code", 0)
+
+
 def main():
     # Natural-language mode: when the first argument isn't a known subcommand
     # (and isn't a flag), treat the whole line as plain English and let
@@ -143,6 +182,8 @@ def main():
         "build",
         "interactive",
         "i",
+        "init",
+        "mcp",
     }
     argv = sys.argv[1:]
     if argv and not argv[0].startswith("-") and argv[0] not in _known:
@@ -155,7 +196,24 @@ def main():
             sys.exit(1)
 
     parser = argparse.ArgumentParser(
-        description="misterdev — autonomous build orchestrator"
+        description="misterdev — autonomous build orchestrator",
+        epilog=(
+            "Quick start — just say what you want:\n"
+            '  misterdev "fix the failing tests"\n'
+            '  misterdev "add rate-limiting to the API"\n'
+            '  misterdev "review and clean up error handling"\n'
+            "\n"
+            "  Any phrase that isn't a subcommand is treated as natural language.\n"
+            "  project.yaml is auto-created on your first build.\n"
+            "\n"
+            "Common subcommands:\n"
+            "  init          First-time setup and API key check\n"
+            "  build         Autonomous workflow — analyze, plan, implement, verify\n"
+            "  run           Execute an existing devplan (task list)\n"
+            "  interactive   Guided menu — no flags needed\n"
+            "  doctor        Check project readiness before an unattended run\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--version", action="version", version=f"misterdev {__version__}"
@@ -194,8 +252,18 @@ def main():
         "project_path", type=str, nargs="?", default=".", help="Path to the project"
     )
 
+    # 'init' command — first-time setup check
+    init_parser = subparsers.add_parser(
+        "init", help="Check API key, project.yaml, and run a preflight doctor"
+    )
+    init_parser.add_argument(
+        "project_path", type=str, nargs="?", default=".", help="Path to the project"
+    )
+
     # 'run' command (legacy)
-    run_parser = subparsers.add_parser("run", help="Run tasks for a project")
+    run_parser = subparsers.add_parser(
+        "run", help="Execute an existing devplan (task list) for a project"
+    )
     run_parser.add_argument(
         "project_path",
         type=str,
@@ -395,6 +463,8 @@ def main():
         result = orchestrator.run_doctor(args.project_path)
         _print_doctor(result)
         sys.exit(result.get("exit_code", 1))
+    elif args.command == "init":
+        sys.exit(_run_init(orchestrator, args.project_path))
     elif args.command == "run":
         from pathlib import Path as _Path
 
