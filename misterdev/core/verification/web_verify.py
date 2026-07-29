@@ -134,15 +134,15 @@ def _playwright_sync():
 
 def _verify(project_root: Path, web_config: dict, timeout: float) -> WebResult:
     """Optionally start a server, drive the browser, run checks, tear down."""
+    url = web_config["url"]
+    if not str(url).startswith(("http://", "https://", "data:")):
+        return WebResult(
+            SKIP, reason=f"web verify url must use http/https/data scheme: {url!r}"
+        )
+
     sync_playwright = _playwright_sync()
     if sync_playwright is None:
         return WebResult(SKIP, reason="playwright not installed")
-
-    url = web_config["url"]
-    if not str(url).startswith(("http://", "https://")):
-        return WebResult(
-            SKIP, reason=f"web verify url must use http/https scheme: {url!r}"
-        )
     serve = web_config.get("serve")
     ready = web_config.get("ready")
     checks = list(web_config.get("checks") or [])

@@ -142,6 +142,23 @@ def test_skip_when_playwright_unavailable(monkeypatch, tmp_path):
     assert "playwright" in res.reason
 
 
+def test_skip_when_unsupported_scheme(monkeypatch, tmp_path):
+    monkeypatch.setattr(web_verify, "_playwright_sync", lambda: None)
+    res = run_web_gate(tmp_path, {"url": "ftp://x", "checks": []})
+    assert res.status == SKIP
+    assert "scheme" in res.reason
+
+
+def test_data_url_not_skipped_by_scheme_check(monkeypatch, tmp_path):
+    # data: URLs are self-contained (no server needed) and must not be rejected
+    # by the scheme guard — only by playwright availability or a real browser error.
+    monkeypatch.setattr(web_verify, "_playwright_sync", lambda: None)
+    res = run_web_gate(tmp_path, {"url": "data:text/html,<h1>hi</h1>", "checks": []})
+    assert "scheme" not in (res.reason or ""), (
+        f"data: URL rejected by scheme check: {res.reason!r}"
+    )
+
+
 # --- GREEN ------------------------------------------------------------------
 
 
