@@ -23,8 +23,8 @@ from misterdev.core.execution.infra import infra_failure
 # Ordered most-specific → most-generic; also the tie-break order for the top
 # obstacle (an earlier, more-specific category wins an equal count).
 CATEGORIES: Tuple[str, ...] = (
-    "infra",
     "blocked-external",
+    "infra",
     "merge-conflict",
     "acceptance-unmet",
     "genuine-code-failure",

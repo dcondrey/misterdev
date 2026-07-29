@@ -1,6 +1,7 @@
 """The scope-aware tree-sitter symbol graph."""
 
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -48,8 +49,14 @@ class SymbolGraph:
         self.parsers = _get_ts_parsers()
         self.golden_paths = golden_paths or []
         self.cache_path = Path(project_path) / ".orchestrator" / "topography_cache.json"
+        self._mtime_cache: Dict[str, Tuple[float, str]] = {}
+        self._build_lock = threading.RLock()
 
     def build(self):
+        with self._build_lock:
+            self._build_locked()
+
+    def _build_locked(self):
         logger.info(f"Building symbol graph for {self.project_path}")
         self.symbols.clear()
 
@@ -118,6 +125,19 @@ class SymbolGraph:
             rel_path = str(src_file.relative_to(self.project_path))
             live_paths.add(rel_path)
 
+            try:
+                current_mtime = src_file.stat().st_mtime
+            except OSError:
+                current_mtime = None
+
+            cached_mtime, cached_key = self._mtime_cache.get(rel_path, (None, None))
+            if current_mtime is not None and current_mtime == cached_mtime:
+                fast = cache.get(rel_path, cached_key) if cached_key else None
+                if fast is not None:
+                    for sym in fast:
+                        self.symbols[f"{sym.file_path}:{sym.name}"] = sym
+                    continue
+
             # Content-hash key: an edit changes the bytes and so the key, which
             # is the cache-invalidation signal (mtime is never trusted).
             content_bytes = self._read_bytes(src_file)
@@ -131,6 +151,8 @@ class SymbolGraph:
             if cached is not None:
                 for sym in cached:
                     self.symbols[f"{sym.file_path}:{sym.name}"] = sym
+                if current_mtime is not None and key is not None:
+                    self._mtime_cache[rel_path] = (current_mtime, key)
                 continue
 
             file_symbols = self._parse_file(src_file, lang, content_bytes=content_bytes)
@@ -140,6 +162,8 @@ class SymbolGraph:
             # persist a wrong (empty) result under a real file's slot.
             if key is not None:
                 cache.put(rel_path, key, file_symbols)
+                if current_mtime is not None:
+                    self._mtime_cache[rel_path] = (current_mtime, key)
 
         cache.prune(live_paths)
         cache.save()
@@ -185,20 +209,26 @@ class SymbolGraph:
         return parsed
 
     def _dispatch_traverse(self, root: Any, content: bytes, rel_path: str, lang: str):
-        if lang == "rust":
-            self._traverse_rust(root, content, rel_path)
-        elif lang in ("typescript", "tsx", "javascript"):
-            self._traverse_typescript(root, content, rel_path)
-        elif lang == "kotlin":
-            self._traverse_kotlin(root, content, rel_path)
-        elif lang in ("c", "cpp"):
-            self._traverse_clike(root, content, rel_path)
-        elif lang == "swift":
-            self._traverse_swift(root, content, rel_path)
-        elif lang == "csharp":
-            self._traverse_csharp(root, content, rel_path)
-        else:
-            self._traverse_python(root, content, rel_path)
+        try:
+            if lang == "rust":
+                self._traverse_rust(root, content, rel_path)
+            elif lang in ("typescript", "tsx", "javascript"):
+                self._traverse_typescript(root, content, rel_path)
+            elif lang == "kotlin":
+                self._traverse_kotlin(root, content, rel_path)
+            elif lang in ("c", "cpp"):
+                self._traverse_clike(root, content, rel_path)
+            elif lang == "swift":
+                self._traverse_swift(root, content, rel_path)
+            elif lang == "csharp":
+                self._traverse_csharp(root, content, rel_path)
+            else:
+                self._traverse_python(root, content, rel_path)
+        except RecursionError:
+            logger.warning(
+                "Symbol extraction hit recursion limit for %s; result partial.",
+                rel_path,
+            )
 
     def _traverse_python(
         self,
@@ -732,9 +762,13 @@ class SymbolGraph:
         if sym is None:
             return []
         callers: List[str] = []
+        seen: Set[str] = set()
         for caller_key in sym.incoming_calls:
+            if caller_key in seen:
+                continue
+            seen.add(caller_key)
             caller = self.symbols.get(caller_key)
-            if caller and caller.name not in callers:
+            if caller:
                 callers.append(caller.name)
         return callers[:5]
 

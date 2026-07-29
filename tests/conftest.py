@@ -13,6 +13,16 @@ import os
 
 import pytest
 
+from misterdev.llm.client.rate_coordinator import clear as _clear_rate_coordinator
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_coordinator():
+    """Clear global rate-coordinator state between tests to prevent cooldown bleed."""
+    _clear_rate_coordinator()
+    yield
+    _clear_rate_coordinator()
+
 
 @pytest.fixture(autouse=True)
 def _dummy_provider_keys(monkeypatch):

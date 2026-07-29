@@ -78,7 +78,7 @@ def _cs_name(node, content: str) -> str:
             if c.type == "identifier":
                 n = c
                 break
-    return content[n.start_byte : n.end_byte] if n is not None else "?"
+    return content[n.start_byte : n.end_byte] if n is not None else ""
 
 
 def _cs_member_sig(node, content: str) -> str:
@@ -142,8 +142,7 @@ def _walk_csharp_ts(
 
     kind = _TYPE_KINDS.get(t)
     if kind is not None:
-        # Types default to internal; only emit when explicitly public/protected.
-        if not _cs_is_public(node, content):
+        if not _cs_is_public(node, content, implicit_public):
             return
         name = _cs_name(node, content)
         full = f"{parent}.{name}" if parent else name

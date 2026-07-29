@@ -182,9 +182,16 @@ class IntegrationGateMixin:
         suite and still commit. An unparseable post-wave count is left alone (we
         do not revert on a number we can't read).
         """
-        after = self._suite_failures(project, executor, test_cmd, timeout)
+        ok, raw_output = executor._run_command(project, test_cmd, timeout=timeout)
+        if ok:
+            after: Optional[int] = 0
+        else:
+            from misterdev.core.verification.validator import _parse_test_counts
+
+            total, failures = _parse_test_counts(raw_output)
+            after = failures if total > 0 else None
         if after is None:
-            if not self._suite_broken(project, executor, test_cmd, timeout):
+            if not self._looks_like_broken_build(raw_output):
                 return []
             logger.warning(
                 "Integration gate (count): post-wave suite no longer builds/collects "

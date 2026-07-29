@@ -68,8 +68,14 @@ class Project:
         # racing first access cannot each run discovery and double-launch servers.
         self._mcp_lock = threading.Lock()
         self._audit_trail = None
+        self._audit_lock = threading.Lock()
         self._governance_policy = None
         self._governance_built = False
+        self._governance_lock = threading.Lock()
+        self._ledger_lock = threading.Lock()
+        self._selector_lock = threading.Lock()
+        self._cache_lock = threading.Lock()
+        self._ranker_lock = threading.Lock()
         # Topography (symbol graph) is built lazily on first use, not here:
         # every CLI command registers all known projects, and eagerly scanning
         # each one's whole tree just to list/status is wasted work. The executor
@@ -84,28 +90,32 @@ class Project:
     def model_ledger(self):
         """Persistent per-model performance store (lazy, file-backed)."""
         if self._model_ledger is None:
-            from misterdev.core.economics.model_ledger import ModelLedger
-            from pathlib import Path
+            with self._ledger_lock:
+                if self._model_ledger is None:
+                    from misterdev.core.economics.model_ledger import ModelLedger
 
-            self._model_ledger = ModelLedger(
-                self.path / ".orchestrator" / "model_stats.json"
-            )
-            self._model_ledger.seed_from(
-                Path.home() / ".misterdev" / "model_stats.json"
-            )
+                    ledger = ModelLedger(
+                        self.path / ".orchestrator" / "model_stats.json"
+                    )
+                    ledger.seed_from(Path.home() / ".misterdev" / "model_stats.json")
+                    self._model_ledger = ledger
         return self._model_ledger
 
     @property
     def model_selector(self):
         """Ledger-driven model selection policy (lazy)."""
         if self._model_selector is None:
-            from misterdev.core.economics.model_selector import (
-                ModelSelector,
-            )
+            with self._selector_lock:
+                if self._model_selector is None:
+                    from misterdev.core.economics.model_selector import (
+                        ModelSelector,
+                    )
 
-            self._model_selector = ModelSelector(
-                self.config, self.model_ledger, free_models=self._harvest_free_models()
-            )
+                    self._model_selector = ModelSelector(
+                        self.config,
+                        self.model_ledger,
+                        free_models=self._harvest_free_models(),
+                    )
         return self._model_selector
 
     @property
@@ -116,26 +126,29 @@ class Project:
         remembered so topography falls back to arbitrary order without retrying.
         """
         if not self._ranker_built:
-            self._ranker_built = True
-            if get_setting(self.config, "llm", "semantic_retrieval"):
-                from misterdev.core.economics.embeddings import (
-                    EmbeddingCache,
-                    SemanticRanker,
-                )
-                from misterdev.llm.client import create_embedding_client
+            with self._ranker_lock:
+                if not self._ranker_built:
+                    self._ranker_built = True
+                    if get_setting(self.config, "llm", "semantic_retrieval"):
+                        from misterdev.core.economics.embeddings import (
+                            EmbeddingCache,
+                            SemanticRanker,
+                        )
+                        from misterdev.llm.client import create_embedding_client
 
-                weight = get_setting(self.config, "llm", "lexical_weight")
-                embedder = create_embedding_client(self.config)
-                cache = (
-                    EmbeddingCache(
-                        self.path / ".orchestrator" / "embeddings.json", embedder.model
-                    )
-                    if embedder is not None
-                    else None
-                )
-                # Always build a ranker: with no embedder it ranks lexically,
-                # which still beats the arbitrary-order slice.
-                self._semantic_ranker = SemanticRanker(embedder, cache, weight)
+                        weight = get_setting(self.config, "llm", "lexical_weight")
+                        embedder = create_embedding_client(self.config)
+                        cache = (
+                            EmbeddingCache(
+                                self.path / ".orchestrator" / "embeddings.json",
+                                embedder.model,
+                            )
+                            if embedder is not None
+                            else None
+                        )
+                        # Always build a ranker: with no embedder it ranks lexically,
+                        # which still beats the arbitrary-order slice.
+                        self._semantic_ranker = SemanticRanker(embedder, cache, weight)
         return self._semantic_ranker
 
     @property
@@ -261,9 +274,13 @@ class Project:
     def llm_cache(self):
         """Response memoization store, or None when caching is disabled."""
         if self._llm_cache is None and get_setting(self.config, "llm", "cache"):
-            from misterdev.core.economics.llm_cache import LLMCache
+            with self._cache_lock:
+                if self._llm_cache is None and get_setting(self.config, "llm", "cache"):
+                    from misterdev.core.economics.llm_cache import LLMCache
 
-            self._llm_cache = LLMCache(self.path / ".orchestrator" / "llm_cache")
+                    self._llm_cache = LLMCache(
+                        self.path / ".orchestrator" / "llm_cache"
+                    )
         return self._llm_cache
 
     @property
@@ -275,9 +292,11 @@ class Project:
         build. A run that wants it silent leaves the file unread (no behavioral
         effect either way)."""
         if self._audit_trail is None:
-            from misterdev.core.audit import AuditTrail
+            with self._audit_lock:
+                if self._audit_trail is None:
+                    from misterdev.core.audit import AuditTrail
 
-            self._audit_trail = AuditTrail(self.path, enabled=True)
+                    self._audit_trail = AuditTrail(self.path, enabled=True)
         return self._audit_trail
 
     @property
@@ -290,15 +309,17 @@ class Project:
         auto_approve is set). None when orchestrator.governance is false, so the
         command seam stays byte-identical to today."""
         if not self._governance_built:
-            self._governance_built = True
-            from misterdev.core.execution.governance import (
-                policy_from_config,
-            )
+            with self._governance_lock:
+                if not self._governance_built:
+                    from misterdev.core.execution.governance import (
+                        policy_from_config,
+                    )
 
-            policy = policy_from_config(
-                self.config, interactive=False, audit=self.audit_trail
-            )
-            self._governance_policy = policy if policy.enabled else None
+                    policy = policy_from_config(
+                        self.config, interactive=False, audit=self.audit_trail
+                    )
+                    self._governance_policy = policy if policy.enabled else None
+                    self._governance_built = True
         return self._governance_policy
 
     def _harvest_free_models(self) -> list:

@@ -1,7 +1,7 @@
 import re
 
 # Patterns that indicate incomplete or debug code
-BANNED_MARKERS = ("todo!", "FIXME", "HACK", "XXX", "placeholder", "dummy")
+BANNED_MARKERS = ("todo!", "TODO", "FIXME", "HACK", "XXX", "placeholder", "dummy")
 
 # High-signal patterns: a bare substring match is enough to flag a file. Only
 # DISTINCTIVE provider prefixes belong here — a short fragment like "sk_" would

@@ -400,8 +400,78 @@ def _partition(items: list, n: int) -> list:
     return out
 
 
+def _split_oversized_tasks(tasks: list[Task], max_files: int = 20) -> list[Task]:
+    """Split tasks touching more than max_files into chained segments.
+
+    Triggered by file count rather than fan-in; uses -segN suffix to distinguish
+    from keystone -partN splits. Each segment depends on the previous so they
+    execute sequentially and each leave the suite no worse than before.
+    """
+    plans: dict[str, list[Task]] = {}
+    for t in tasks:
+        seen: set = set()
+        files = [
+            f
+            for f in (list(t.files_to_create) + list(t.files_to_modify))
+            if f and not (f in seen or seen.add(f))
+        ]
+        if len(files) <= max_files:
+            continue
+        n_chunks = (len(files) + max_files - 1) // max_files
+        creates = set(t.files_to_create)
+        chunks = _partition(files, n_chunks)
+        subs: list[Task] = []
+        for i, chunk in enumerate(chunks):
+            subs.append(
+                Task(
+                    id=f"{t.id}-seg{i + 1}",
+                    title=(t.title or t.id) + f" (segment {i + 1}/{len(chunks)})",
+                    description=t.description,
+                    acceptance_criteria=t.acceptance_criteria,
+                    files_to_create=[f for f in chunk if f in creates],
+                    files_to_modify=[f for f in chunk if f not in creates],
+                    context_files=list(t.context_files),
+                    dependencies=(
+                        list(t.dependencies) if i == 0 else [f"{t.id}-seg{i}"]
+                    ),
+                    complexity=t.complexity,
+                    category=t.category,
+                    type=t.type,
+                    status="pending",
+                    project_ref=t.project_ref,
+                    processor_data=(
+                        dict(t.processor_data)
+                        if isinstance(t.processor_data, dict)
+                        else {}
+                    ),
+                )
+            )
+        plans[t.id] = subs
+        logger.info(
+            "Task %s touches %d files (> max %d); split into %d segments: %s",
+            t.id,
+            len(files),
+            max_files,
+            len(chunks),
+            [s.id for s in subs],
+        )
+    if not plans:
+        return tasks
+    final_of = {kid: subs[-1].id for kid, subs in plans.items()}
+    result: list[Task] = []
+    for t in tasks:
+        result.extend(plans[t.id] if t.id in plans else [t])
+    for t in result:
+        t.dependencies = [final_of.get(d, d) for d in t.dependencies]
+    return result
+
+
 def split_keystone_tasks(
-    tasks: list[Task], *, fanin_threshold: int = 3, min_units: int = 2
+    tasks: list[Task],
+    *,
+    fanin_threshold: int = 3,
+    min_units: int = 2,
+    completed_ids: frozenset = frozenset(),
 ) -> list[Task]:
     """Proactively split a keystone (high-fan-in) task into chained sub-units.
 
@@ -429,7 +499,11 @@ def split_keystone_tasks(
             for f in (list(t.files_to_create) + list(t.files_to_modify))
             if f and not (f in seen or seen.add(f))
         ]
-        if len(dependents[t.id]) < fanin_threshold or len(files) < min_units:
+        if (
+            t.id in completed_ids
+            or len(dependents[t.id]) < fanin_threshold
+            or len(files) < min_units
+        ):
             continue
         creates = set(t.files_to_create)
         chunks = _partition(files, min_units)
@@ -475,20 +549,58 @@ def split_keystone_tasks(
 
 
 def _add_implicit_dependencies(tasks: list[Task]) -> None:
-    """If task B modifies a file that task A creates, B depends on A."""
-    creates_map: dict[str, str] = {}
+    """If task B modifies a file that task A creates, B depends on A.
+    Also serializes create-create conflicts so the second writer doesn't clobber the first."""
+    creates_map: dict[str, list[str]] = {}
     for t in tasks:
         for f in t.files_to_create:
-            creates_map[f] = t.id
+            creates_map.setdefault(f, []).append(t.id)
+
+    for f, creator_ids in creates_map.items():
+        if len(creator_ids) > 1:
+            for i in range(1, len(creator_ids)):
+                prev_id, curr_id = creator_ids[i - 1], creator_ids[i]
+                task = next((t for t in tasks if t.id == curr_id), None)
+                if task and prev_id not in task.dependencies:
+                    task.dependencies.append(prev_id)
+                    logger.warning(
+                        "Create-create conflict on %s: %s and %s both create it; "
+                        "serialized %s → %s.",
+                        f,
+                        prev_id,
+                        curr_id,
+                        curr_id,
+                        prev_id,
+                    )
 
     for t in tasks:
         for f in t.files_to_modify:
-            creator_id = creates_map.get(f)
-            if creator_id and creator_id != t.id and creator_id not in t.dependencies:
-                t.dependencies.append(creator_id)
-                logger.info(
-                    f"Implicit dependency: {t.id} depends on {creator_id} (file {f})"
-                )
+            for creator_id in creates_map.get(f, []):
+                if creator_id != t.id and creator_id not in t.dependencies:
+                    t.dependencies.append(creator_id)
+                    logger.info(
+                        f"Implicit dependency: {t.id} depends on {creator_id} (file {f})"
+                    )
+
+
+def _find_cycle(cyclic_tasks: list[Task], task_map: dict[str, Task]) -> list[str]:
+    cyclic_ids = {t.id for t in cyclic_tasks}
+    for start in cyclic_tasks:
+        path = [start.id]
+        seen = {start.id}
+        tid = start.id
+        while True:
+            deps = [d for d in task_map[tid].dependencies if d in cyclic_ids]
+            if not deps:
+                break
+            nxt = deps[0]
+            if nxt in seen:
+                idx = path.index(nxt)
+                return path[idx:] + [nxt]
+            path.append(nxt)
+            seen.add(nxt)
+            tid = nxt
+    return []
 
 
 def topological_sort(tasks: list[Task]) -> list[Task]:
@@ -521,9 +633,11 @@ def topological_sort(tasks: list[Task]) -> list[Task]:
             counter += 1
 
     result = []
+    visited: set[str] = set()
     while heap:
         _, _, tid = heapq.heappop(heap)
         result.append(task_map[tid])
+        visited.add(tid)
         for dep_tid in dependents[tid]:
             in_degree[dep_tid] -= 1
             if in_degree[dep_tid] == 0:
@@ -531,11 +645,13 @@ def topological_sort(tasks: list[Task]) -> list[Task]:
                 counter += 1
 
     if len(result) != len(tasks):
-        # Cycle detected; append remaining tasks anyway with a warning
-        remaining = [t for t in tasks if t.id not in {r.id for r in result}]
+        remaining = [t for t in tasks if t.id not in visited]
+        cycle_path = _find_cycle(remaining, task_map)
+        cycle_desc = (
+            " → ".join(cycle_path) if cycle_path else str([t.id for t in remaining])
+        )
         logger.warning(
-            f"Dependency cycle detected involving tasks: "
-            f"{[t.id for t in remaining]}. Appending in category order."
+            f"Dependency cycle detected: {cycle_desc}. Appending in category order."
         )
         remaining.sort(key=lambda t: CATEGORY_ORDER.get(t.category, 99))
         result.extend(remaining)

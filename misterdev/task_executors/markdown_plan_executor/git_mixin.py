@@ -137,8 +137,12 @@ class GitMixin:
             if ok:
                 self._git(project, f"git branch -d {shlex.quote(branch_name)}")
                 logger.info(f"Merged and cleaned up branch: {branch_name}")
+                return True
             else:
                 logger.error(f"Merge failed for {branch_name}: {output}")
+                self._git(project, "git merge --abort")
+                return False
+        return True
 
     def _repo_relative(self, project: Project, path: Optional[str]) -> Optional[str]:
         """Repo-relative form of a path inside the project, else None.
@@ -188,7 +192,12 @@ class GitMixin:
         """
         if branch_name and base_branch:
             self._git(project, "git reset --hard")
-            self._git(project, f"git checkout {shlex.quote(base_branch)}")
+            ok, out = self._git(project, f"git checkout {shlex.quote(base_branch)}")
+            if not ok:
+                logger.error(
+                    f"Failed to checkout base branch {base_branch!r} during abort; "
+                    f"HEAD may be on wrong branch: {out}"
+                )
             self._git(project, f"git branch -D {shlex.quote(branch_name)}")
             logger.info(f"Aborted and deleted branch: {branch_name}")
             self._clean_task_orphans(project, untracked_before)

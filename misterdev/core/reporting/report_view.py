@@ -143,9 +143,12 @@ def latest_report(reports_dir: Path) -> Optional[Dict[str, Any]]:
 
 def collect(project_path: Path) -> Dict[str, Any]:
     """Collect the audit, model, and latest-report summaries for a project."""
+    from misterdev.core.reporting.metrics import summarize_metrics
+
     root = Path(project_path) / _ARTIFACT_DIR
     return {
         "audit": summarize_audit(root / "audit.jsonl"),
         "models": summarize_models(root / "model_stats.json"),
         "latest_report": latest_report(root / "reports"),
+        "metrics": summarize_metrics(project_path),
     }

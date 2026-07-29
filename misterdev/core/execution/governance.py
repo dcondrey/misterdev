@@ -25,8 +25,10 @@ command would block real builds, so patterns are anchored to the destructive
 subcommands of known tools), never to incidental substrings.
 """
 
+import os
 import re
 import shlex
+import threading
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
@@ -225,6 +227,13 @@ def _classify_segment(tokens: List[str]) -> Optional[str]:
         return "dd to a device overwrites a disk"
     if cmd == "mkfs" or cmd.startswith("mkfs."):
         return "mkfs formats a filesystem"
+    if cmd in ("psql", "mysql", "sqlite3", "mariadb"):
+        for i, t in enumerate(rest):
+            if t in ("-c", "-e", "--command") and i + 1 < len(rest):
+                sql = rest[i + 1].strip()
+                if re.match(r"(?:drop|truncate|delete\s+from)\b", sql):
+                    return f"SQL {sql.split()[0].upper()} via {cmd} -c"
+                break
     return None
 
 
@@ -294,6 +303,7 @@ class GovernancePolicy:
     audit: Optional["object"] = None  # AuditTrail-like; duck-typed to avoid a cycle
     prompt: Optional[Callable[[str, str], bool]] = None
     escalations: List[dict] = field(default_factory=list)
+    _lock: object = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def classify(self, command: str) -> Tuple[bool, str]:
         return is_risky(command, self.approval_required)
@@ -354,9 +364,10 @@ class GovernancePolicy:
         escalated: bool,
     ) -> None:
         if escalated:
-            self.escalations.append(
-                {"command": command, "action": action, "reason": reason}
-            )
+            with self._lock:
+                self.escalations.append(
+                    {"command": command, "action": action, "reason": reason}
+                )
         if self.audit is not None:
             try:
                 self.audit.record(
@@ -393,6 +404,12 @@ def policy_from_config(
     if not isinstance(approval_required, list):
         approval_required = []
     auto_approve = bool(gov.get("auto_approve", False))
+    if not enabled and os.environ.get("MISTERDEV_MCP_GOVERNANCE") == "auto_approve":
+        enabled = True
+        auto_approve = True
+    elif os.environ.get("MISTERDEV_MCP_GOVERNANCE") == "off":
+        enabled = False
+        auto_approve = False
     return GovernancePolicy(
         enabled=enabled,
         interactive=interactive,

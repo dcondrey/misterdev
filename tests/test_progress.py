@@ -114,3 +114,42 @@ def test_summary():
         pt.mark_failed("T-002")
         assert "1 completed" in pt.summary()
         assert "1 failed" in pt.summary()
+
+
+def test_record_split_persists_and_needs_rerun_respects_parent():
+    with tempfile.TemporaryDirectory() as td:
+        pt = ProgressTracker(Path(td))
+        pt.mark_completed("T-5")
+        pt.record_split("T-5", ["T-5-seg1", "T-5-seg2"])
+        # A segment whose parent is completed should not need re-run.
+        assert not pt.needs_rerun("T-5-seg1", "anyhash")
+        assert not pt.needs_rerun("T-5-seg2", "anyhash")
+        # An unrelated task still needs a run.
+        assert pt.needs_rerun("T-6", "anyhash")
+        # Persists across reload.
+        pt2 = ProgressTracker(Path(td))
+        assert not pt2.needs_rerun("T-5-seg1", "anyhash")
+
+
+def test_record_conflict_accumulates_and_persists():
+    with tempfile.TemporaryDirectory() as td:
+        pt = ProgressTracker(Path(td))
+        assert pt.conflict_count("T-1", "T-2") == 0
+        pt.record_conflict("T-1", "T-2")
+        assert pt.conflict_count("T-1", "T-2") == 1
+        pt.record_conflict("T-2", "T-1")  # commutative
+        assert pt.conflict_count("T-1", "T-2") == 2
+        # Persists across reload.
+        pt2 = ProgressTracker(Path(td))
+        assert pt2.conflict_count("T-1", "T-2") == 2
+
+
+def test_reset_clears_splits_and_conflicts():
+    with tempfile.TemporaryDirectory() as td:
+        pt = ProgressTracker(Path(td))
+        pt.mark_completed("T-1")
+        pt.record_split("T-1", ["T-1-seg1"])
+        pt.record_conflict("T-1", "T-2")
+        pt.reset()
+        assert not pt.splits
+        assert not pt.conflict_counts

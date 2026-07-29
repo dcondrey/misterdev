@@ -132,13 +132,14 @@ def _extract_generics(text: str) -> str:
 
 
 def _extract_impl_name(line: str) -> str:
-    """Extract type name from 'impl<T> Foo<T> for Bar'."""
-    # Remove "impl" and optional generics
+    """Extract type name from 'impl<T> Foo<T>' or 'impl<T> Display for Foo<T>'."""
     rest = line[4:].strip()
     if rest.startswith("<"):
         close = rest.find(">")
         if close >= 0:
             rest = rest[close + 1 :].strip()
+    if " for " in rest:
+        rest = rest.split(" for ", 1)[1].strip()
     return _extract_name(rest)
 
 

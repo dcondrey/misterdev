@@ -127,6 +127,12 @@ class BuildReport:
             "llm_cost": self.llm_cost,
             "degraded_subsystems": list(self.degraded_subsystems),
             "goal_gaps": list(self.goal_gaps),
+            "cost_by_task": dict(self.cost_by_task),
+            "task_models": {
+                t.id: (getattr(t, "processor_data", None) or {}).get("model_used", "")
+                for t in self.completed_tasks
+                if (getattr(t, "processor_data", None) or {}).get("model_used")
+            },
         }
 
     def save(self, project_path: Path) -> Optional[Path]:
@@ -135,6 +141,22 @@ class BuildReport:
         Failure to write a report must never abort a build, so write errors are
         logged and swallowed rather than propagated.
         """
+        from misterdev.core.reporting.metrics import append_build_metrics
+
+        start = self.start_time or datetime.now(timezone.utc)
+        end = self.end_time or start
+        duration = (end - start).total_seconds()
+        append_build_metrics(
+            project_path,
+            goal=getattr(self, "goal", ""),
+            tasks_completed=len(self.completed_tasks),
+            tasks_failed=len(self.failed_tasks),
+            tasks_deferred=len(self.deferred_tasks),
+            llm_cost=self.llm_cost,
+            llm_calls=self.llm_calls,
+            duration_seconds=duration,
+            validation_passed=self.validation_passed,
+        )
         try:
             reports_dir = Path(project_path) / ".orchestrator" / "reports"
             reports_dir.mkdir(parents=True, exist_ok=True)
@@ -294,12 +316,16 @@ class BuildReport:
         # Completed tasks
         if self.completed_tasks:
             lines.append("### Completed Tasks")
-            lines.append("| # | ID | Title | Attempts |")
-            lines.append("|---|------|-------|----------|")
+            lines.append("| # | ID | Title | Attempts | Model |")
+            lines.append("|---|------|-------|----------|-------|")
             for i, t in enumerate(self.completed_tasks, 1):
                 attempts = len(getattr(t, "execution_history", None) or []) or 1
+                model_full = (getattr(t, "processor_data", None) or {}).get(
+                    "model_used", ""
+                )
+                model_label = model_full.rsplit("/", 1)[-1] if model_full else "—"
                 lines.append(
-                    f"| {i} | {t.id} | {t.title or t.description[:60]} | {attempts} |"
+                    f"| {i} | {t.id} | {t.title or t.description[:60]} | {attempts} | {model_label} |"
                 )
             lines.append("")
 

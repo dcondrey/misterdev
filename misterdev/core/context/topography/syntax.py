@@ -23,12 +23,12 @@ _SYNTAX_CHECK_LANGS = {
 
 def _first_error_node(node: Any):
     """Pre-order search for the first ERROR or MISSING node, or None."""
-    if node.type == "ERROR" or node.is_missing:
-        return node
-    for child in node.children:
-        found = _first_error_node(child)
-        if found is not None:
-            return found
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if current.type == "ERROR" or current.is_missing:
+            return current
+        stack.extend(reversed(current.children))
     return None
 
 

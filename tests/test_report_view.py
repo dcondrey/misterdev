@@ -112,7 +112,7 @@ def test_collect_combines_all_sources():
             json.dumps({"type": "command", "ok": True}), encoding="utf-8"
         )
         out = collect(td)
-        assert set(out) == {"audit", "models", "latest_report"}
+        assert set(out) == {"audit", "models", "latest_report", "metrics"}
         assert out["audit"]["total_events"] == 1
         assert out["models"] == []
         assert out["latest_report"] is None

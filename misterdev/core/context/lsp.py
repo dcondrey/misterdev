@@ -11,6 +11,7 @@ is enabled, and even then a timeout silently skips the check rather than failing
 
 from pathlib import Path
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 from misterdev.core.execution.bounded import run_bounded
 from misterdev.logging_setup import setup_logger
@@ -179,7 +180,9 @@ def _to_errors(captured: List[dict]) -> List[dict]:
                 line = diag.get("range", {}).get("start", {}).get("line", 0) + 1
                 errors.append(
                     {
-                        "file": uri.replace("file://", ""),
+                        "file": urlparse(uri).path
+                        if uri.startswith("file://")
+                        else uri,
                         "line": line,
                         "message": diag.get("message", ""),
                     }

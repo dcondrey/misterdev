@@ -105,7 +105,6 @@ _INDICATORS: List[Tuple[str, List[str]]] = [
             "wrong number of",
             "arguments were supplied",
             "the trait bound",
-            "is not satisfied",
             # swift / clang
             "cannot convert value of type",
             "cannot initialize",
@@ -151,12 +150,9 @@ _INDICATORS: List[Tuple[str, List[str]]] = [
             "assert_ne",
             "panicked at",
             "test result: FAILED",
-            "left:",
-            "right:",
             # XCTest / ctest
             "XCTAssert",
             "XCTFail",
-            "failed (",
             "tests failed out of",
         ],
     ),

@@ -2517,7 +2517,7 @@ def test_parse_test_counts_pytest_and_cargo():
     assert _parse_test_counts("3 failed, 317 passed in 53s") == (320, 3)
     assert _parse_test_counts("5 passed, 2 skipped") == (5, 0)
     assert _parse_test_counts("test result: ok. 42 passed; 0 failed") == (42, 0)
-    assert _parse_test_counts("no recognizable summary") == (0, 0)
+    assert _parse_test_counts("no recognizable summary") == (-1, -1)
 
 
 def test_run_health_check_populates_test_count():

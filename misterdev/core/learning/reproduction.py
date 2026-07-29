@@ -108,9 +108,38 @@ class ReproductionCorpus:
         except (json.JSONDecodeError, OSError):
             return 0
 
+    def _load_with_run(self):
+        if not self.path.exists():
+            return {}, 0
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}, 0
+        run = int(raw.get("run", 0)) if isinstance(raw, dict) else 0
+        cases: Dict[str, Case] = {}
+        for item in raw.get("cases", []) if isinstance(raw, dict) else []:
+            if isinstance(item, dict) and item.get("id"):
+                cases[str(item["id"])] = Case(
+                    id=str(item["id"]),
+                    language=str(item.get("language", "unknown")),
+                    category=str(item.get("category", "")),
+                    resolved=bool(item.get("resolved", True)),
+                    runs=int(item.get("runs", 0)),
+                    fail_streak=int(item.get("fail_streak", 0)),
+                    pass_streak=int(item.get("pass_streak", 0)),
+                    first_run=int(item.get("first_run", 0)),
+                    last_run=int(item.get("last_run", 0)),
+                )
+        return cases, run
+
     def _save(self, cases: Dict[str, Case], run: int) -> None:
-        # Evict by staleness if over the runaway cap: oldest last_run first.
-        ordered = sorted(cases.values(), key=lambda c: c.last_run, reverse=True)
+        # Evict low-value cases first: a persistently-failing case (high
+        # fail_streak) is worth more corpus slots than a stale passing one.
+        # Primary key: fail_streak (desc) so high-streak targets survive longest.
+        # Secondary key: last_run (desc) breaks streak ties by recency.
+        ordered = sorted(
+            cases.values(), key=lambda c: (c.fail_streak, c.last_run), reverse=True
+        )
         kept = ordered[:_MAX_CASES]
         payload = {
             "run": run,
@@ -128,8 +157,8 @@ class ReproductionCorpus:
         left unchanged rather than corrupted.
         """
         try:
-            cases = self._load()
-            run = self._run_counter() + 1
+            cases, _prior_run = self._load_with_run()
+            run = _prior_run + 1
             for r in results:
                 cid = str(getattr(r, "name", "") or getattr(r, "id", "") or "")
                 if not cid:

@@ -24,6 +24,7 @@ rung. The rung choice itself is a pure function of that count, so the whole
 policy is unit-testable in isolation.
 """
 
+from misterdev.core.execution.blocker import blocked_reason
 from misterdev.core.execution.infra import infra_failure
 
 # In escalating order; index doubles as the rung's strength.
@@ -33,10 +34,11 @@ RUNGS = ("normal", "widen_context", "full_rewrite", "stronger_model", "decompose
 def should_count_failure(output: str) -> bool:
     """True when a gate failure is a real CODE failure that advances the ladder.
 
-    An environment/infra fault (timeout, locked store, OOM) self-heals and is not
-    the code's doing, so it returns False and the ladder holds where it is.
+    An environment/infra fault (timeout, locked store, OOM) or a blocked request
+    (auth failure, quota exhausted) self-heals or is unretriable, so it returns
+    False and the ladder holds where it is.
     """
-    return infra_failure(output) is None
+    return infra_failure(output) is None and blocked_reason(output) is None
 
 
 def choose_rung(

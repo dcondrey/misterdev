@@ -143,8 +143,9 @@ def classify(outcomes: List[RunOutcome]) -> FlakyVerdict:
                     + (f"; quarantined {len(quarantined)} flaky" if quarantined else "")
                 ),
             )
+        any_passed = any(o.passed for o in outcomes)
         return FlakyVerdict(
-            is_real_failure=False,
+            is_real_failure=not any_passed,
             quarantined=quarantined,
             reason=(
                 f"no test failed in every run; {len(quarantined)} failed "

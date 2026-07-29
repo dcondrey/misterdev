@@ -207,7 +207,9 @@ def _emit_decl(decl, content: str, symbols: List[Dict[str, str]], prefix: str):
 
     if t in ("internal_module", "module"):
         name = _decl_name(decl, content) or "default"
-        body = _child_of_type(decl, "statement_block")
+        body = _child_of_type(decl, "statement_block") or _child_of_type(
+            decl, "module_block"
+        )
         end = body.start_byte if body is not None else decl.end_byte
         keyword = "namespace" if t == "internal_module" else "module"
         symbols.append(

@@ -142,3 +142,57 @@ def test_destructive_verb_still_confirms(monkeypatch):
     )
     assert confirmed, "destructive verb must prompt for confirmation even on fast path"
     assert "build" not in _FakeOrch.calls
+
+
+def test_normalized_route_matches_uppercase_command():
+    intent = nl_cli._normalized_route("RUN /some/path")
+    assert intent is not None
+    assert intent["command"] == "run"
+    assert intent["path"] == "/some/path"
+
+
+def test_normalized_route_extracts_build_goal():
+    intent = nl_cli._normalized_route("BUILD add user authentication")
+    assert intent is not None
+    assert intent["command"] == "build"
+    assert intent["goal"] == "add user authentication"
+    assert intent["path"] == "."
+
+
+def test_normalized_route_returns_none_for_unknown_verb():
+    assert nl_cli._normalized_route("deploy the service") is None
+
+
+def test_normalized_route_used_before_llm(monkeypatch):
+    called = []
+    monkeypatch.setattr(
+        nl_cli, "parse_intent", lambda req, client: called.append(1) or {}
+    )
+    orch = _FakeOrch()
+    _FakeOrch.calls = {}
+    nl_cli.route("RUN .", orch, confirm=lambda _p: "y")
+    assert not called, "LLM must not be called when normalized route matches"
+
+
+def test_parse_intent_retries_on_malformed_json():
+    attempts = []
+
+    class _BadThenGoodClient:
+        def generate_code(self, prompt, system):
+            attempts.append(1)
+            if len(attempts) < 2:
+                return "not json at all"
+            return '{"command": "status", "path": "."}'
+
+    intent = nl_cli.parse_intent("show status", _BadThenGoodClient())
+    assert intent["command"] == "status"
+    assert len(attempts) == 2
+
+
+def test_parse_intent_exhausts_retries_returns_empty():
+    class _AlwaysBadClient:
+        def generate_code(self, prompt, system):
+            return "garbage"
+
+    intent = nl_cli.parse_intent("do something", _AlwaysBadClient(), _retries=1)
+    assert intent == {}

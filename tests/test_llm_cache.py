@@ -18,7 +18,7 @@ def test_miss_returns_none(cache):
 
 
 def test_put_then_get_roundtrip(cache):
-    cache.put("sys", "prompt", "the output", model="free/x", timestamp=1.0)
+    cache.put("sys", "prompt", "the output", model="free/x")
     assert cache.get("sys", "prompt") == "the output"
 
 
@@ -57,7 +57,7 @@ def _count_entries(cache):
 
 def test_eviction_caps_entry_count():
     with tempfile.TemporaryDirectory() as d:
-        cache = LLMCache(Path(d) / "c", max_entries=5)
+        cache = LLMCache(Path(d) / "c", max_entries=5, max_age_days=None)
         for i in range(20):
             # mtime granularity is coarse; stamp each file so eviction order is
             # well-defined regardless of clock resolution.
@@ -69,7 +69,7 @@ def test_eviction_caps_entry_count():
 
 def test_eviction_drops_oldest_first():
     with tempfile.TemporaryDirectory() as d:
-        cache = LLMCache(Path(d) / "c", max_entries=3)
+        cache = LLMCache(Path(d) / "c", max_entries=3, max_age_days=None)
         for i in range(6):
             cache.put("sys", f"p{i}", f"o{i}")
             os.utime(cache._path(cache._key("sys", f"p{i}")), (i, i))

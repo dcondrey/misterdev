@@ -14,7 +14,7 @@ class OpenRouterEmbeddingClient:
 
     def __init__(self, config: dict, model: str):
         llm_config = config.get("llm", {})
-        self.client, self.api_key = _openrouter_sdk(llm_config)
+        self.client, _ = _openrouter_sdk(llm_config)
         self.model = model
         self.dimensions = get_section_setting("llm", llm_config, "embedding_dimensions")
         self.data_collection = _deny_unless_training_allowed(llm_config)

@@ -63,6 +63,9 @@ _EXT_TO_KEY = {
     ".kt": "kotlin",
     ".kts": "kotlin",
     ".ts": "typescript",
+    ".js": "typescript",
+    ".mjs": "typescript",
+    ".cjs": "typescript",
     ".jsx": "react",
     ".tsx": "react",
     ".cpp": "cpp",
@@ -111,12 +114,17 @@ def guidance_for_files(
     Rust rules); falls back to the project language. Returns "" when nothing
     matches, so the caller can inject unconditionally.
     """
+    seen: set = set()
+    parts: list = []
     for path in target_files or []:
         key = _EXT_TO_KEY.get(Path(path).suffix.lower())
-        if key:
+        if key and key not in seen:
+            seen.add(key)
             resolved = _resolve(key, context)
             if resolved:
-                return resolved
+                parts.append(resolved)
+    if parts:
+        return "\n\n".join(parts)
     return get_language_guidance(fallback_language, context)
 
 

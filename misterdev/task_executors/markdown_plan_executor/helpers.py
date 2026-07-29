@@ -458,7 +458,10 @@ def _extract_acceptance_command(criteria: str) -> Optional[str]:
     # Cut at the first sentence boundary so a trailing English sentence on the
     # same line doesn't get fed to the shell.
     cmd = re.split(r"(?<=\S)[.;]\s+[A-Z]", cmd, maxsplit=1)[0].strip()
-    return _trim_acceptance_command(cmd)
+    result = _trim_acceptance_command(cmd)
+    if result and re.search(r"[;&|`$\n\r]", result):
+        return None
+    return result
 
 
 def _test_metrics(content: str) -> Tuple[int, int, int]:

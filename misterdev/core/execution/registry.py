@@ -92,7 +92,9 @@ class ProjectRegistry:
         yaml_path = path / "project.yaml"
         if not yaml_path.exists():
             try:
-                yaml_path.write_text(f"name: {path.name}\n", encoding="utf-8")
+                yaml_path.write_text(
+                    f"name: {json.dumps(path.name)}\n", encoding="utf-8"
+                )
                 logger.info(f"Created minimal project.yaml at {yaml_path}")
             except OSError as e:
                 logger.warning(f"Could not write project.yaml at {yaml_path}: {e}")

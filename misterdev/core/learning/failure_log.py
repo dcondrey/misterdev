@@ -29,6 +29,7 @@ failure is swallowed. A learning stream must never be able to fail a build.
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -248,25 +249,42 @@ class FailureLog:
         and swallowed so a build is never failed by its own bookkeeping.
         """
         try:
-            # One read: derive the next run number and the existing rows together
-            # (avoids a second full parse via next_run()).
-            existing = self._load_raw()
-            run = max((int(r.get("run", 0)) for r in existing), default=0) + 1
-            records = [
-                r for r in (FailureRecord.from_task(t, run) for t in failed_tasks) if r
-            ]
-            if not records:
-                return 0
-            # Bound the file: keep the most recent _MAX_RECORDS (tail), since
-            # recency decay makes older records worthless to attribution anyway.
-            combined = (existing + [asdict_record(r) for r in records])[-_MAX_RECORDS:]
-            atomic_write(
-                self.path,
-                "\n".join(json.dumps(row, ensure_ascii=False) for row in combined)
-                + "\n",
-            )
-            logger.info(f"Failure log: recorded {len(records)} failure(s) (run {run}).")
-            return len(records)
+            lock_path = self.path.with_suffix(".lock")
+            lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o600)
+            try:
+                try:
+                    import fcntl
+
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                except (ImportError, OSError):
+                    pass
+                # One read: derive the next run number and the existing rows together
+                # (avoids a second full parse via next_run()).
+                existing = self._load_raw()
+                run = max((int(r.get("run", 0)) for r in existing), default=0) + 1
+                records = [
+                    r
+                    for r in (FailureRecord.from_task(t, run) for t in failed_tasks)
+                    if r
+                ]
+                if not records:
+                    return 0
+                # Bound the file: keep the most recent _MAX_RECORDS (tail), since
+                # recency decay makes older records worthless to attribution anyway.
+                combined = (existing + [asdict_record(r) for r in records])[
+                    -_MAX_RECORDS:
+                ]
+                atomic_write(
+                    self.path,
+                    "\n".join(json.dumps(row, ensure_ascii=False) for row in combined)
+                    + "\n",
+                )
+                logger.info(
+                    f"Failure log: recorded {len(records)} failure(s) (run {run})."
+                )
+                return len(records)
+            finally:
+                os.close(lock_fd)
         except (OSError, ValueError) as e:
             logger.warning(f"Failure log write failed (non-fatal): {e}")
             return 0

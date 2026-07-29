@@ -425,3 +425,25 @@ def test_failed_tasks_table_includes_reason(tmp_path):
     rep.failed_tasks.append(t)
     md = rep.to_markdown() if hasattr(rep, "to_markdown") else rep.render()
     assert "Build failed: cannot find module" in md and "Reason" in md
+
+
+def test_to_dict_includes_cost_by_task_and_task_models():
+    r = _make_report()
+    t = Task(id="T-1", description="x", project_ref="p")
+    t.processor_data["model_used"] = "provider/claude-sonnet"
+    r.completed_tasks.append(t)
+    r.cost_by_task = {"T-1": 0.012}
+    d = r.to_dict()
+    assert d["cost_by_task"] == {"T-1": 0.012}
+    assert d["task_models"]["T-1"] == "provider/claude-sonnet"
+
+
+def test_completed_tasks_table_includes_model_column():
+    r = _make_report()
+    t = Task(id="T-1", title="do work", description="x", project_ref="p")
+    t.processor_data["model_used"] = "provider/my-model"
+    r.completed_tasks.append(t)
+    r.finalize()
+    md = r.to_markdown()
+    assert "Model" in md
+    assert "my-model" in md

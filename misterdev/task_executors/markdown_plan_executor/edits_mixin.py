@@ -46,13 +46,22 @@ class EditsMixin:
         golden_paths = get_setting(project.config, "orchestrator", "golden_paths")
         valid: Dict[str, str] = {}
         for path, content in edits.items():
-            if ".." in Path(path).parts or Path(path).is_absolute():
-                logger.error(f"Rejected edit with unsafe path: {path}")
+            try:
+                _p = Path(path)
+                if _p.parts and (".." in _p.parts or _p.is_absolute()):
+                    logger.error(f"Rejected edit with unsafe path: {path}")
+                    continue
+            except (ValueError, OSError):
+                logger.error(f"Rejected edit with malformed path: {path!r}")
                 continue
             if _is_golden_path(path, golden_paths):
                 logger.error(f"Rejected edit to protected golden file: {path}")
                 continue
-            full = (project.path / path).resolve()
+            try:
+                full = (project.path / path).resolve()
+            except (ValueError, OSError):
+                logger.error(f"Rejected edit with unresolvable path: {path!r}")
+                continue
             try:
                 inside = full.is_relative_to(project_root)
             except ValueError:
@@ -341,6 +350,12 @@ class EditsMixin:
             by_path.setdefault(edit.path, []).append(edit)
         resolved: Dict[str, str] = {}
         for path, hunks in by_path.items():
+            try:
+                _p = Path(path)
+                if ".." in _p.parts or _p.is_absolute():
+                    return {}, f"Unsafe path rejected: {path!r}"
+            except (ValueError, OSError):
+                return {}, f"Malformed path rejected: {path!r}"
             full_path = project.path / path
             try:
                 original = (

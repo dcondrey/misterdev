@@ -2,7 +2,9 @@ from misterdev.core.models import Task
 from misterdev.core.planning.decomposer import (
     topological_sort,
     _add_implicit_dependencies,
+    _find_cycle,
     _parse_tasks,
+    _split_oversized_tasks,
     format_plan,
 )
 from misterdev.core.modes import BuildMode
@@ -301,3 +303,101 @@ def test_cap_noop_under_limit_preserves_deps():
     ]
     assert _cap_tasks(tasks, 5) is tasks
     assert tasks[0].dependencies == ["B"]
+
+
+def _oversized_task(tid, n_modify=0, n_create=0, deps=None):
+    return Task(
+        id=tid,
+        description=tid,
+        project_ref=".",
+        dependencies=list(deps or []),
+        files_to_modify=[f"src/file_{i}.py" for i in range(n_modify)],
+        files_to_create=[f"src/new_{i}.py" for i in range(n_create)],
+    )
+
+
+def test_split_oversized_tasks_noop_under_limit():
+    tasks = [_oversized_task("T-1", n_modify=5)]
+    result = _split_oversized_tasks(tasks, max_files=10)
+    assert result is tasks
+
+
+def test_split_oversized_tasks_partitions_files():
+    tasks = [_oversized_task("T-1", n_modify=25)]
+    result = _split_oversized_tasks(tasks, max_files=10)
+    # Original task replaced by segments
+    assert all(t.id != "T-1" for t in result)
+    assert all(t.id.startswith("T-1-seg") for t in result)
+    # All original files covered exactly once across segments
+    original_files = set(tasks[0].files_to_modify)
+    covered = set()
+    for t in result:
+        covered.update(t.files_to_modify + t.files_to_create)
+    assert covered == original_files
+    # Each segment within its limit
+    for t in result:
+        assert len(t.files_to_modify) + len(t.files_to_create) <= 10
+
+
+def test_split_oversized_tasks_chains_segments():
+    tasks = [_oversized_task("T-1", n_modify=25)]
+    result = _split_oversized_tasks(tasks, max_files=10)
+    # First segment inherits original deps; each subsequent depends on the previous
+    assert result[0].dependencies == []
+    for i in range(1, len(result)):
+        assert result[i].dependencies == [result[i - 1].id]
+
+
+def test_split_oversized_tasks_rewires_dependents():
+    tasks = [
+        _oversized_task("T-1", n_modify=25),
+        _oversized_task("T-2", deps=["T-1"]),
+    ]
+    result = _split_oversized_tasks(tasks, max_files=10)
+    t2 = next(t for t in result if t.id == "T-2")
+    # T-2 should now depend on the LAST segment of T-1
+    last_seg = sorted(t.id for t in result if t.id.startswith("T-1-seg"))[-1]
+    assert last_seg in t2.dependencies
+    assert "T-1" not in t2.dependencies
+
+
+def test_add_implicit_dependencies_create_create_conflict():
+    # Two tasks both declare they CREATE the same file; the second must depend on the first.
+    tasks = [
+        _task("T-1", files_create=["shared.py"]),
+        _task("T-2", files_create=["shared.py"]),
+    ]
+    _add_implicit_dependencies(tasks)
+    assert "T-1" in tasks[1].dependencies
+
+
+def test_add_implicit_dependencies_no_self_dep():
+    # A task that both creates AND modifies a file must not add itself as a dep.
+    tasks = [_task("T-1", files_create=["f.py"], files_modify=["f.py"])]
+    _add_implicit_dependencies(tasks)
+    assert "T-1" not in tasks[0].dependencies
+
+
+def test_find_cycle_returns_edge_path():
+    tasks = [
+        _task("A", deps=["B"]),
+        _task("B", deps=["C"]),
+        _task("C", deps=["A"]),
+    ]
+    task_map = {t.id: t for t in tasks}
+    path = _find_cycle(tasks, task_map)
+    assert len(path) >= 2
+    # Path must form a cycle: last element equals first
+    assert path[0] == path[-1]
+    # All intermediate hops are real edges
+    for i in range(len(path) - 1):
+        assert path[i + 1] in task_map[path[i]].dependencies
+
+
+def test_find_cycle_returns_empty_for_dag():
+    tasks = [
+        _task("A", deps=["B"]),
+        _task("B"),
+    ]
+    task_map = {t.id: t for t in tasks}
+    assert _find_cycle(tasks, task_map) == []

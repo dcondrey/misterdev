@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from misterdev.logging_setup import setup_logger
+from misterdev.utils.file_utils import atomic_write_json
 
 logger = setup_logger(__name__)
 
@@ -196,7 +197,7 @@ class LessonStore:
                 for le in lessons
             ],
         }
-        self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        atomic_write_json(self.path, payload, indent=2)
 
     # -- learning ----------------------------------------------------------
     def record(self, new_rules: List) -> int:

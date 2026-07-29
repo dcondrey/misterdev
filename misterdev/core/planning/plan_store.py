@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from misterdev.logging_setup import setup_logger
+from misterdev.utils.file_utils import atomic_write_json
 
 logger = setup_logger(__name__)
 
@@ -112,4 +113,4 @@ def _field(rec: Any, name: str) -> str:
 def _write(project_path: str | Path, items: List[Dict[str, Any]]) -> None:
     path = _plan_path(project_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(items, indent=2), encoding="utf-8")
+    atomic_write_json(path, items, indent=2)

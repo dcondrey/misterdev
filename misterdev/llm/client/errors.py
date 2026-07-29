@@ -129,6 +129,7 @@ def _api_error(provider: str, error: Exception) -> Exception:
             f"{provider} out of credits (HTTP 402): add credits to continue "
             "(https://openrouter.ai/settings/credits)"
         )
+    _msg = str(error)
     return LLMCallError(
-        f"{provider} API error: {error}", retryable=_is_retryable_error(error)
+        f"{provider} API error: {_msg[:500]}", retryable=_is_retryable_error(error)
     )

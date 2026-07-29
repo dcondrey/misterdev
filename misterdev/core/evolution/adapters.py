@@ -13,6 +13,7 @@ as JSON and are reconstructed into a local record.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -110,35 +111,38 @@ def run_benchmark(
     evaluation the micro-eval screen depends on (run the handful of cases a
     mutation targets, not the whole suite). Raises on a non-zero exit or timeout.
     """
-    out_json = Path(tempfile.mkdtemp(prefix="evo-bench-")) / "report.json"
-    cmd = [
-        sys.executable,
-        "-m",
-        "evaluation.polyglot",
-        "--benchmark",
-        benchmark_dir,
-        "--workdir",
-        workdir,
-        "--json",
-        str(out_json),
-    ]
-    if limit is not None:
-        cmd += ["--limit", str(limit)]
-    if languages:
-        cmd += ["--languages", *languages]
-    if model:
-        cmd += ["--model", model]
-    if build_args:
-        cmd += ["--build-args", build_args]
-    if only:
-        cmd += ["--only", *only]
-    env = {
-        **os.environ,
-        "PYTHONPATH": cwd + os.pathsep + os.environ.get("PYTHONPATH", ""),
-    }
-    logger.info(f"Evolution: running benchmark subprocess in {cwd} (limit={limit}).")
-    subprocess.run(cmd, cwd=cwd, env=env, timeout=timeout, check=True)
-    report = json.loads(out_json.read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory(prefix="evo-bench-") as tmp_dir:
+        out_json = Path(tmp_dir) / "report.json"
+        cmd = [
+            sys.executable,
+            "-m",
+            "evaluation.polyglot",
+            "--benchmark",
+            benchmark_dir,
+            "--workdir",
+            workdir,
+            "--json",
+            str(out_json),
+        ]
+        if limit is not None:
+            cmd += ["--limit", str(limit)]
+        if languages:
+            cmd += ["--languages", *languages]
+        if model:
+            cmd += ["--model", model]
+        if build_args:
+            cmd += ["--build-args", build_args]
+        if only:
+            cmd += ["--only", *only]
+        env = {
+            **os.environ,
+            "PYTHONPATH": cwd + os.pathsep + os.environ.get("PYTHONPATH", ""),
+        }
+        logger.info(
+            f"Evolution: running benchmark subprocess in {cwd} (limit={limit})."
+        )
+        subprocess.run(cmd, cwd=cwd, env=env, timeout=timeout, check=True)
+        report = json.loads(out_json.read_text(encoding="utf-8"))
     # Real per-run spend when the harness reports it (best-effort); a suite from
     # before the cost field was added simply reports 0.0, which only disables the
     # cost tie-breaker, not the load-bearing resolved-rate/regression objectives.
@@ -214,9 +218,14 @@ class RealSandbox:
         branch = f"evo/{Path(wt).name}"
         ok, out = self._git.worktree_add(self.project, wt, "HEAD", new_branch=True)
         if not ok:
+            shutil.rmtree(wt, ignore_errors=True)
             raise RuntimeError(f"worktree_add failed: {out}")
         self._worktree, self._branch = wt, branch
-        apply_patch_to_worktree(wt, mutation.patch)
+        try:
+            apply_patch_to_worktree(wt, mutation.patch)
+        except Exception:
+            self._teardown(wt)
+            raise
         return lambda: self._teardown(wt)
 
     def _teardown(self, wt: str) -> None:

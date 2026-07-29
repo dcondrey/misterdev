@@ -58,3 +58,13 @@ def test_keystone_with_one_file_not_split():
     tasks = _keystone_plan(n_deps=5, files=("only.py",))
     out = split_keystone_tasks(tasks, fanin_threshold=3, min_units=2)
     assert "K" in {t.id for t in out}
+
+
+def test_completed_keystone_not_re_split():
+    tasks = _keystone_plan(n_deps=3, files=("a.py", "b.py"))
+    out = split_keystone_tasks(
+        tasks, fanin_threshold=3, min_units=2, completed_ids=frozenset({"K"})
+    )
+    # "K" is already done — must not be replaced by sub-units.
+    assert "K" in {t.id for t in out}
+    assert not any(t.id.startswith("K-part") for t in out)

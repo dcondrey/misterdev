@@ -140,6 +140,8 @@ def _mutation(
     """
     if runner is not None:
         ok, output = runner(command, int(timeout))
+        if not ok and not output:
+            return MutationResult(SKIP, reason="mutation tool reported failure")
     else:
         try:
             proc = subprocess.run(

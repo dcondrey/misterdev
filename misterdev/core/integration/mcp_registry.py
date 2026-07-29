@@ -67,6 +67,8 @@ _MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 # PEP 503 normalized distribution name; anything else (path separators, spaces)
 # is not a real PyPI package and must not be interpolated raw into a request path.
 _PYPI_NAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
+# npm package name: optional @scope/ prefix then lowercase name.
+_NPM_NAME_RE = re.compile(r"^(@[a-z0-9_.-]+/)?[a-z0-9_.-]+$")
 _DEFAULT_MAX_SERVERS = 3
 _DEFAULT_MIN_TRUST = 0.5
 # Cap network scoring per build so a wide search cannot hammer the GitHub API
@@ -454,7 +456,9 @@ def _github_signals(repo_url: str, timeout: float) -> Dict[str, Any]:
 
 
 def _npm_downloads(pkg_id: str, timeout: float) -> Optional[int]:
-    quoted = urllib.parse.quote(pkg_id, safe="@")
+    if not _NPM_NAME_RE.match(pkg_id):
+        return None
+    quoted = urllib.parse.quote(pkg_id, safe="@/")
     data = _http_get_json(
         f"https://api.npmjs.org/downloads/point/last-month/{quoted}", timeout
     )
@@ -711,9 +715,14 @@ def _resolve_version(runtime: str, identifier: str, timeout: float, cache) -> st
         if hit is not None:
             return hit
     if runtime == "npx":
-        quoted = urllib.parse.quote(identifier, safe="@")
-        data = _http_get_json(f"https://registry.npmjs.org/{quoted}/latest", timeout)
-        version = data.get("version", "") if isinstance(data, dict) else ""
+        if not _NPM_NAME_RE.match(identifier):
+            version = ""
+        else:
+            quoted = urllib.parse.quote(identifier, safe="@/")
+            data = _http_get_json(
+                f"https://registry.npmjs.org/{quoted}/latest", timeout
+            )
+            version = data.get("version", "") if isinstance(data, dict) else ""
     elif not _PYPI_NAME_RE.match(identifier):
         version = ""
     else:

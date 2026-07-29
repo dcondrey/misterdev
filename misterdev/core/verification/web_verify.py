@@ -139,6 +139,10 @@ def _verify(project_root: Path, web_config: dict, timeout: float) -> WebResult:
         return WebResult(SKIP, reason="playwright not installed")
 
     url = web_config["url"]
+    if not str(url).startswith(("http://", "https://")):
+        return WebResult(
+            SKIP, reason=f"web verify url must use http/https scheme: {url!r}"
+        )
     serve = web_config.get("serve")
     ready = web_config.get("ready")
     checks = list(web_config.get("checks") or [])

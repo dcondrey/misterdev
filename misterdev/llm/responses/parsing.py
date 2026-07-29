@@ -222,7 +222,7 @@ class LLMResponseParser:
             path = path.strip().strip("`'\"")
             if path.startswith("./"):
                 path = path[2:]
-            if _looks_like_path(path):
+            if _looks_like_path(path) and _is_safe_relative_path(path):
                 return path
 
         return None
@@ -255,6 +255,9 @@ class LLMResponseParser:
             file_path = plus_line[4:].strip()
             if file_path.startswith("b/"):
                 file_path = file_path[2:]
+            if not _is_safe_relative_path(file_path):
+                i += 2
+                continue
 
             i += 2
             new_lines = []
@@ -492,3 +495,17 @@ def _looks_like_path(s: str) -> bool:
         return False
     ext = s[dot:]
     return ext in LLMResponseParser._CODE_EXTENSIONS
+
+
+def _is_safe_relative_path(path: str) -> bool:
+    """True when path is a safe project-relative edit target.
+
+    Rejects absolute paths and ``..`` traversal components so a malicious or
+    hallucinated LLM response cannot reach outside the project tree.
+    """
+    if not path:
+        return False
+    p = path.replace("\\", "/")
+    if p.startswith("/") or (len(p) > 1 and p[1] == ":"):
+        return False
+    return ".." not in p.split("/")

@@ -147,7 +147,10 @@ class EmbeddingCache:
         store = self._load()
         for text, vector in items.items():
             store[self._key(text)] = vector
-        atomic_write_json(self.path, store)
+        try:
+            atomic_write_json(self.path, store)
+        except OSError as e:
+            logger.warning(f"EmbeddingCache: could not persist to {self.path}: {e}")
 
 
 class SemanticRanker:

@@ -1,5 +1,8 @@
+import re
 import time
 from typing import Optional
+
+_SAFE_NPM_NAME_RE = re.compile(r"^(@[a-z0-9][-a-z0-9._]*/)?[a-z0-9][-a-z0-9._]*$")
 
 from rich.console import Console
 
@@ -188,6 +191,8 @@ def worktree_healthcheck_command(config, root) -> Optional[str]:
         # partial-install signal we are probing for).
         return "npx --no-install tsc --version"
     dep = _first_declared_dependency(root)
+    if dep and not _SAFE_NPM_NAME_RE.match(dep):
+        dep = None
     return f"node -e \"require.resolve('{dep}')\"" if dep else None
 
 

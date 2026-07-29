@@ -366,7 +366,9 @@ def _detect_runner(output: str) -> Optional[str]:
         return "dotnet"
     if "❯" in output and re.search(r"^\s*FAIL\s+\S+\s+>", output, re.M):
         return "vitest"
-    if "●" in output or ("Expected:" in output and "Received:" in output):
+    if re.search(r"^● ", output, re.M) or (
+        "Expected:" in output and "Received:" in output
+    ):
         return "jest"
     if re.search(r"^--- FAIL: ", output, re.M):
         return "gotest"

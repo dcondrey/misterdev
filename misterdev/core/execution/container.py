@@ -129,6 +129,10 @@ class ContainerEngine:
         self.engine = engine
         self.image = image
         self.host_path = Path(host_path).resolve()
+        if ":" in mount_path or "\x00" in mount_path or not mount_path.startswith("/"):
+            raise ValueError(
+                f"mount_path is not a valid absolute container path: {mount_path!r}"
+            )
         self.mount_path = mount_path
         # Egress control: "none" runs the container with no network (governance.
         # network); any other value (or None) leaves the engine default, so the

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from misterdev.logging_setup import setup_logger
+from misterdev.utils.file_utils import atomic_write
 
 logger = setup_logger(__name__)
 
@@ -269,6 +270,6 @@ class RequirementsBook:
                 if not r.get("satisfied"):
                     lines.append(f"- Answer: {existing.get(r['key'], _PLACEHOLDER)}")
                 blocks.append("\n".join(lines))
-            self.md_path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+            atomic_write(self.md_path, "\n\n".join(blocks) + "\n")
         except OSError as e:
             logger.warning(f"Could not write REQUIREMENTS.md ({e}).")

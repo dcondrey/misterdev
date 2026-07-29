@@ -45,7 +45,12 @@ def compute_task_hash(task, project_path: Path) -> str:
         h.update(f"\x00file:{f}".encode())
         fp = Path(project_path) / f
         try:
-            h.update(fp.read_bytes() if fp.is_file() else b"\x00ABSENT")
+            if fp.is_file():
+                with fp.open("rb") as fh:
+                    for chunk in iter(lambda: fh.read(65536), b""):
+                        h.update(chunk)
+            else:
+                h.update(b"\x00ABSENT")
         except OSError:
             h.update(b"\x00UNREADABLE")
     return h.hexdigest()[:16]
@@ -59,6 +64,8 @@ class ProgressTracker:
         self.completed: Set[str] = set()
         self.failed: Set[str] = set()
         self.hashes: Dict[str, str] = {}
+        self.splits: Dict[str, list] = {}
+        self.conflict_counts: Dict[str, int] = {}
         self._lock = threading.Lock()
         self._load()
 
@@ -69,6 +76,8 @@ class ProgressTracker:
                 self.completed = set(data.get("completed", []))
                 self.failed = set(data.get("failed", []))
                 self.hashes = dict(data.get("hashes", {}))
+                self.splits = dict(data.get("splits", {}))
+                self.conflict_counts = dict(data.get("conflict_counts", {}))
             except (json.JSONDecodeError, OSError):
                 self.completed = set()
                 self.failed = set()
@@ -97,6 +106,8 @@ class ProgressTracker:
                 "completed": sorted(self.completed),
                 "failed": sorted(self.failed),
                 "hashes": self.hashes,
+                "splits": self.splits,
+                "conflict_counts": self.conflict_counts,
             },
             indent=2,
         )
@@ -113,9 +124,27 @@ class ProgressTracker:
     def needs_rerun(self, task_id: str, current_hash: str) -> bool:
         """True if the task isn't completed, or its inputs changed since."""
         if task_id not in self.completed:
+            for parent, parts in self.splits.items():
+                if task_id in parts and parent in self.completed:
+                    return False
             return True
         recorded = self.hashes.get(task_id)
         return recorded is None or recorded != current_hash
+
+    def record_split(self, original_id: str, part_ids: list) -> None:
+        with self._lock:
+            self.splits[original_id] = list(part_ids)
+            self._save()
+
+    def record_conflict(self, task_id_a: str, task_id_b: str) -> None:
+        key = ",".join(sorted([task_id_a, task_id_b]))
+        with self._lock:
+            self.conflict_counts[key] = self.conflict_counts.get(key, 0) + 1
+            self._save()
+
+    def conflict_count(self, task_id_a: str, task_id_b: str) -> int:
+        key = ",".join(sorted([task_id_a, task_id_b]))
+        return self.conflict_counts.get(key, 0)
 
     def mark_failed(self, task_id: str):
         with self._lock:
@@ -137,11 +166,14 @@ class ProgressTracker:
         return bool(self.completed or self.failed)
 
     def reset(self):
-        self.completed.clear()
-        self.failed.clear()
-        self.hashes.clear()
-        if self._file.exists():
-            self._file.unlink()
+        with self._lock:
+            self.completed.clear()
+            self.failed.clear()
+            self.hashes.clear()
+            self.splits.clear()
+            self.conflict_counts.clear()
+            if self._file.exists():
+                self._file.unlink()
 
     def summary(self) -> str:
         return f"{len(self.completed)} completed, {len(self.failed)} failed"

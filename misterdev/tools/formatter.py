@@ -19,7 +19,9 @@ class FormatterTool(CommandTool):
         # {path}). Project-wide formatters like `cargo fmt` or `ruff format .`
         # have no placeholder and must run as-is, not once per modified file.
         if "{path}" in command_template:
-            command = command_template.format(path=file_path)
+            import shlex
+
+            command = command_template.format(path=shlex.quote(str(file_path)))
         else:
             command = command_template
         logger.info(f"Running formatter: {command}")

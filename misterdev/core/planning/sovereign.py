@@ -6,7 +6,9 @@ Inspired by June 2026 arXiv research:
 - Discordance-Aware Reasoning (CyberDrift, arXiv:2606.15101)
 """
 
+import ast
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -18,9 +20,38 @@ from typing import Dict, List, Tuple
 from misterdev.logging_setup import setup_logger
 from misterdev.llm.client import BaseLLMClient
 from misterdev.llm.responses import extract_json_array
-from misterdev.utils.file_utils import safe_ref_slug
+from misterdev.utils.file_utils import atomic_write, atomic_write_json, safe_ref_slug
 
 logger = setup_logger(__name__)
+
+# Environment variable name prefixes to strip before running LLM-generated
+# ephemeral scripts. The script runs as the current user (no real sandbox),
+# so at minimum we prevent accidental credential exfiltration.
+_SCRUBBED_ENV_PREFIXES = (
+    "OPENAI_",
+    "ANTHROPIC_",
+    "OPENROUTER_",
+    "AWS_",
+    "AZURE_",
+    "GOOGLE_",
+    "GCP_",
+    "GITHUB_TOKEN",
+    "NPM_TOKEN",
+    "PYPI_TOKEN",
+    "SECRET_",
+    "API_KEY",
+    "PRIVATE_KEY",
+    "SSH_AUTH_SOCK",
+)
+
+
+def _scrubbed_env() -> dict:
+    """Current environment with known secret prefixes removed."""
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if not any(k.upper().startswith(p.upper()) for p in _SCRUBBED_ENV_PREFIXES)
+    }
 
 
 class EphemeralCodeManager:
@@ -46,13 +77,18 @@ class EphemeralCodeManager:
         script_path = self.ephemeral_dir / f"{safe}_{uuid.uuid4().hex[:4]}.py"
         logger.info(f"Executing ephemeral logic: {script_path.name}")
         try:
+            ast.parse(code)
+        except SyntaxError as e:
+            return False, f"Ephemeral script has syntax errors: {e}"
+        try:
             self.ephemeral_dir.mkdir(parents=True, exist_ok=True)
-            script_path.write_text(code, encoding="utf-8")
+            atomic_write(script_path, code.replace("\x00", ""))
             res = subprocess.run(
                 [sys.executable, str(script_path)],
                 capture_output=True,
                 text=True,
                 timeout=60,
+                env=_scrubbed_env(),
             )
             output = res.stdout
             if res.stderr:
@@ -192,8 +228,12 @@ class ToolSynthesizer:
         response = llm_client.generate_code(prompt, "You are a senior tools engineer.")
 
         code = _extract_code_block(response)
+        try:
+            ast.parse(code)
+        except SyntaxError as e:
+            raise ValueError(f"Synthesized tool code has syntax errors: {e}") from e
         tool_path = self.tools_dir / f"{safe_ref_slug(name, fallback='tool')}.py"
-        tool_path.write_text(code, encoding="utf-8")
+        atomic_write(tool_path, code.replace("\x00", ""))
         logger.info(f"Tool {name} saved to {tool_path}")
         return str(tool_path)
 
@@ -285,7 +325,7 @@ class RealTimeAligner:
                 "rationale": rationale,
             }
         )
-        self.cert_file.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+        atomic_write_json(self.cert_file, self.data, indent=2)
         logger.info(f"Certified Decision: {decision}")
 
     def get_consensus_context(self) -> str:

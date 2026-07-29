@@ -26,6 +26,10 @@ from misterdev.task_executors.markdown_plan_executor import MarkdownPlanExecutor
 logger = setup_logger(__name__)
 
 
+class _BrokenBaseError(RuntimeError):
+    """Raised when a post-merge rollback fails and the base branch is left corrupt."""
+
+
 class ParallelExecutionMixin:
     @staticmethod
     def _task_file_set(task: Task) -> set:
@@ -54,7 +58,7 @@ class ParallelExecutionMixin:
         claimed: set = set()
         for task in ready:
             files = cls._task_file_set(task)
-            if files & claimed:
+            if not files or files & claimed:
                 serial_remainder.append(task)
             else:
                 concurrent_group.append(task)
@@ -317,8 +321,8 @@ class ParallelExecutionMixin:
         )
         rok, rout = git.reset_hard(project, "HEAD^")
         if not rok:
-            logger.error(
-                f"Failed to roll back {task.id}'s merge; base may be left broken: "
+            raise _BrokenBaseError(
+                f"Failed to roll back {task.id}'s merge; base branch is broken: "
                 f"{rout[-200:]}"
             )
         return False
@@ -424,6 +428,7 @@ class ParallelExecutionMixin:
                     futures = [pool.submit(run_one, item) for item in prepared]
                     raw = [f.result() for f in concurrent.futures.as_completed(futures)]
 
+            base_broken = False
             for task, result, error, wt_path, branch in raw:
                 # Remove the worktree BEFORE merging/deleting the branch: git refuses
                 # to delete a branch still checked out in a worktree, which otherwise
@@ -433,7 +438,12 @@ class ParallelExecutionMixin:
                 if not ok:
                     logger.warning(f"Failed to remove worktree {wt_path}: {msg}")
                 merged = False
-                if (
+                if base_broken:
+                    error = RuntimeError(
+                        "base branch broken from prior rollback failure; skipping merge"
+                    )
+                    result = None
+                elif (
                     result is not None
                     and getattr(result, "status", None) == "completed"
                 ):
@@ -447,19 +457,25 @@ class ParallelExecutionMixin:
                             f"re-queuing (not force-merged): {mout[-200:]}"
                         )
                         error, result = RuntimeError(f"merge conflict: {mout}"), None
-                    elif post_merge_hc and not self._post_merge_healthcheck(
-                        project, executor, git, task, gate_timeout
-                    ):
-                        # The merge broke the base branch and was rolled back; treat
-                        # the task as unfinished (not completed) so it is retried and
-                        # not recorded as done. The branch was already deleted by the
-                        # (successful) merge, so no extra cleanup is needed.
-                        error, result = (
-                            RuntimeError(
-                                "post-merge health gate failed; base merge rolled back"
-                            ),
-                            None,
-                        )
+                    else:
+                        try:
+                            if post_merge_hc and not self._post_merge_healthcheck(
+                                project, executor, git, task, gate_timeout
+                            ):
+                                # The merge broke the base branch and was rolled back; treat
+                                # the task as unfinished (not completed) so it is retried and
+                                # not recorded as done. The branch was already deleted by the
+                                # (successful) merge, so no extra cleanup is needed.
+                                error, result = (
+                                    RuntimeError(
+                                        "post-merge health gate failed; base merge rolled back"
+                                    ),
+                                    None,
+                                )
+                        except _BrokenBaseError as e:
+                            logger.error(str(e))
+                            base_broken = True
+                            error, result = RuntimeError(str(e)), None
                 # A successful merge already deleted the branch; drop any un-merged
                 # one so no throwaway branch accumulates or collides with a later run.
                 if not merged:

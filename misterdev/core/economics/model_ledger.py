@@ -180,6 +180,7 @@ class ModelLedger:
         """
         with self._lock:
             snapshot = {k: asdict(v) for k, v in self._stats.items()}
+        snapshot["v"] = 1
         from misterdev.utils.file_utils import atomic_write_json
 
         try:
@@ -197,11 +198,10 @@ class ModelLedger:
         """
         key = self._key(model, category, complexity)
         with self._lock:
-            if key not in self._stats:
-                self._stats[key] = ModelStat(
-                    model=model, category=category, complexity=complexity
-                )
-            return replace(self._stats[key])
+            cell = self._stats.get(key)
+            if cell is None:
+                return ModelStat(model=model, category=category, complexity=complexity)
+            return replace(cell)
 
     def record(
         self,
@@ -247,7 +247,8 @@ class ModelLedger:
                 s.aborts += 1
             if edit_failure:
                 s.edit_apply_failures += 1
-            s.total_latency += latency
+            if not aborted:
+                s.total_latency += latency
             s.last_seen = ts
         self.save()
         return s
@@ -275,7 +276,7 @@ class ModelLedger:
         s.total_latency *= factor
 
     def selection_score(
-        self, model: str, category: str, complexity: str, total_observations: int
+        self, model: str, category: str, complexity: str, total_observations: float
     ) -> float:
         """Optimistic quality estimate for selection (UCB).
 
@@ -291,8 +292,8 @@ class ModelLedger:
         bonus = _Z * math.sqrt(math.log(max(total_observations, 2)) / s.attempts)
         return s.quality_score() + bonus
 
-    def total_observations(self, category: str = "", complexity: str = "") -> int:
-        """Total recorded attempts, optionally scoped to a cell's context."""
+    def total_observations(self, category: str = "", complexity: str = "") -> float:
+        """Total recorded (time-decayed) attempts, optionally scoped to a cell's context."""
         with self._lock:
             return sum(
                 s.attempts
@@ -337,7 +338,7 @@ class ModelLedger:
     def all_stats(self) -> List[ModelStat]:
         """A snapshot of every stat cell (for reporting/inspection)."""
         with self._lock:
-            return list(self._stats.values())
+            return [replace(s) for s in self._stats.values()]
 
     def seed_from(self, src_path: Path, weight: float = 0.1) -> int:
         """Blend prior stats from ``src_path`` for any key absent in this ledger.
@@ -386,44 +387,64 @@ class ModelLedger:
         For each key, sums the effective counts with whatever is already in the
         destination. Best-effort: write failures are logged and swallowed.
         """
+        import os
+
         from misterdev.utils.file_utils import atomic_write_json
 
         dest_path = Path(dest_path)
         dest_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            raw = (
-                json.loads(dest_path.read_text(encoding="utf-8"))
-                if dest_path.exists()
-                else {}
-            )
-        except (json.JSONDecodeError, OSError):
-            raw = {}
-        valid = {f.name for f in fields(ModelStat)}
+        lock_path = dest_path.with_suffix(".lock")
         with self._lock:
             snapshot = {k: asdict(v) for k, v in self._stats.items()}
-        for key, data in snapshot.items():
-            if key not in raw:
-                raw[key] = data
-                continue
-            existing = raw[key]
-            for field in (
-                "attempts",
-                "successes",
-                "first_try_attempts",
-                "first_try_successes",
-                "aborts",
-                "edit_apply_failures",
-                "total_cost",
-                "total_latency",
-            ):
-                existing[field] = existing.get(field, 0.0) + data.get(field, 0.0)
-            existing["last_seen"] = max(
-                existing.get("last_seen", 0.0), data.get("last_seen", 0.0)
-            )
-            for f in ("model", "category", "complexity"):
-                if f not in existing and f in data:
-                    existing[f] = data[f]
         try:
-            atomic_write_json(dest_path, raw, indent=2, sort_keys=True)
+            lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o600)
         except OSError as e:
-            logger.warning(f"Global model ledger write failed (non-fatal): {e}")
+            logger.warning(f"Could not open model ledger lock file (non-fatal): {e}")
+            lock_fd = -1
+        try:
+            if lock_fd >= 0:
+                try:
+                    import fcntl
+
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                except (ImportError, OSError):
+                    pass
+            try:
+                raw = (
+                    json.loads(dest_path.read_text(encoding="utf-8"))
+                    if dest_path.exists()
+                    else {}
+                )
+            except (json.JSONDecodeError, OSError):
+                raw = {}
+            if not isinstance(raw, dict):
+                raw = {}
+            for key, data in snapshot.items():
+                if key not in raw:
+                    raw[key] = data
+                    continue
+                existing = raw[key]
+                for field in (
+                    "attempts",
+                    "successes",
+                    "first_try_attempts",
+                    "first_try_successes",
+                    "aborts",
+                    "edit_apply_failures",
+                    "total_cost",
+                    "total_latency",
+                ):
+                    existing[field] = existing.get(field, 0.0) + data.get(field, 0.0)
+                existing["last_seen"] = max(
+                    existing.get("last_seen", 0.0), data.get("last_seen", 0.0)
+                )
+                for f in ("model", "category", "complexity"):
+                    if f not in existing and f in data:
+                        existing[f] = data[f]
+            try:
+                atomic_write_json(dest_path, raw, indent=2, sort_keys=True)
+            except OSError as e:
+                logger.warning(f"Global model ledger write failed (non-fatal): {e}")
+        finally:
+            if lock_fd >= 0:
+                os.close(lock_fd)

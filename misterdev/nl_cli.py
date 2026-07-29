@@ -7,6 +7,8 @@ runs it — so there are no flags to memorize. Known subcommands still work
 unchanged for power users.
 """
 
+import re
+from pathlib import Path
 from typing import Any, Dict
 
 from rich.console import Console
@@ -22,6 +24,7 @@ console = Console()
 # Commands the natural-language layer can resolve to. Kept in sync with the CLI.
 KNOWN_COMMANDS = {"scan", "list", "status", "report", "run", "plan", "build"}
 _MUTATING = {"scan", "run", "build"}
+_MAX_REQUEST_CHARS = 8_000
 
 _SYSTEM = (
     "You translate a developer's plain-English request into a single misterdev "
@@ -49,19 +52,39 @@ Return ONLY this JSON (omit keys you don't need):
   "parallel": <true|false>,
   "max_tasks": <int or null>}}
 
-Request: {request}"""
+<user_request>
+{request}
+</user_request>"""
 
 
-def parse_intent(request: str, client) -> Dict[str, Any]:
-    """One model call: request -> a structured action dict (empty on failure)."""
-    text = client.generate_code(_PROMPT.format(request=request), _SYSTEM)
-    obj = extract_json_object(text or "")
-    return obj if isinstance(obj, dict) else {}
+def parse_intent(request: str, client, *, _retries: int = 2) -> Dict[str, Any]:
+    """LLM call: request -> a structured action dict (empty on failure).
+
+    Retries up to ``_retries`` times when the model returns malformed JSON.
+    """
+    if len(request) > _MAX_REQUEST_CHARS:
+        request = request[:_MAX_REQUEST_CHARS] + " [truncated]"
+    prompt = _PROMPT.format(request=request.replace("{", "{{").replace("}", "}}"))
+    for attempt in range(1 + _retries):
+        try:
+            text = client.generate_code(prompt, _SYSTEM)
+        except Exception as e:
+            logger.warning(f"parse_intent: LLM call failed: {e}")
+            break
+        obj = extract_json_object(text or "")
+        if isinstance(obj, dict):
+            return obj
+        if attempt < _retries:
+            logger.warning(
+                "parse_intent: malformed JSON on attempt %d, retrying.", attempt + 1
+            )
+    return {}
 
 
 def _build_args(intent: Dict[str, Any]) -> str:
     """Render a build intent into the flag string ``ProjectOrchestrator.build`` parses."""
-    parts = [str(intent.get("goal") or "").strip()]
+    goal = re.sub(r"(?:^|\s)--\S+", "", str(intent.get("goal") or "")).strip()
+    parts = [goal]
     budget = intent.get("budget")
     if isinstance(budget, (int, float)):
         parts += ["--budget", str(budget)]
@@ -95,7 +118,11 @@ def _dispatch(intent: Dict[str, Any], orchestrator) -> int:
     from rich.spinner import Spinner
 
     cmd = intent.get("command")
-    path = intent.get("path") or "."
+    _raw_path = intent.get("path") or "."
+    try:
+        path = _raw_path if ".." not in Path(_raw_path).parts else "."
+    except (ValueError, OSError):
+        path = "."
     if cmd == "build":
         spinner = Spinner("dots", text="Building…")
 
@@ -169,12 +196,33 @@ def _fast_route(request: str) -> Dict[str, Any] | None:
     return None
 
 
+def _normalized_route(request: str) -> Dict[str, Any] | None:
+    """Tier 2: match a known command after lowercasing, extract path and goal."""
+    words = request.strip().split()
+    if not words:
+        return None
+    verb = words[0].lower()
+    if verb not in KNOWN_COMMANDS:
+        return None
+    rest = words[1:]
+    path = "."
+    if rest and (rest[0].startswith("/") or rest[0].startswith(".")):
+        path = rest[0]
+        rest = rest[1:]
+    intent: Dict[str, Any] = {"command": verb, "path": path}
+    if verb == "build" and rest:
+        intent["goal"] = " ".join(rest)
+    return intent
+
+
 def route(request: str, orchestrator, confirm=input) -> int:
     """Resolve a plain-English request to an action and run it.
 
     Returns a process exit code. ``confirm`` is injectable for testing.
     """
     intent = _fast_route(request)
+    if intent is None:
+        intent = _normalized_route(request)
     first_word = request.strip().split()[0].lower() if request.strip() else ""
     # Skip confirm for fast-routed requests unless the verb is destructive.
     needs_confirm = intent is None or first_word in _DESTRUCTIVE_VERBS
@@ -192,6 +240,8 @@ def route(request: str, orchestrator, confirm=input) -> int:
                 )
             return 1
         intent = parse_intent(request, client)
+        if not intent:
+            logger.warning("parse_intent returned no result for: %r", request[:200])
 
     cmd = intent.get("command")
     if cmd not in KNOWN_COMMANDS:

@@ -9,7 +9,6 @@ mixins purely as code movement; behaviour is identical.
 from typing import Optional
 
 from misterdev.core.context.scratchpad import Scratchpad
-from misterdev.core.verification.validator import StallDetector
 from misterdev.task_executors.base_executor import BaseTaskExecutor
 
 from .helpers import (
@@ -87,4 +86,3 @@ class MarkdownPlanExecutor(
 
     def __init__(self, scratchpad: Optional[Scratchpad] = None):
         self.scratchpad = scratchpad or Scratchpad()
-        self.stall_detector = StallDetector()

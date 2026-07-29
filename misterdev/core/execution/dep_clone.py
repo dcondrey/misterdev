@@ -141,18 +141,28 @@ def clone_dependencies(base, worktree) -> Tuple[bool, List[str]]:
     falls back to a normal install. A fresh worktree has no ``node_modules`` (it is
     gitignored), but any stale destination is removed first so the clone is clean.
     """
-    base, worktree = Path(base), Path(worktree)
+    base, worktree = Path(base).resolve(), Path(worktree).resolve()
     rels = find_node_modules_dirs(base)
     if not rels:
         return False, []
     cloned: List[str] = []
     for rel in rels:
         src, dst = base / rel, worktree / rel
+        try:
+            src = src.resolve()
+            dst = dst.resolve()
+            src.relative_to(base)
+            dst.relative_to(worktree)
+        except ValueError:
+            logger.warning(f"Skipping out-of-bounds dep path: {rel}")
+            continue
         if not src.is_dir():
             continue
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
-            if dst.exists() or dst.is_symlink():
+            if dst.is_symlink():
+                dst.unlink()
+            elif dst.exists():
                 shutil.rmtree(dst, ignore_errors=True)
             _clone_tree(src, dst)
         except OSError as e:

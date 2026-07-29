@@ -103,7 +103,7 @@ class GatesMixin:
         new_reflection = reflect_on_failure(
             task.description,
             error_logs,
-            prior_reflections=reflections,
+            prior_reflections=reflections[-3:],
             llm_client=project.llm_client,
             reflect_model=reflect_model,
             timeout=get_setting(project.config, "orchestrator", "reflection_timeout"),
@@ -220,11 +220,13 @@ class GatesMixin:
 
         if success:
             # A command that exits 0 having collected nothing is a false-GREEN
-            # gate: it greenlights any edit while catching no regression. Pair an
-            # explicit "no tests ran" signal with a parsed total of 0 (high
-            # precision — the phrase alone can appear per-crate in a healthy
-            # workspace) and reject it as hard as a real failure.
-            if gate_ran_no_tests(output) and _parse_test_counts(output)[0] == 0:
+            # gate: it greenlights any edit while catching no regression. An
+            # explicit "no tests ran" signal is high-confidence on its own;
+            # cross-check the parsed total to allow a workspace where one crate
+            # emits "running 0 tests" while others run many (total > 0). A total
+            # of -1 means the format is unparseable — still reject, because the
+            # signal string already tells us nothing ran.
+            if gate_ran_no_tests(output) and _parse_test_counts(output)[0] <= 0:
                 return False, None
             return True, 0
         if baseline_failures <= 0:

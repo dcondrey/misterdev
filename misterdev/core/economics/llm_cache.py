@@ -14,6 +14,7 @@ result is reusable regardless of which model would be picked next time.
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -30,14 +31,21 @@ DEFAULT_MAX_ENTRIES = 2000
 class LLMCache:
     """One JSON file per cache entry under a directory, bounded by mtime LRU."""
 
-    def __init__(self, dir_path: Path, max_entries: int = DEFAULT_MAX_ENTRIES):
+    def __init__(
+        self,
+        dir_path: Path,
+        max_entries: int = DEFAULT_MAX_ENTRIES,
+        max_age_days: Optional[float] = 7.0,
+    ):
         self.dir = Path(dir_path)
         self.max_entries = max_entries
+        self._max_age_seconds = max_age_days * 86400.0 if max_age_days else None
         # Running count of stored entries, seeded by one real scan on the first
         # new put and re-synced whenever an eviction scan runs. Lets a put below
         # the cap skip the O(entries) scandir+stat that would otherwise run on
         # every write (O(entries^2) filesystem work across a build).
         self._count_estimate: Optional[int] = None
+        self._sweep_stale_tmp()
 
     @staticmethod
     def _key(system_prompt: str, prompt: str) -> str:
@@ -55,11 +63,28 @@ class LLMCache:
         path = self._path(self._key(system_prompt, prompt))
         if not path.exists():
             return None
+        if self._max_age_seconds is not None:
+            try:
+                if time.time() - path.stat().st_mtime > self._max_age_seconds:
+                    logger.debug(
+                        f"Cache entry {path.name} expired (mtime); discarding."
+                    )
+                    return None
+            except OSError:
+                pass
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"Ignoring unreadable cache entry {path.name}: {e}")
             return None
+        if self._max_age_seconds is not None:
+            created = data.get("created_at", 0)
+            if (
+                isinstance(created, (int, float))
+                and time.time() - created > self._max_age_seconds
+            ):
+                logger.debug(f"Cache entry {path.name} expired; discarding.")
+                return None
         output = data.get("output")
         return output if isinstance(output, str) else None
 
@@ -77,9 +102,10 @@ class LLMCache:
         key = self._key(system_prompt, prompt)
         path = self._path(key)
         is_new = not path.exists()
+        actual_ts = timestamp if timestamp > 0 else time.time()
         atomic_write_json(
             path,
-            {"output": output, "model": model, "created_at": timestamp, "key": key},
+            {"output": output, "model": model, "created_at": actual_ts, "key": key},
             indent=2,
         )
         if is_new:
@@ -131,3 +157,19 @@ class LLMCache:
             except OSError:
                 continue
         return len(entries) - removed
+
+    def _sweep_stale_tmp(self) -> None:
+        """Remove .json.tmp files left by crashed atomic writes (older than 5 min)."""
+        if not self.dir.is_dir():
+            return
+        try:
+            cutoff = time.time() - 300
+            for entry in os.scandir(self.dir):
+                if entry.name.endswith(".json.tmp"):
+                    try:
+                        if entry.stat().st_mtime < cutoff:
+                            os.remove(entry.path)
+                    except OSError:
+                        pass
+        except OSError:
+            pass

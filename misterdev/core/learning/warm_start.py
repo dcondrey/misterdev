@@ -99,12 +99,9 @@ class SolvedTaskIndex:
         """
         try:
             rows = self._load_raw()
-            by_key = {}
-            order: List[str] = []
+            by_key: dict = {}
             for row in rows:
                 key = str(row.get("key") or _dedup_key(row.get("description", "")))
-                if key not in by_key:
-                    order.append(key)
                 by_key[key] = row
 
             added = 0
@@ -125,16 +122,14 @@ class SolvedTaskIndex:
                     "key": key,
                 }
                 if key not in by_key:
-                    order.append(key)
                     added += 1
                 else:
                     # A re-solve moves the task to the freshest position so it
                     # isn't rotated out by the cap while newer tasks accumulate.
-                    order.remove(key)
-                    order.append(key)
+                    del by_key[key]
                 by_key[key] = row
 
-            ordered = [by_key[key] for key in order][-_MAX_SOLVED:]
+            ordered = list(by_key.values())[-_MAX_SOLVED:]
             if not ordered:
                 return 0
             atomic_write(

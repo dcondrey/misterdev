@@ -16,11 +16,13 @@ effort load that degrades to empty rather than raising.
 """
 
 import json
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from misterdev.logging_setup import setup_logger
+from misterdev.utils.file_utils import atomic_write_json
 
 from .fitness import FitnessScore
 
@@ -97,7 +99,7 @@ class EvolutionArchive:
             "run": run,
             "elites": [asdict(c) for c in elites.values()],
         }
-        self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        atomic_write_json(self.path, payload, indent=2)
 
     def consider(self, candidate: Candidate) -> bool:
         """Insert ``candidate`` as its niche's elite iff it earns the slot.
@@ -108,17 +110,29 @@ class EvolutionArchive:
         call bumps the run counter and persists, so the run count reflects total
         candidates considered even when one is rejected.
         """
-        elites, run = self._load()
-        run += 1
-        candidate.run = run
-        incumbent = elites.get(candidate.niche)
-        won = candidate.regressions == 0 and (
-            incumbent is None
-            or candidate.score().beats(incumbent.score(), self.noise_band)
-        )
-        if won:
-            elites[candidate.niche] = candidate
-        self._save(elites, run)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.path.with_suffix(".lock")
+        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o600)
+        try:
+            try:
+                import fcntl
+
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            except (ImportError, OSError):
+                pass
+            elites, run = self._load()
+            run += 1
+            candidate.run = run
+            incumbent = elites.get(candidate.niche)
+            won = candidate.regressions == 0 and (
+                incumbent is None
+                or candidate.score().beats(incumbent.score(), self.noise_band)
+            )
+            if won:
+                elites[candidate.niche] = candidate
+            self._save(elites, run)
+        finally:
+            os.close(lock_fd)
         if won:
             logger.info(
                 f"Archive: candidate {candidate.id!r} is the new elite for niche "

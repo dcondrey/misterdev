@@ -6,6 +6,13 @@ from misterdev.logging_setup import setup_logger
 
 from .base import BaseLLMClient
 from .edits import APPLY_EDITS_TOOL, _edits_to_markdown, code_gen_abort_check
+from .rate_coordinator import (
+    clear as clear_rate_coordinator,
+    is_on_cooldown,
+    record_cooldown,
+    record_rate_limit,
+    wait_if_needed,
+)
 from .embeddings import (
     LocalEmbeddingClient,
     OpenRouterEmbeddingClient,
@@ -148,7 +155,12 @@ __all__ = [
     "_error_status_code",
     "_is_retryable_error",
     "_openrouter_sdk",
+    "clear_rate_coordinator",
     "code_gen_abort_check",
     "create_embedding_client",
     "create_llm_client",
+    "is_on_cooldown",
+    "record_cooldown",
+    "record_rate_limit",
+    "wait_if_needed",
 ]

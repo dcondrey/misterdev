@@ -2,6 +2,7 @@ import json
 import re
 import shlex
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -25,6 +26,7 @@ from misterdev.core.planning.assessment import (
 from misterdev.core.context.scratchpad import Scratchpad
 from misterdev.core.planning.decomposer import (
     decompose_spec,
+    _split_oversized_tasks,
     split_keystone_tasks,
     topological_sort,
     format_plan,
@@ -111,6 +113,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         # trips the existing graceful-halt path; None until a run loads a client.
         self._active_client: Any = None
         self._stop_requested = False
+        self._stop_lock = threading.Lock()
 
     def request_stop(self) -> None:
         """Cooperatively cancel the in-flight build/run, if any.
@@ -121,9 +124,11 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         partial report. Safe to call before a client exists (the flag is
         honored when the run loads one) and idempotent.
         """
-        self._stop_requested = True
-        if self._active_client is not None:
-            _apply_budget_ceiling(self._active_client, 0.0)
+        with self._stop_lock:
+            self._stop_requested = True
+            client = self._active_client
+        if client is not None:
+            _apply_budget_ceiling(client, 0.0)
 
     def scan_directory(self, path: str | Path):
         self.registry.discover_projects(path)
@@ -183,9 +188,11 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
             _apply_budget_ceiling(project.llm_client, budget)
         # Expose this run's client so a background job's request_stop() can trip
         # the budget kill-switch; honor a stop that arrived before it existed.
-        self._active_client = project.llm_client
-        if self._stop_requested:
-            _apply_budget_ceiling(self._active_client, 0.0)
+        with self._stop_lock:
+            self._active_client = project.llm_client
+            _stop = self._stop_requested
+        if _stop:
+            _apply_budget_ceiling(project.llm_client, 0.0)
         _check_golden_config(project.config)
         if project.env_manager:
             project.env_manager.setup()
@@ -390,6 +397,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
                     batch = self._execute_parallel(ready, executor, project)
                 except BudgetExceededError as e:
                     logger.warning(f"Halting run: {e}")
+                    self._recover_to_base_branch(project, base_branch)
                     aborted = True
                     break
                 self._recover_to_base_branch(project, base_branch)
@@ -698,9 +706,11 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         # Expose this run's client so a background job's request_stop() can trip
         # the budget kill-switch. Honor a stop that arrived before the client
         # existed (dropped budget halts the very first call).
-        self._active_client = project.llm_client
-        if self._stop_requested:
-            _apply_budget_ceiling(self._active_client, 0.0)
+        with self._stop_lock:
+            self._active_client = project.llm_client
+            _stop = self._stop_requested
+        if _stop:
+            _apply_budget_ceiling(project.llm_client, 0.0)
 
         # Preflight: fail fast on a retired/misrouted model id before spending
         # the analysis phase on calls that would 404 mid-run.
@@ -943,7 +953,8 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
             return {"error": "could not load project"}
         _, flags = parse_flags(args.split() if args else [])
         _apply_budget_ceiling(project.llm_client, flags.budget)
-        self._active_client = project.llm_client
+        with self._stop_lock:
+            self._active_client = project.llm_client
         try:
             env_activate = self._setup_env(project)
             assessment = self._analyze(project, env_activate)
@@ -1433,9 +1444,24 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
             targets=targets,
             staging_hint=self._staging_hint(project),
         )
-        # Proactively split a high-fan-in keystone before ordering, so its whole
-        # fan-out is not blocked on one all-or-nothing attempt.
-        tasks = split_keystone_tasks(tasks)
+        _early_progress = ProgressTracker(project.path)
+        _pre_split_ids = {t.id for t in tasks}
+        tasks = _split_oversized_tasks(tasks)
+        tasks = split_keystone_tasks(
+            tasks, completed_ids=frozenset(_early_progress.completed)
+        )
+        # Persist any split mappings so needs_rerun() can skip re-executing a
+        # segment whose parent was already completed on a prior run.
+        _post_ids = {t.id for t in tasks}
+        for _orig_id in _pre_split_ids - _post_ids:
+            _parts = [
+                t.id
+                for t in tasks
+                if t.id.startswith(f"{_orig_id}-seg")
+                or t.id.startswith(f"{_orig_id}-part")
+            ]
+            if _parts:
+                _early_progress.record_split(_orig_id, _parts)
         tasks = topological_sort(tasks)
 
         if flags.dry_run:
@@ -1963,6 +1989,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
                     )
                     gate_active = False
 
+        _wave_num = 0
         while remaining and not aborted:
             # Graceful budget stop: if the global budget is exhausted, do not
             # launch another wave. Defer the remainder and break so the pipeline
@@ -1976,6 +2003,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
                     report.deferred_tasks.append(task)
                 break
 
+            _wave_num += 1
             # Find all tasks whose dependencies are satisfied
             ready = []
             still_waiting = []
@@ -2056,6 +2084,12 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
             if adaptive:
                 self._apply_wave_tuning(project, wave_tuning, adaptive_base)
 
+            _wave_cost_before = getattr(
+                getattr(project.llm_client, "cumulative_usage", None),
+                "estimated_cost",
+                0.0,
+            )
+
             # Execute: parallel or sequential
             wave_completed: list[Task] = []
             if flags.parallel and len(ready) > 1:
@@ -2073,7 +2107,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
                         results.append((task, None, e))
 
             # Process results
-            for task, result, error in results:
+            for i, (task, result, error) in enumerate(results):
                 if isinstance(error, BudgetExceededError):
                     # Budget ran out mid-task: revert any partial work and stop
                     # the run gracefully rather than recording a failure.
@@ -2084,6 +2118,8 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
                     if sha:
                         executor.revert_task_commit(project, sha)
                     report.deferred_tasks.append(task)
+                    for rem_task, _, _ in results[i + 1 :]:
+                        report.deferred_tasks.append(rem_task)
                     report.key_decisions.append(
                         "Stopped: budget exhausted; remaining work deferred"
                     )
@@ -2114,7 +2150,7 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
                         f"(${cap:.2f})"
                     )
                     continue
-                if error:
+                if error is not None:
                     logger.error(f"Task {task.id} raised: {error}")
                     # Preserve the failure text (merge conflict, worktree add, a
                     # raised exception) so the end-of-run taxonomy can classify it;
@@ -2167,6 +2203,44 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
                 if consecutive_failures >= max_consecutive_failures:
                     aborted = True
                     break
+
+            _wave_cost = (
+                getattr(
+                    getattr(project.llm_client, "cumulative_usage", None),
+                    "estimated_cost",
+                    0.0,
+                )
+                - _wave_cost_before
+            )
+            if isinstance(_wave_cost, (int, float)) and _wave_cost > 0.0:
+                report.key_decisions.append(f"Wave {_wave_num} cost: ${_wave_cost:.4f}")
+
+            _wave_failed = {
+                t.id for t in ready if t.id in failed_ids and t.id not in completed_ids
+            }
+            for _cf in (t for t in ready if t.id in _wave_failed):
+                _ft = self._task_failure_text(_cf).lower()
+                if "conflict" not in _ft and "<<<" not in _ft:
+                    continue
+                _cf_files = set(_cf.files_to_create + _cf.files_to_modify)
+                for _partner in ready:
+                    if _partner.id == _cf.id:
+                        continue
+                    if not _cf_files & set(
+                        _partner.files_to_create + _partner.files_to_modify
+                    ):
+                        continue
+                    progress.record_conflict(_cf.id, _partner.id)
+                    if (
+                        progress.conflict_count(_cf.id, _partner.id) >= 2
+                        and _cf.id not in _partner.dependencies
+                    ):
+                        _partner.dependencies.append(_cf.id)
+                        logger.info(
+                            "Injecting dep %s→%s after repeated conflict on shared files.",
+                            _cf.id,
+                            _partner.id,
+                        )
 
             # Integration gate: after this wave's merges, revert any task that
             # regressed the full suite before the next wave builds on top of it.
@@ -2396,6 +2470,11 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
 
         if mode == BuildMode.SPEC:
             spec_path = project.path / prompt.strip()
+            try:
+                spec_path = spec_path.resolve()
+                spec_path.relative_to(project.path.resolve())
+            except ValueError:
+                return f"Spec file not found: {prompt}"
             if spec_path.exists():
                 return spec_path.read_text(encoding="utf-8")
             return f"Spec file not found: {prompt}"
@@ -2496,12 +2575,17 @@ class ProjectOrchestrator(ParallelExecutionMixin, IntegrationGateMixin):
         outline, or "" if topography is unavailable or errors — the decomposer
         then falls back to cautious path inference rather than failing.
         """
+        cached = getattr(project, "_file_map_cache", None)
+        if cached is not None:
+            return cached
         topo = getattr(project, "topography", None)
         if topo is None:
             return ""
         try:
             topo.initialize()
-            return topo.get_project_outline()
+            result = topo.get_project_outline()
+            project._file_map_cache = result
+            return result
         except Exception as e:
             logger.warning(f"File map unavailable for decomposition (non-fatal): {e}")
             return ""

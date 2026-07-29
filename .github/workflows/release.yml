@@ -9,19 +9,22 @@ on:
   push:
     tags: ["v*"]
 
+permissions: read-all
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           python-version: "3.12"
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run pytest -q
       - run: uv build
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: dist
           path: dist/
@@ -29,6 +32,7 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # Gated: enable by setting the repo variable PYPI_ENABLED=true AFTER you have
     # configured PyPI Trusted Publishing (see the comment at the top of this
     # file). Until then a tag builds + tests but does not attempt to publish, so
@@ -39,12 +43,12 @@ jobs:
       id-token: write # required for Trusted Publishing
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: dist
           path: dist/
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
 
       # Publish metadata to the official MCP Registry via the workflow OIDC token
       # (id-token: write, granted above). server.json's version is stamped from
@@ -52,7 +56,13 @@ jobs:
       - name: Publish to MCP Registry
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          if ! echo "${VERSION}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "ERROR: GITHUB_REF_NAME '${GITHUB_REF_NAME}' did not yield a valid version"
+            exit 1
+          fi
           node -e "const fs=require('fs');const s=JSON.parse(fs.readFileSync('server.json'));s.version='${VERSION}';s.packages.forEach(p=>p.version='${VERSION}');fs.writeFileSync('server.json',JSON.stringify(s,null,2)+'\n')"
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          curl -fsSL -o mcp-publisher.tar.gz "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz"
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+          rm mcp-publisher.tar.gz
           ./mcp-publisher login github-oidc
           ./mcp-publisher publish

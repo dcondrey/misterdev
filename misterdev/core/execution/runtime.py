@@ -210,15 +210,26 @@ def _wait_for_substring(
 ) -> bool:
     """Read output until ``needle`` appears, the process exits, or the deadline
     passes. Returns True iff ``needle`` was seen in the cumulative output."""
+    buf = "".join(captured)
+    joined_up_to = len(captured)
+    if needle in buf:
+        return True
     while time.monotonic() < deadline:
-        if needle in "".join(captured):
+        _read_available(proc, captured, deadline)
+        if len(captured) > joined_up_to:
+            buf += "".join(captured[joined_up_to:])
+            joined_up_to = len(captured)
+        if needle in buf:
             return True
         if proc.poll() is not None:
             # Process gone; drain any remaining buffered output then check once.
             _drain_remaining(proc, captured)
-            return needle in "".join(captured)
-        _read_available(proc, captured, deadline)
-    return needle in "".join(captured)
+            if len(captured) > joined_up_to:
+                buf += "".join(captured[joined_up_to:])
+            return needle in buf
+    if len(captured) > joined_up_to:
+        buf += "".join(captured[joined_up_to:])
+    return needle in buf
 
 
 def _drain_until(

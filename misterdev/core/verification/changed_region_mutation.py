@@ -27,10 +27,10 @@ weak SIGNAL and reserve a hard floor for the high-confidence "zero killed" case.
 import difflib
 import re
 import subprocess
+import threading
 from pathlib import Path
 from typing import Callable, List, Optional, Set, Tuple
 
-from misterdev.core.execution.bounded import run_bounded
 from misterdev.core.execution.outcomes import GREEN, RED, SKIP
 from misterdev.core.verification.mutation_gate import MutationResult
 from misterdev.logging_setup import setup_logger
@@ -145,17 +145,19 @@ def run_changed_region_mutation(
 
     target = project_root / file_path
     run = runner or _make_local_runner(project_root)
+    abort = threading.Event()
 
     def _work() -> MutationResult:
         killed = 0
         try:
             for src, _desc in mutants:
+                if abort.is_set():
+                    break
                 target.write_text(src, encoding="utf-8")
                 ok, _out = run(test_command, timeout)
                 if not ok:
                     killed += 1
         finally:
-            # Restore the accepted fix no matter what — never leave a mutant on disk.
             target.write_text(new_content, encoding="utf-8")
         score = killed / len(mutants)
         status = GREEN if score >= min_score else RED
@@ -165,12 +167,30 @@ def run_changed_region_mutation(
         )
         return MutationResult(status, score=score, reason=reason)
 
-    return run_bounded(
-        _work,
-        timeout * len(mutants) + 10,
-        MutationResult(SKIP, reason="timed out"),
-        "Changed-region mutation",
-    )
+    box: dict = {"result": MutationResult(SKIP, reason="timed out")}
+
+    def _runner() -> None:
+        try:
+            box["result"] = _work()
+        except Exception as e:
+            logger.debug(f"Changed-region mutation failed: {e}")
+
+    total_timeout = timeout * len(mutants) + 10
+    worker = threading.Thread(target=_runner, daemon=True)
+    worker.start()
+    worker.join(total_timeout)
+    if worker.is_alive():
+        logger.warning(
+            f"Changed-region mutation timed out after {total_timeout}s; aborting."
+        )
+        abort.set()
+        worker.join(timeout + 5)
+        try:
+            target.write_text(new_content, encoding="utf-8")
+        except OSError as e:
+            logger.warning(f"Failed to restore {target} after mutation timeout: {e}")
+        return MutationResult(SKIP, reason="timed out")
+    return box["result"]
 
 
 def _make_local_runner(

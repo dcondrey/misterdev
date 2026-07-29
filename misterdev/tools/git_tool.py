@@ -34,7 +34,8 @@ class GitTool(CommandTool):
         elif action == "checkout":
             return self.checkout(project, kwargs.get("branch"))
         else:
-            return super().execute(project, command=f"git {shlex.quote(action)}")
+            logger.warning(f"GitTool: unknown action {action!r} rejected")
+            return False, f"Unknown git action: {action!r}"
 
     def worktree_add(
         self, project: Any, path: str, branch: str, new_branch: bool = False

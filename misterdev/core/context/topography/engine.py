@@ -91,14 +91,18 @@ class TopographyEngine:
         self.initialize()
         excluded = exclude_files or set()
 
+        _by_file: Dict[str, List[str]] = {}
+        for key, sym in self.graph.symbols.items():
+            _by_file.setdefault(sym.file_path, []).append(key)
+
         context_symbols: Set[str] = set()
         for file in related_files:
-            for key, sym in self.graph.symbols.items():
-                if sym.file_path == file:
-                    if file not in excluded:
-                        context_symbols.add(key)
-                    context_symbols.update(sym.outgoing_calls)
-                    context_symbols.update(sym.incoming_calls)
+            for key in _by_file.get(file, []):
+                sym = self.graph.symbols[key]
+                if file not in excluded:
+                    context_symbols.add(key)
+                context_symbols.update(sym.outgoing_calls)
+                context_symbols.update(sym.incoming_calls)
 
         if excluded:
             context_symbols = {

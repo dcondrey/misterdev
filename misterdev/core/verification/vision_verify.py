@@ -89,6 +89,13 @@ def run_vision_gate(
     capture = Path(vision_config["capture"])
     if not capture.is_absolute():
         capture = project_root / capture
+    try:
+        capture = capture.resolve()
+        capture.relative_to(project_root.resolve())
+    except ValueError:
+        return VisionResult(
+            SKIP, reason=f"capture path outside project root: {capture}"
+        )
     if not capture.is_file():
         return VisionResult(SKIP, reason=f"capture file not found: {capture}")
 
@@ -111,8 +118,14 @@ def run_vision_gate(
     )
 
 
+_MAX_CAPTURE_BYTES = 10 * 1024 * 1024  # 10 MiB
+
+
 def _verify(capture: Path, assertion: str, call: VlmCall) -> VisionResult:
     """Encode the screenshot, ask the model, parse the YES/NO verdict."""
+    size = capture.stat().st_size
+    if size > _MAX_CAPTURE_BYTES:
+        return VisionResult(SKIP, reason=f"capture file too large ({size} bytes)")
     image_b64 = base64.b64encode(capture.read_bytes()).decode("ascii")
     prompt = _PROMPT.format(assertion=assertion)
     verdict = call(prompt, image_b64) or ""

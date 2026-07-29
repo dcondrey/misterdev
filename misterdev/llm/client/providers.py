@@ -12,6 +12,14 @@ from .response import LLMResponse, LLMUsage
 
 logger = setup_logger(__name__)
 
+
+class _RedactedStr(str):
+    """str subclass whose repr/str outputs '***' to prevent accidental key exposure."""
+
+    __repr__ = lambda self: "'***'"  # noqa: E731
+    __str__ = lambda self: "***"  # noqa: E731
+
+
 # Per-request network ceiling. The SDKs default to ~600s, so a hung/stalled
 # connection can block a single attempt for ten minutes before retry/failover
 # even kicks in. 300s bounds that while still allowing a large code generation
@@ -426,7 +434,7 @@ class AnthropicLLMClient(BaseLLMClient):
         llm_config = config.get("llm", {})
 
         env_var_name = get_section_setting("llm", llm_config, "api_key_env_var")
-        self.api_key = os.environ.get(env_var_name)
+        self.api_key = _RedactedStr(os.environ.get(env_var_name) or "")
         if not self.api_key:
             raise ValueError(f"API key environment variable '{env_var_name}' not set.")
 

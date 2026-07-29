@@ -550,7 +550,7 @@ def main():
                     reference_dir=args.reference,
                     progress_cb=_on_progress,
                 )
-        except (ValueError, ImportError) as e:
+        except (ValueError, ImportError, OSError, RuntimeError) as e:
             _cli_error(e)
             sys.exit(1)
         console.print("\n")

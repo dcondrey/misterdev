@@ -119,7 +119,10 @@ def _run_cmd(
             try:
                 proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:
-                pass
+                if proc.stdout:
+                    proc.stdout.close()
+                if proc.stderr:
+                    proc.stderr.close()
             _audit_command(audit, cmd, False, cwd)
             return False, f"Command timed out after {timeout}s: {full_cmd}"
         output = out
@@ -247,7 +250,9 @@ def run_health_check(
             env_activate,
             tt,
         )
-        health.test_count, health.test_failures = _parse_test_counts(health.test_output)
+        _tc, _tf = _parse_test_counts(health.test_output)
+        health.test_count = max(0, _tc)
+        health.test_failures = max(0, _tf)
     else:
         health.tests_pass = True
 
@@ -275,6 +280,7 @@ def _parse_test_counts(output: str) -> Tuple[int, int]:
     # pytest: "N passed", "N failed", "N error(s)", "N skipped". Sum EVERY match
     # so a multi-package run (more than one summary line) isn't undercounted to
     # just the first block.
+    _fmt_hit = False
     for kind, target in (
         ("passed", "p"),
         ("failed", "f"),
@@ -282,11 +288,12 @@ def _parse_test_counts(output: str) -> Tuple[int, int]:
         ("errors", "f"),
     ):
         for n in re.findall(rf"(\d+) {kind}\b", output):
+            _fmt_hit = True
             if target == "p":
                 passed += int(n)
             else:
                 failed += int(n)
-    if passed or failed:
+    if _fmt_hit or passed or failed:
         return passed + failed, failed
     # cargo: "test result: ok. N passed; M failed" — one line per crate in a
     # workspace run, so sum them all rather than counting only the first crate.
@@ -329,7 +336,7 @@ def _parse_test_counts(output: str) -> Tuple[int, int]:
     if m:
         fails = sum(int(n) for n in re.findall(r"(?:failures|errors)=(\d+)", output))
         return int(m.group(1)), fails
-    return 0, 0
+    return -1, -1
 
 
 # Explicit "zero tests were executed" phrases across common runners. A test
@@ -521,8 +528,21 @@ class StallDetector:
         return max_similarity * 0.5
 
 
+def _strip_comments(text: str) -> str:
+    """Remove comment-only lines so comment-only edits don't evade stall detection."""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    out = []
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#") or stripped.startswith("//"):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def _tokenize(text: str) -> set:
     """Extract word tokens from text without regex."""
+    text = _strip_comments(text)
     tokens = set()
     current = []
     for char in text.lower():

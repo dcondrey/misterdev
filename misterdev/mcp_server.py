@@ -13,8 +13,14 @@ descriptions and honest behavioral annotations (read-only vs. destructive,
 idempotent, open-world) so an AI agent can pick and call them correctly.
 """
 
+import concurrent.futures
+import logging
+import os
+import re
 from pathlib import Path
 from typing import Annotated, Any, Dict, Optional
+
+_log = logging.getLogger(__name__)
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -28,6 +34,34 @@ from misterdev.core.reporting.report_view import collect
 # Conservative default $ ceiling for an AI-client-triggered build (the CLI
 # default is higher). The client can raise it explicitly per call.
 _DEFAULT_MCP_BUDGET = 10.0
+_MAX_MCP_BUDGET = 1000.0
+_MAX_BUILD_TIMEOUT_MINUTES = 240.0
+
+# Paths that must never be targets of a destructive MCP call.
+_BLOCKED_PATH_PREFIXES = (
+    "/proc",
+    "/sys",
+    "/dev",
+    "/private/var/folders",
+    "/System",
+    "/private/etc",
+)
+
+
+def _resolve_project_path(raw: str) -> tuple:
+    """Return (resolved_path, error_string_or_None)."""
+    if "\x00" in raw:
+        return Path("."), "path contains null bytes"
+    try:
+        resolved = Path(raw).expanduser().resolve()
+    except (OSError, ValueError) as exc:
+        return Path("."), f"invalid path: {exc}"
+    s = str(resolved)
+    for prefix in _BLOCKED_PATH_PREFIXES:
+        if s == prefix or s.startswith(prefix + "/"):
+            return resolved, f"access denied: {prefix}"
+    return resolved, None
+
 
 mcp = FastMCP("misterdev")
 
@@ -179,8 +213,12 @@ def scan(
 
     Returns a short confirmation string naming the directory scanned.
     """
-    ProjectOrchestrator().scan_directory(directory)
-    return f"Scanned and registered projects under: {directory}"
+    proj, err = _resolve_project_path(directory)
+    if err:
+        return f"Scan rejected: {err}"
+    _log.info("mcp.scan directory=%s", proj)
+    ProjectOrchestrator().scan_directory(str(proj))
+    return f"Scanned and registered projects under: {proj}"
 
 
 @mcp.tool(
@@ -226,6 +264,7 @@ def build(
             ),
             examples=[5.0, 25.0],
             gt=0,
+            le=_MAX_MCP_BUDGET,
         ),
     ] = _DEFAULT_MCP_BUDGET,
     dry_run: Annotated[
@@ -285,6 +324,17 @@ def build(
             ),
         ),
     ] = None,
+    timeout_minutes: Annotated[
+        float,
+        Field(
+            description=(
+                "Hard wall-clock limit in minutes; the run is cooperatively "
+                "cancelled when the limit expires. Default: 60. Max: 240."
+            ),
+            gt=0,
+            le=_MAX_BUILD_TIMEOUT_MINUTES,
+        ),
+    ] = 60.0,
 ) -> str:
     """Autonomously plan AND execute a goal in a project, from scratch.
 
@@ -307,20 +357,45 @@ def build(
 
     Returns a compact text report: what was done, per-gate results, and cost.
     """
+    proj, err = _resolve_project_path(path)
+    if err:
+        return f"Build rejected: {err}"
     orch = ProjectOrchestrator()
-    parts = [goal, "--budget", str(budget)]
+    safe_goal = re.sub(r"(?:^|\s)--\S+", "", goal).strip()
+    budget = min(budget, _MAX_MCP_BUDGET)
+    _log.info(
+        "mcp.build [audit] path=%s goal=%r budget=%.2f dry_run=%s",
+        proj,
+        safe_goal,
+        budget,
+        dry_run,
+    )
+    parts = [safe_goal, "--budget", str(budget)]
     if dry_run:
         parts.append("--dry-run")
     if parallel:
         parts.append("--parallel")
     if max_tasks is not None:
         parts += ["--max-tasks", str(max_tasks)]
-    report = orch.build(
-        path,
-        " ".join(parts),
-        reference_dir=reference_dir,
-        spec_text=spec_text or "",
-    )
+
+    def _run() -> str:
+        return orch.build(
+            str(proj),
+            " ".join(parts),
+            reference_dir=reference_dir,
+            spec_text=spec_text or "",
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run)
+        try:
+            report = fut.result(timeout=timeout_minutes * 60)
+        except concurrent.futures.TimeoutError:
+            # request_stop() is a cooperative signal; the build thread continues
+            # running until it observes the flag. The ThreadPoolExecutor is a
+            # daemon-thread pool so the leaked thread does not block process exit.
+            orch.request_stop()
+            return f"Build cancelled: exceeded {timeout_minutes:.0f}-minute timeout."
     outcome = "succeeded" if orch.last_build_succeeded else "did not fully succeed"
     return f"Build {outcome}.\n\n{report}"
 
@@ -381,13 +456,17 @@ def run(
 
     Returns a short text summary of what was run or previewed.
     """
+    proj, err = _resolve_project_path(path)
+    if err:
+        return f"Run rejected: {err}"
+    _log.info("mcp.run [audit] path=%s task_id=%s dry_run=%s", proj, task_id, dry_run)
     orch = ProjectOrchestrator()
     if task_id:
-        orch.run_task(path, task_id)
-        return f"Ran task {task_id} for {path}."
-    orch.run_project(path, dry_run=dry_run)
+        orch.run_task(str(proj), task_id)
+        return f"Ran task {task_id} for {proj}."
+    orch.run_project(str(proj), dry_run=dry_run)
     verb = "Previewed" if dry_run else "Ran"
-    return f"{verb} pending tasks for {path}."
+    return f"{verb} pending tasks for {proj}."
 
 
 @mcp.tool(
@@ -424,7 +503,11 @@ def build_async(
     ],
     budget: Annotated[
         float,
-        Field(description="Maximum US dollars to spend; must be > 0.", gt=0),
+        Field(
+            description="Maximum US dollars to spend; must be > 0.",
+            gt=0,
+            le=_MAX_MCP_BUDGET,
+        ),
     ] = _DEFAULT_MCP_BUDGET,
     parallel: Annotated[
         bool,
@@ -460,20 +543,34 @@ def build_async(
     Returns ``{run_id, status}`` on success, or ``{error}`` when a job is already
     running for this project.
     """
+    proj, err = _resolve_project_path(path)
+    if err:
+        return {"error": f"rejected: {err}"}
     orch = ProjectOrchestrator()
 
+    safe_goal = re.sub(r"(?:^|\s)--\S+", "", goal).strip()
+    capped_budget = min(budget, _MAX_MCP_BUDGET)
+    _log.info(
+        "mcp.build_async [audit] path=%s goal=%r budget=%.2f",
+        proj,
+        safe_goal,
+        capped_budget,
+    )
+
     def _target(report) -> str:
-        parts = [goal, "--budget", str(budget)]
+        parts = [safe_goal, "--budget", str(capped_budget)]
         if parallel:
             parts.append("--parallel")
         if max_tasks is not None:
             parts += ["--max-tasks", str(max_tasks)]
         return orch.build(
-            path, " ".join(parts), reference_dir=reference_dir, progress_cb=report
+            str(proj), " ".join(parts), reference_dir=reference_dir, progress_cb=report
         )
 
     try:
-        run_id = registry.start("build", path, _target, stop_hook=orch.request_stop)
+        run_id = registry.start(
+            "build", str(proj), _target, stop_hook=orch.request_stop
+        )
     except RuntimeError as e:
         return {"error": str(e)}
     return {"run_id": run_id, "status": "running"}
@@ -514,14 +611,18 @@ def run_async(
 
     Returns ``{run_id, status}``, or ``{error}`` when one is already running.
     """
+    proj, err = _resolve_project_path(path)
+    if err:
+        return {"error": f"rejected: {err}"}
+    _log.info("mcp.run_async [audit] path=%s", proj)
     orch = ProjectOrchestrator()
 
     def _target(report) -> str:
-        orch.run_project(path, dry_run=False, progress_cb=report)
-        return f"Ran pending tasks for {path}."
+        orch.run_project(str(proj), dry_run=False, progress_cb=report)
+        return f"Ran pending tasks for {proj}."
 
     try:
-        run_id = registry.start("run", path, _target, stop_hook=orch.request_stop)
+        run_id = registry.start("run", str(proj), _target, stop_hook=orch.request_stop)
     except RuntimeError as e:
         return {"error": str(e)}
     return {"run_id": run_id, "status": "running"}
@@ -637,7 +738,11 @@ def propose_plan(
     ],
     budget: Annotated[
         float,
-        Field(description="Maximum US dollars to spend on analysis; > 0.", gt=0),
+        Field(
+            description="Maximum US dollars to spend on analysis; > 0.",
+            gt=0,
+            le=_MAX_MCP_BUDGET,
+        ),
     ] = _DEFAULT_MCP_BUDGET,
 ) -> Dict[str, Any]:
     """Analyze the project and return ranked, UNAPPROVED work proposals.
@@ -656,7 +761,9 @@ def propose_plan(
     Returns ``{items: [...]}`` — each item has an id, title, work_type,
     rationale, and ``approved: false`` — or ``{error}`` on failure.
     """
-    return ProjectOrchestrator().propose_plan(path, f"--budget {budget}")
+    return ProjectOrchestrator().propose_plan(
+        path, f"--budget {min(budget, _MAX_MCP_BUDGET)}"
+    )
 
 
 @mcp.tool(
@@ -770,7 +877,9 @@ def execute_plan(
     ],
     budget: Annotated[
         float,
-        Field(description="Maximum US dollars to spend; > 0.", gt=0),
+        Field(
+            description="Maximum US dollars to spend; > 0.", gt=0, le=_MAX_MCP_BUDGET
+        ),
     ] = _DEFAULT_MCP_BUDGET,
 ) -> str:
     """Execute the APPROVED items from a previously proposed plan.
@@ -786,9 +895,12 @@ def execute_plan(
 
     Returns a compact build report, or a message when nothing is approved.
     """
-    return ProjectOrchestrator().execute_plan(path, f"--budget {budget}")
+    return ProjectOrchestrator().execute_plan(
+        path, f"--budget {min(budget, _MAX_MCP_BUDGET)}"
+    )
 
 
 def main() -> None:
     """Console entry point: serve misterdev over stdio MCP."""
+    os.environ.setdefault("MISTERDEV_MCP_GOVERNANCE", "auto_approve")
     mcp.run()

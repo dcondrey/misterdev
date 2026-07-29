@@ -103,7 +103,9 @@ _SIGNALS: Tuple[Tuple[re.Pattern, str], ...] = (
 _TEST_CONTEXT = re.compile(
     r"\bvitest\b|\bjest\b|\bminiflare\b|vitest-pool-workers|"
     r"\bexpect\(|\.toBe\b|\.toEqual\b|\bdescribe\(|\bit\(|"
-    r"\bTest Files\b|\.test\.|\.spec\.",
+    r"\bTest Files\b|\.test\.|\.spec\.|"
+    r"\bpytest\b|\bunittest\b|\bAssertionError\b|"
+    r"FAILED\s+\S+\.py::|PASSED\s+\S+\.py::|def\s+test_",
     re.I,
 )
 _TEST_SUPPRESSIBLE = frozenset(

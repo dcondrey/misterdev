@@ -7,6 +7,8 @@ from typing import Optional
 from misterdev.core.models import Task
 from misterdev.core.execution.project import Project
 from misterdev.llm.client import code_gen_abort_check
+from misterdev.llm.client.errors import _is_retryable_error
+from misterdev.llm.client.rate_coordinator import is_on_cooldown, record_cooldown
 from misterdev.config import get_setting
 
 from .helpers import logger, _is_truncated
@@ -160,7 +162,14 @@ class LLMMixin:
         t_before = time.time()
 
         with self._reasoning_ctx(project, task):
-            if not routed_model:
+            if not routed_model or is_on_cooldown(routed_model):
+                if routed_model and is_on_cooldown(routed_model):
+                    logger.info(
+                        f"[{task.id}] skipping {routed_model} (on cooldown); "
+                        "using default model."
+                    )
+                    model_used = getattr(project.llm_client, "model", "")
+                    cost_before = _cost()
                 resp, aborted = self._invoke_llm(project, prompt, system_prompt)
             else:
                 logger.info(
@@ -172,19 +181,21 @@ class LLMMixin:
                 except Exception as routed_err:
                     logger.warning(
                         f"[{task.id}] routed model {routed_model} failed "
-                        f"({routed_err}); falling back to the default model."
+                        f"({routed_err}); falling back to the default model.",
+                        exc_info=not _is_retryable_error(routed_err),
                     )
-                    self._ledger_record(
-                        project,
-                        task,
-                        self._pending(
-                            routed_model, attempt, cost_before, t_before, False
-                        ),
-                        success=False,
-                    )
+                    if not _is_retryable_error(routed_err):
+                        record_cooldown(routed_model)
+                        self._ledger_record(
+                            project,
+                            task,
+                            self._pending(
+                                routed_model, attempt, cost_before, t_before, False
+                            ),
+                            success=False,
+                        )
                     model_used = getattr(project.llm_client, "model", "")
                     cost_before = _cost()
-                    t_before = time.time()
                     resp, aborted = self._invoke_llm(project, prompt, system_prompt)
 
         pending = self._pending(model_used, attempt, cost_before, t_before, aborted)
@@ -197,7 +208,7 @@ class LLMMixin:
             "model": model,
             "attempt": attempt,
             "cost_before": cost_before,
-            "latency": time.time() - t_before,
+            "latency": 0.0 if aborted else time.time() - t_before,
             "aborted": aborted,
         }
 

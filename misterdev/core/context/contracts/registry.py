@@ -54,7 +54,10 @@ class ContractRegistry:
                     self.contracts[task_id] = [
                         Contract(task_id, e["file_path"], e["symbols"]) for e in entries
                     ]
-            except (json.JSONDecodeError, OSError, KeyError):
+            except (json.JSONDecodeError, OSError, KeyError) as e:
+                logger.warning(
+                    f"contracts.json unreadable, starting fresh: {self._file}: {e}"
+                )
                 self.contracts = {}
 
     def _save(self):
@@ -77,6 +80,12 @@ class ContractRegistry:
         contracts = []
         for file_path in modified_files:
             full_path = project_path / file_path
+            try:
+                full_path = full_path.resolve()
+                full_path.relative_to(project_path.resolve())
+            except (ValueError, OSError):
+                logger.warning("Skipping out-of-bounds contract path: %s", file_path)
+                continue
             if not full_path.exists():
                 continue
             try:

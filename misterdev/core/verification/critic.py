@@ -201,8 +201,12 @@ def _run_panel(
             logger.debug(f"Critic panel member failed: {e}")
             return CritiqueVerdict(SKIP, reason=f"member error: {e}")
 
-    with ThreadPoolExecutor(max_workers=members) as pool:
-        return list(pool.map(_one, prompts))
+    pool = ThreadPoolExecutor(max_workers=members)
+    try:
+        futs = [pool.submit(_one, p) for p in prompts]
+        return [f.result() for f in futs]
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _aggregate_panel(verdicts: List["CritiqueVerdict"]) -> "CritiqueVerdict":

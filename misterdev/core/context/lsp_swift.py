@@ -142,13 +142,23 @@ class SourceKitSession:
     Use as a context manager so :meth:`__exit__` always shuts the server down.
     """
 
-    def __init__(self, project_root: str, timeout: float = 20.0):
+    def __init__(
+        self,
+        project_root: str,
+        timeout: float = 20.0,
+        handshake_timeout: Optional[float] = None,
+    ):
         self._root = Path(project_root).resolve()
         # Per-file settle budget: how long to wait for a publish before giving
         # up on one file without wedging the whole batch.
         self._timeout = max(timeout, 1.0)
+        # Handshake budget: initialize round-trip on a cold server can be slow.
+        self._handshake_timeout = max(
+            handshake_timeout if handshake_timeout is not None else timeout, 5.0
+        )
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
+        self._send_lock = threading.Lock()
         self._inbox: List[dict] = []
         self._stop = threading.Event()
         self._reader: Optional[threading.Thread] = None
@@ -166,6 +176,13 @@ class SourceKitSession:
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         self._stop.set()
+        if self._proc is not None and self._proc.poll() is None:
+            try:
+                self._proc.terminate()
+            except Exception:
+                pass
+        if self._reader is not None:
+            self._reader.join(timeout=2.0)
         _shutdown(self._proc)
         return False  # never suppress a caller's exception
 
@@ -207,11 +224,17 @@ class SourceKitSession:
         def _read() -> None:
             buf = b""
             while not self._stop.is_set():
-                chunk = stdout.read(4096)
+                try:
+                    chunk = stdout.read(4096)
+                except (OSError, ValueError):
+                    break
                 if not chunk:
                     break
                 buf += chunk
-                msgs, buf = parse_frames(buf)
+                try:
+                    msgs, buf = parse_frames(buf)
+                except Exception:
+                    break
                 if msgs:
                     with self._lock:
                         self._inbox.extend(msgs)
@@ -242,7 +265,7 @@ class SourceKitSession:
 
     def _await_initialize(self) -> bool:
         """Wait for the initialize result, or False on timeout/exit."""
-        deadline = time.monotonic() + self._timeout
+        deadline = time.monotonic() + self._handshake_timeout
         while time.monotonic() < deadline:
             for msg in self._drain():
                 if msg.get("id") == 1 and "result" in msg:
@@ -291,24 +314,39 @@ class SourceKitSession:
             }
         )
 
-        deadline = time.monotonic() + self._timeout
-        while time.monotonic() < deadline:
-            for msg in self._drain():
-                if msg.get("method") != "textDocument/publishDiagnostics":
-                    continue
-                params = msg.get("params", {})
-                if params.get("uri") == target_uri:
-                    # First publish for our file is authoritative; done.
-                    return _to_errors(params.get("diagnostics", []))
-            if self._proc.poll() is not None:
-                break
-            time.sleep(0.05)
-        return None
+        result = None
+        try:
+            deadline = time.monotonic() + self._timeout
+            while time.monotonic() < deadline:
+                for msg in self._drain():
+                    if msg.get("method") != "textDocument/publishDiagnostics":
+                        continue
+                    params = msg.get("params", {})
+                    if params.get("uri") == target_uri:
+                        result = _to_errors(params.get("diagnostics", []))
+                        return result
+                if self._proc.poll() is not None:
+                    break
+                time.sleep(0.05)
+            return None
+        finally:
+            try:
+                self._send(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/didClose",
+                        "params": {"textDocument": {"uri": target_uri}},
+                    }
+                )
+            except Exception:
+                pass
 
     def _send(self, payload: dict) -> None:
-        assert self._proc is not None and self._proc.stdin is not None
-        self._proc.stdin.write(frame_message(payload))
-        self._proc.stdin.flush()
+        if self._proc is None or self._proc.stdin is None:
+            raise RuntimeError("sourcekit-lsp process not running")
+        with self._send_lock:
+            self._proc.stdin.write(frame_message(payload))
+            self._proc.stdin.flush()
 
     def _drain(self) -> List[dict]:
         with self._lock:
@@ -365,7 +403,9 @@ def diagnostics_for(
     per_file = max(timeout / len(file_paths), 1.0)
     results: Dict[str, Optional[list]] = {path: None for path in file_paths}
     try:
-        with SourceKitSession(project_root, per_file) as session:
+        with SourceKitSession(
+            project_root, per_file, handshake_timeout=timeout
+        ) as session:
             for path in file_paths:
                 results[path] = session.diagnostics(path)
     except Exception as e:  # session/protocol failures are non-fatal

@@ -40,7 +40,7 @@ class ModelSelector:
             get_setting(config, "llm", "escalation") or []
         )
         self.models = dict(get_setting(config, "llm", "models") or {})
-        self.min_obs = get_setting(config, "llm", "min_observations")
+        self.min_obs = get_setting(config, "llm", "min_observations") or 3
         self.first_try_floor = get_setting(config, "llm", "first_try_floor")
         self.incompetence_floor = get_setting(config, "llm", "incompetence_floor")
         self.max_latency = get_setting(config, "llm", "max_attempt_latency_seconds")

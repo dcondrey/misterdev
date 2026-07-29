@@ -4,7 +4,11 @@ from typing import Callable, List, Optional, Dict, Tuple, TYPE_CHECKING
 from misterdev.logging_setup import setup_logger
 from misterdev.core.planning.assessment import HealthCheck
 from misterdev.core.gitcmd import run_git
-from misterdev.core.verification.validator import _run_cmd
+from misterdev.core.verification.validator import (
+    _run_cmd,
+    _parse_test_counts,
+    gate_ran_no_tests,
+)
 
 from .constants import (
     BANNED_MARKERS,
@@ -221,6 +225,13 @@ class GateKeeper:
             )
             health.tests_pass = success
             health.test_output = output
+            if (
+                success
+                and gate_ran_no_tests(output)
+                and _parse_test_counts(output)[0] == 0
+            ):
+                issues.append("G3: Test command ran but collected zero tests")
+                return False, issues, health
             if not success:
                 verdict = self._confirm_test_failure(test_cmd, output)
                 if verdict.is_real_failure:
@@ -405,21 +416,30 @@ class GateKeeper:
                 return False, issues, health
 
         # G5: Completeness scan
-        banned_found = self._scan_banned_markers()
-        if banned_found:
-            issues.append(f"G5: Banned markers found: {', '.join(banned_found)}")
+        try:
+            banned_found = self._scan_banned_markers()
+            if banned_found:
+                issues.append(f"G5: Banned markers found: {', '.join(banned_found)}")
+        except Exception as e:
+            logger.error(f"G5 scan failed (non-fatal): {e}")
 
         # G6: Secrets scan
-        secrets_found = self._scan_secrets()
-        if secrets_found:
-            issues.append(f"G6: Possible secrets in {len(secrets_found)} file(s)")
-            for path in secrets_found[:5]:
-                logger.warning(f"G6: Possible secret in {path}")
+        try:
+            secrets_found = self._scan_secrets()
+            if secrets_found:
+                issues.append(f"G6: Possible secrets in {len(secrets_found)} file(s)")
+                for path in secrets_found[:5]:
+                    logger.warning(f"G6: Possible secret in {path}")
+        except Exception as e:
+            logger.error(f"G6 scan failed (non-fatal): {e}")
 
         # G9: Diff hygiene
-        diff_issues = self._check_diff_hygiene()
-        if diff_issues:
-            issues.extend(diff_issues)
+        try:
+            diff_issues = self._check_diff_hygiene()
+            if diff_issues:
+                issues.extend(diff_issues)
+        except Exception as e:
+            logger.error(f"G9 scan failed (non-fatal): {e}")
 
         # Plugin gates: third-party gates registered on misterdev.plugins.GATES
         # run after the built-ins and can only ADD blocking issues (a RED

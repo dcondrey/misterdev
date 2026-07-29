@@ -129,6 +129,8 @@ class TestExecuteParallelMaxWorkers:
         for i in range(n):
             t = MagicMock()
             t.id = f"t{i}"
+            t.files_to_modify = [f"file{i}.py"]
+            t.files_to_create = []
             tasks.append(t)
         return tasks
 

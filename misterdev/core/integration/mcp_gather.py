@@ -39,6 +39,8 @@ from misterdev.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
 
+_MAX_TOOL_RESULT_CHARS = 32_000
+
 # "CALL server.tool" anywhere in the reply. Tolerant on purpose: searched (not
 # anchored) so leading markdown (backticks, ``**``, ``> ``) and trailing prose
 # don't break it, and case-insensitive with word boundaries so neither "recall"
@@ -275,9 +277,10 @@ def gather_context(
             gathered.append(f"### {server}.{tool} -> (no result / error)")
             continue
         tag = _UNVETTED_TAG if server in provisioned else ""
+        capped = result[:_MAX_TOOL_RESULT_CHARS]
         gathered.append(
             f"### {server}.{tool}{tag}\n"
-            f'<tool_result name="{server}.{tool}">\n{result}\n</tool_result>'
+            f'<tool_result name="{server}.{tool}">\n{capped}\n</tool_result>'
         )
 
     if not gathered:

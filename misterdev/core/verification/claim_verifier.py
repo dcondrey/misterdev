@@ -168,8 +168,7 @@ def verify_claims(
             "Completeness-claim verifier",
         )
 
-    # `model` set -> per-call with_model() is not thread-safe -> sequential.
-    if model or len(claims) == 1:
+    if len(claims) == 1:
         return [judge(c) for c in claims]
     with ThreadPoolExecutor(max_workers=min(4, len(claims))) as pool:
         return list(pool.map(judge, claims))

@@ -7,6 +7,7 @@ a clean no-op. The benchmark-gating itself lives in run_evolution (live path) an
 injected here as a fake.
 """
 
+import os
 from types import SimpleNamespace
 
 from misterdev.core.evolution.scheduled import run_scheduled_evolution
@@ -37,7 +38,7 @@ def test_runs_one_live_benchmark_gated_pass(tmp_path):
 def test_busy_lock_is_skipped(tmp_path):
     lock = tmp_path / ".orchestrator" / "evolution" / "scheduled.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
-    lock.write_text("held")
+    lock.write_text(str(os.getpid()))
     called = {"n": 0}
 
     def fake_run(*a, **k):

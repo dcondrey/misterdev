@@ -1,3 +1,4 @@
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -26,7 +27,9 @@ class VenvEnvironmentManager(BaseEnvironmentManager):
 
         timeout = float(self.config.get("setup_timeout", 600))
         for cmd_template in setup_commands:
-            command = cmd_template.format(root_dir=self.root_dir)
+            command = cmd_template.replace(
+                "{root_dir}", shlex.quote(str(self.root_dir))
+            )
             logger.info(f"Running env setup command: {command}")
             try:
                 subprocess.run(
@@ -53,4 +56,4 @@ class VenvEnvironmentManager(BaseEnvironmentManager):
         activate_script = self.config.get(
             "activate_script", "source {root_dir}/bin/activate"
         )
-        return activate_script.format(root_dir=self.root_dir)
+        return activate_script.replace("{root_dir}", shlex.quote(str(self.root_dir)))

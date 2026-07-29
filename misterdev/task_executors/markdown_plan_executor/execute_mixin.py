@@ -8,6 +8,7 @@ from misterdev.core.execution.project import Project
 from misterdev.core.verification.validator import (
     CodeValidator,
     CertaintyScorer,
+    StallDetector,
 )
 from misterdev.core.execution.error_resolver import ErrorResolver
 from misterdev.core.execution.error_classifier import (
@@ -39,6 +40,7 @@ class ExecuteMixin:
     ) -> ExecutionResult:
         logger.info(f"Starting execution of task: {task.id}")
         project.task_manager.update_task_status(task.id, "in_progress")
+        stall_detector = StallDetector()
 
         prompt_manager = PromptManager(project.config)
         processor_config = self._get_processor_config(project)
@@ -333,7 +335,9 @@ class ExecuteMixin:
                 if escalation_on
                 else "normal"
             )
-            if rung == "decompose":
+            if rung == "decompose" and not task.processor_data.get(
+                "_escalation_decomposed"
+            ):
                 logger.info(
                     f"Task {task.id} escalated to DECOMPOSE after {code_failures} "
                     "code failure(s); requesting a split into sub-steps."
@@ -665,6 +669,7 @@ class ExecuteMixin:
                 needs = _extract_needs_input(llm_response)
                 if needs:
                     logger.info(f"Task {task.id} needs user input: {needs}")
+                    self._ledger_record(project, task, pending_attempt, success=False)
                     self._abort_task(
                         project, branch_name, base_branch, snapshot, untracked_before
                     )
@@ -743,29 +748,11 @@ class ExecuteMixin:
                 # completes a no-gate high-certainty task.
                 pass
             else:
-                stall_risk = self.stall_detector.push_edit(edits)
+                stall_risk = stall_detector.push_edit(edits)
                 if stall_risk > 0.7:
                     logger.warning(f"High stall risk detected ({stall_risk:.2f}).")
-                    if attempt > 1:
-                        # A stall — the model reproduced the same edit — is a
-                        # genuine failure to make progress, so it advances the
-                        # escalation ladder just like a red gate. Otherwise a
-                        # staller would only ever see "try a different approach"
-                        # and spin until attempts run out, never widening context
-                        # / switching model / decomposing (the fix T005 needed).
-                        code_failures += 1
+                    if attempt > 0:
                         error_logs = "ERROR: Stalling detected. Try a fundamentally different approach."
-                        # Reset to the clean task base so the next attempt is a
-                        # FRESH candidate, not another edit piled onto the stuck one
-                        # the model keeps failing to fix (T3.2). Stays on the branch.
-                        self._reset_to_task_base(
-                            project,
-                            branch_name,
-                            base_branch,
-                            snapshot,
-                            untracked_before,
-                        )
-                        continue
 
                 validation_failed = False
                 for file_path, content in edits.items():
@@ -838,14 +825,22 @@ class ExecuteMixin:
                 # Record each touched file's ORIGINAL content once — first touch
                 # wins so the baseline survives across attempts (see task_pre_edit
                 # above). Used by the optional post-pass suite-strength check.
-                for p in edits:
-                    if p not in task_pre_edit:
-                        fp = project.path / p
-                        task_pre_edit[p] = (
-                            fp.read_text(encoding="utf-8") if fp.exists() else ""
-                        )
-                self._apply_edits(project, edits)
-                self._run_formatters(project, edits.keys())
+                try:
+                    for p in edits:
+                        if p not in task_pre_edit:
+                            fp = project.path / p
+                            task_pre_edit[p] = (
+                                fp.read_text(encoding="utf-8") if fp.exists() else ""
+                            )
+                    self._apply_edits(project, edits)
+                    self._run_formatters(project, edits.keys())
+                except Exception as e:
+                    msg = f"Failed to apply edits: {e}"
+                    logger.error(msg)
+                    self._abort_task(
+                        project, branch_name, base_branch, snapshot, untracked_before
+                    )
+                    return self._fail_task(project, task, msg)
                 edited_files.update(edits.keys())
 
             # Whether an OBJECTIVE compile/type gate passed this attempt. A green
@@ -991,6 +986,7 @@ class ExecuteMixin:
                         llm_response,
                         pending_attempt["model"],
                     )
+                    task.processor_data["model_used"] = pending_attempt["model"]
                     pending_attempt = None
                     self._record_success(task, target_files)
                     # Optional suite-strength check: with the tests green, mutate the
@@ -1003,13 +999,18 @@ class ExecuteMixin:
                     # status:completed is part of the task commit and survives the
                     # merge; otherwise the next task's checkout discards it.
                     project.task_manager.update_task_status(task.id, "completed")
-                    self._commit_task(
+                    merged = self._commit_task(
                         project,
                         branch_name,
                         base_branch,
                         task,
                         sorted(set(target_files) | edited_files),
                     )
+                    if not merged:
+                        project.task_manager.update_task_status(task.id, "in_progress")
+                        error_logs = "[GIT] Merge failed; retrying task."
+                        code_failures += 1
+                        continue
                     return self._complete_task(
                         project, task, "Task completed and tests passed.", output
                     )
@@ -1077,6 +1078,7 @@ class ExecuteMixin:
                     llm_response,
                     pending_attempt["model"],
                 )
+                task.processor_data["model_used"] = pending_attempt["model"]
                 pending_attempt = None
                 self._record_success(task, target_files)
                 # A task can merge on certainty/acceptance WITHOUT any test gate —
@@ -1089,13 +1091,18 @@ class ExecuteMixin:
                 # the task commit and survives the merge (see the tests-passed
                 # path above).
                 project.task_manager.update_task_status(task.id, "completed")
-                self._commit_task(
+                merged = self._commit_task(
                     project,
                     branch_name,
                     base_branch,
                     task,
                     sorted(set(target_files) | edited_files),
                 )
+                if not merged:
+                    project.task_manager.update_task_status(task.id, "in_progress")
+                    error_logs = "[GIT] Merge failed; retrying task."
+                    code_failures += 1
+                    continue
                 return self._complete_task(
                     project, task, "Task completed (no tests run).", llm_response
                 )
@@ -1143,6 +1150,7 @@ class ExecuteMixin:
                 project, branch_name, base_branch, snapshot, untracked_before
             )
 
+            _saved_processor_data = dict(task.processor_data)
             task.processor_data["strategy"] = "surgical"
             task.processor_data["invariants"] = (
                 "ESCALATED: Previous strategy failed. Use SURGICAL approach: "
@@ -1150,9 +1158,12 @@ class ExecuteMixin:
                 "Do not refactor or restructure. Minimal, targeted fix only."
             )
             # Recursive single attempt with surgical strategy
-            return self.execute(
-                task, project, use_git_branch=use_git_branch, _depth=_depth + 1
-            )
+            try:
+                return self.execute(
+                    task, project, use_git_branch=use_git_branch, _depth=_depth + 1
+                )
+            finally:
+                task.processor_data = _saved_processor_data
         elif _depth >= 1:
             logger.warning(
                 f"Strategy escalation blocked at depth {_depth}: already exhausted all strategies"

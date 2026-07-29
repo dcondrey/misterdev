@@ -1,3 +1,4 @@
+import random
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -8,6 +9,7 @@ from misterdev.config import get_setting
 from misterdev.logging_setup import setup_logger
 
 from .errors import BudgetExceededError, LLMCallError
+from .rate_coordinator import record_rate_limit, wait_if_needed
 from .response import LLMResponse, LLMUsage
 
 logger = setup_logger(__name__)
@@ -20,7 +22,7 @@ logger = setup_logger(__name__)
 # fires on a pathological blowup. When it fires, the MIDDLE is elided (the head
 # carries instructions, the tail carries the actual ask), which degrades far more
 # gracefully than a 400.
-_MAX_PROMPT_CHARS = 2_800_000
+_MAX_PROMPT_CHARS = 2_400_000
 
 
 def _bound_prompt(prompt: str) -> str:
@@ -153,6 +155,10 @@ class BaseLLMClient(ABC):
         is_free = ":free" in (getattr(self, "model", "") or "")
         max_retries = 1 if is_free else 3
         base_delay = 1.0
+        model_key = getattr(self, "model", "") or ""
+
+        if model_key:
+            wait_if_needed(model_key)
 
         last_error = None
         for attempt in range(max_retries):
@@ -164,12 +170,16 @@ class BaseLLMClient(ABC):
                 last_error = e
                 if not e.retryable or attempt == max_retries - 1:
                     raise
-                delay = base_delay * (2**attempt)
+                delay = base_delay * (2**attempt) * random.uniform(0.8, 1.2)
                 logger.warning(
                     f"LLM call failed (attempt {attempt + 1}/{max_retries}), "
                     f"retrying in {delay:.1f}s: {e}"
                 )
-                time.sleep(delay)
+                if model_key:
+                    record_rate_limit(model_key, delay)
+                    wait_if_needed(model_key)
+                else:
+                    time.sleep(delay)
 
         raise last_error
 
@@ -295,22 +305,20 @@ class BaseLLMClient(ABC):
         """
         prompt = self._prepare_prompt(prompt)
 
-        chunks: list[str] = []
+        content = ""
         usage: Optional[LLMUsage] = None
         finish_reason = "stop"
         stream = self._call_stream(prompt, system_prompt)
         try:
             while True:
-                chunks.append(next(stream))
-                if abort_check is not None and abort_check("".join(chunks)):
+                content += next(stream)
+                if abort_check is not None and abort_check(content):
                     logger.warning("Aborting LLM stream: bad output pattern detected")
                     stream.close()
                     finish_reason = "aborted"
                     break
         except StopIteration as stop:
             usage = stop.value
-
-        content = "".join(chunks)
         if usage is None:
             usage = self._estimate_usage(prompt, system_prompt, content)
         self._track_usage(usage)

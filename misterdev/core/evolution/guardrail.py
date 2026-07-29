@@ -22,7 +22,11 @@ _PROTECTED_PREFIXES = (
     "evaluation/",  # the benchmark harness — the judge itself
     "misterdev/core/verification/",  # the gate suite (correctness/mutation/spec gates)
     "misterdev/core/evolution/",  # the loop's own fitness / archive / guardrail
+    "misterdev/llm/responses/",  # patch applicator and diff parser — corrupt this and every subsequent apply is wrong
+    "misterdev/core/learning/",  # failure taxonomy and reproduction — corrupt this and the feedback signal is wrong
     "tests/",  # held-out + regression tests
+    "git/",  # .git/ normalizes to git/ — repo metadata is never a valid edit target
+    "orchestrator/",  # .orchestrator/ normalizes to orchestrator/ — runtime state, not source
 )
 
 
@@ -59,7 +63,9 @@ def is_protected(path: str) -> bool:
     """True if ``path`` may not be mutated (walled off, or escapes the repo)."""
     if _escapes_repo(path):
         return True
-    norm = _normalize(path)
+    norm = _normalize(
+        path
+    ).lower()  # case-insensitive: macOS FS is case-insensitive by default
     return any(
         norm == prefix.rstrip("/") or norm.startswith(prefix)
         for prefix in _PROTECTED_PREFIXES
