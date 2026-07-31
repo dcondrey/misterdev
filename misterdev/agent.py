@@ -60,11 +60,10 @@ from misterdev.core.execution.doctor_mixin import DoctorMixin
 from misterdev.core.execution.targets_mixin import TargetsMixin
 from misterdev.core.execution.spec_gen_mixin import SpecGenMixin
 from misterdev.core.execution.wave_mixin import WaveMixin
+from misterdev.core.execution.interactive_mixin import InteractiveMixin
+from misterdev.core.execution.analysis_mixin import AnalysisMixin
 from misterdev.utils.file_utils import atomic_write, orchestrator_state_file
 from misterdev.core.models import Task
-from misterdev.analyzers.project_analyzer import (
-    analyze_project,
-)
 from misterdev.analyzers.project_analyzer.detection import (
     detect_lint_command,
     detect_typecheck_command,
@@ -110,6 +109,8 @@ class ProjectOrchestrator(
     TargetsMixin,
     SpecGenMixin,
     WaveMixin,
+    InteractiveMixin,
+    AnalysisMixin,
     ParallelExecutionMixin,
     IntegrationGateMixin,
 ):
@@ -2095,122 +2096,6 @@ class ProjectOrchestrator(
         for task in tasks:
             if task.id not in processed_ids:
                 report.deferred_tasks.append(task)
-
-    def _interactive_prompt(self, task: Task, strategy: str = "iterative") -> str:
-        console.print(
-            f"\n[bold cyan]Next Task:[/] [{task.id}] {task.title} ([bold magenta]{strategy.upper()}[/])"
-        )
-        choice = Prompt.ask("Proceed?", choices=["y", "n", "s", "q"], default="y")
-        return {"y": "proceed", "q": "quit", "s": "skip", "n": "quit"}[choice]
-
-    def _staging_hint(self, project: Project) -> str:
-        """Dense-reward staging suggestion for a single complex source file.
-
-        Uses the already-built symbol graph: when every public symbol lives in ONE
-        non-test source file, that is a single-file goal — synthesize ordered
-        construction->mutation->query stages so the decomposer can split it into a
-        few sequential, independently-verifiable sub-tasks (raises per-attempt
-        success on state-heavy files). Empty for multi-file goals or when nothing
-        stages; never raises.
-        """
-        try:
-            from misterdev.core.planning.verifier_decomposition import (
-                render_stages,
-                synthesize_stages,
-            )
-
-            graph = getattr(getattr(project, "topography", None), "graph", None)
-            symbols = list(getattr(graph, "symbols", {}).values()) if graph else []
-            src = [
-                s
-                for s in symbols
-                if getattr(s, "file_path", "") and "test" not in s.file_path.lower()
-            ]
-            if len({s.file_path for s in src}) != 1:
-                return ""  # staging only applies to a single-file goal
-            stages = synthesize_stages(src)
-            if len(stages) < 2:
-                return ""
-            return (
-                "\n## Suggested staging (dense-reward decomposition)\n"
-                "This file's public API splits into ordered, independently-"
-                "verifiable stages. Prefer ONE sequential sub-task per stage, in "
-                "this order (each must compile and leave the suite no worse):\n"
-                f"{render_stages(stages)}\n"
-            )
-        except Exception as e:  # a staging hint must never break decomposition
-            logger.debug(f"Staging hint skipped (non-fatal): {e}")
-            return ""
-
-    def _setup_env(self, project: Project) -> Optional[str]:
-        """Initialize the project's env manager and return its activation prefix."""
-        if project.env_manager:
-            project.env_manager.setup()
-            return project.env_manager.activate_command()
-        return None
-
-    def _container_engine(self, project: Project):
-        """Return the project's container engine if a container environment is
-        configured and an engine is available, else None (gates run locally).
-
-        ``_setup_env`` has already called ``setup()``, so the engine is
-        detected by the time gates run.
-        """
-        from misterdev.environments.container_env import (
-            ContainerEnvironmentManager,
-        )
-
-        env = project.env_manager
-        if isinstance(env, ContainerEnvironmentManager):
-            return env.engine()
-        return None
-
-    def _project_file_map(self, project: Project) -> str:
-        """The project's real file+symbol outline, for grounding decomposition.
-
-        Best-effort: builds the symbol graph (idempotent) and returns its project
-        outline, or "" if topography is unavailable or errors — the decomposer
-        then falls back to cautious path inference rather than failing.
-        """
-        cached = getattr(project, "_file_map_cache", None)
-        if cached is not None:
-            return cached
-        topo = getattr(project, "topography", None)
-        if topo is None:
-            return ""
-        try:
-            topo.initialize()
-            result = topo.get_project_outline()
-            project._file_map_cache = result
-            return result
-        except Exception as e:
-            logger.warning(f"File map unavailable for decomposition (non-fatal): {e}")
-            return ""
-
-    def _analyze(self, project: Project, env_activate: Optional[str]):
-        """Phase 1 analysis with config-driven commands and timeouts.
-
-        Shared by build() and interactive_plan() so the analyzer's parameters
-        (and any future config wiring) live in exactly one place.
-        """
-        # Build the project's symbol graph ONCE via its TopographyEngine and feed
-        # the outline to the analyzer, instead of letting the source overview parse
-        # a second throwaway graph. The engine's initialize() is idempotent, so the
-        # later decomposition/file-map calls reuse this same graph.
-        project_outline = self._project_file_map(project) or None
-        return analyze_project(
-            project.path,
-            project.llm_client,
-            build_command=project.config.get("build_command"),
-            test_command=project.config.get("test_command"),
-            lint_command=project.config.get("lint_command"),
-            env_activate=env_activate,
-            build_timeout=get_setting(project.config, "build", "build_timeout"),
-            test_timeout=get_setting(project.config, "build", "test_timeout"),
-            lint_timeout=get_setting(project.config, "build", "lint_timeout"),
-            parallel=get_setting(project.config, "build", "parallel_analysis"),
-            project_outline=project_outline,
-        )
 
     def _get_or_register(self, project_path: str | Path) -> Optional[Project]:
         project = self.registry.get_project(project_path)

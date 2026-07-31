@@ -2466,7 +2466,7 @@ def test_interactive_plan_cancels_when_no_goal():
     with (
         patch.object(orch, "_get_or_register", return_value=project),
         patch(
-            "misterdev.agent.analyze_project",
+            "misterdev.core.execution.analysis_mixin.analyze_project",
             return_value=ProjectAssessment(),
         ),
         patch("misterdev.agent.recommend_work", return_value=[]),
@@ -2495,7 +2495,7 @@ def test_interactive_plan_runs_pipeline_with_confirm():
     with (
         patch.object(orch, "_get_or_register", return_value=project),
         patch(
-            "misterdev.agent.analyze_project",
+            "misterdev.core.execution.analysis_mixin.analyze_project",
             return_value=ProjectAssessment(),
         ),
         patch("misterdev.agent.recommend_work", return_value=[]),
