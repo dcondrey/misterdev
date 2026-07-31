@@ -1589,13 +1589,20 @@ def test_per_task_cost_cap_reverts_and_defers_not_failure():
                 return True, ""
 
         with (
-            patch("misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor", _Exec),
+            patch(
+                "misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor",
+                _Exec,
+            ),
             patch("misterdev.core.execution.execution_loop_mixin.Scratchpad"),
             patch("misterdev.core.execution.execution_loop_mixin.RealTimeAligner"),
             patch("misterdev.core.execution.execution_loop_mixin.ContractRegistry"),
             patch("misterdev.core.execution.execution_loop_mixin.ChangeTracker"),
-            patch("misterdev.core.execution.execution_loop_mixin.ProgressTracker") as MockProg,
-            patch("misterdev.core.execution.execution_loop_mixin.StrategyOptimizer") as MockStrat,
+            patch(
+                "misterdev.core.execution.execution_loop_mixin.ProgressTracker"
+            ) as MockProg,
+            patch(
+                "misterdev.core.execution.execution_loop_mixin.StrategyOptimizer"
+            ) as MockStrat,
         ):
             MockProg.return_value.completed = []
             MockProg.return_value.needs_rerun.return_value = True
@@ -1645,12 +1652,17 @@ def _run_execute_tasks(project, tasks):
     # but keep a REAL ProgressTracker so it loads the on-disk ledger this test
     # pre-populated — that ledger is what the skip decision reads.
     with (
-        patch("misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor", _SkipExec),
+        patch(
+            "misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor",
+            _SkipExec,
+        ),
         patch("misterdev.core.execution.execution_loop_mixin.Scratchpad"),
         patch("misterdev.core.execution.execution_loop_mixin.RealTimeAligner"),
         patch("misterdev.core.execution.execution_loop_mixin.ContractRegistry"),
         patch("misterdev.core.execution.execution_loop_mixin.ChangeTracker"),
-        patch("misterdev.core.execution.execution_loop_mixin.StrategyOptimizer") as MockStrat,
+        patch(
+            "misterdev.core.execution.execution_loop_mixin.StrategyOptimizer"
+        ) as MockStrat,
     ):
         MockStrat.return_value.select_best_strategy.return_value = "iterative"
         orch = agent_mod.ProjectOrchestrator()
@@ -1803,12 +1815,17 @@ def test_adaptive_backoff_applies_to_next_wave():
                 return True, ""
 
         with (
-            patch("misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor", _Exec),
+            patch(
+                "misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor",
+                _Exec,
+            ),
             patch("misterdev.core.execution.execution_loop_mixin.Scratchpad"),
             patch("misterdev.core.execution.execution_loop_mixin.RealTimeAligner"),
             patch("misterdev.core.execution.execution_loop_mixin.ContractRegistry"),
             patch("misterdev.core.execution.execution_loop_mixin.ChangeTracker"),
-            patch("misterdev.core.execution.execution_loop_mixin.StrategyOptimizer") as MockStrat,
+            patch(
+                "misterdev.core.execution.execution_loop_mixin.StrategyOptimizer"
+            ) as MockStrat,
         ):
             MockStrat.return_value.select_best_strategy.return_value = "iterative"
             orch = agent_mod.ProjectOrchestrator()
@@ -1985,13 +2002,20 @@ def test_deferred_result_routed_to_deferred_not_failed():
                 return True, ""
 
         with (
-            patch("misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor", _Exec),
+            patch(
+                "misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor",
+                _Exec,
+            ),
             patch("misterdev.core.execution.execution_loop_mixin.Scratchpad"),
             patch("misterdev.core.execution.execution_loop_mixin.RealTimeAligner"),
             patch("misterdev.core.execution.execution_loop_mixin.ContractRegistry"),
             patch("misterdev.core.execution.execution_loop_mixin.ChangeTracker"),
-            patch("misterdev.core.execution.execution_loop_mixin.StrategyOptimizer") as MS,
-            patch("misterdev.core.execution.execution_loop_mixin.ProgressTracker") as MP,
+            patch(
+                "misterdev.core.execution.execution_loop_mixin.StrategyOptimizer"
+            ) as MS,
+            patch(
+                "misterdev.core.execution.execution_loop_mixin.ProgressTracker"
+            ) as MP,
         ):
             MS.return_value.select_best_strategy.return_value = "iterative"
             MP.return_value.completed = []
@@ -2029,7 +2053,9 @@ def test_budget_exhausted_before_wave_defers_gracefully():
             def _run_command(self, *a, **k):
                 return True, ""
 
-        with patch("misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor", _Exec):
+        with patch(
+            "misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor", _Exec
+        ):
             orch = agent_mod.ProjectOrchestrator()
             report = _fresh_report()
             flags = BuildFlags(no_rollback=True)
@@ -2437,15 +2463,22 @@ def test_choose_goal_number_text_and_quit():
         Recommendation("Add feature X", "users want it", "feature"),
     ]
 
-    with patch("misterdev.agent.Prompt.ask", return_value="1"):
+    with patch(
+        "misterdev.core.execution.interactive_plan_mixin.Prompt.ask", return_value="1"
+    ):
         goal, mode = orch._choose_goal(recs)
     assert goal == "Fix imports" and mode == BuildMode.DEBUG
 
-    with patch("misterdev.agent.Prompt.ask", return_value="make it faster"):
+    with patch(
+        "misterdev.core.execution.interactive_plan_mixin.Prompt.ask",
+        return_value="make it faster",
+    ):
         goal, mode = orch._choose_goal(recs)
     assert goal == "make it faster"
 
-    with patch("misterdev.agent.Prompt.ask", return_value="q"):
+    with patch(
+        "misterdev.core.execution.interactive_plan_mixin.Prompt.ask", return_value="q"
+    ):
         goal, mode = orch._choose_goal(recs)
     assert goal is None
 
@@ -3428,15 +3461,23 @@ def _run_convergence_pipeline(gate_sequence, max_iterations, budget=100.0):
 
         with (
             patch.object(orch, "_execute_tasks", side_effect=fake_exec),
-            patch.object(agent_mod, "decompose_spec", side_effect=fake_decompose),
-            patch.object(agent_mod, "topological_sort", side_effect=lambda x: x),
-            patch.object(agent_mod, "GateKeeper", _ScriptedGate),
+            patch(
+                "misterdev.core.execution.pipeline_mixin.decompose_spec",
+                side_effect=fake_decompose,
+            ),
+            patch(
+                "misterdev.core.execution.pipeline_mixin.topological_sort",
+                side_effect=lambda x: x,
+            ),
+            patch("misterdev.core.execution.pipeline_mixin.GateKeeper", _ScriptedGate),
             patch.object(
                 agent_mod.ProjectOrchestrator,
                 "_maybe_rollback_regression",
                 return_value=None,
             ),
-            patch.object(agent_mod, "SessionAuditor") as MockAuditor,
+            patch(
+                "misterdev.core.execution.pipeline_mixin.SessionAuditor"
+            ) as MockAuditor,
         ):
             MockAuditor.return_value.get_lessons_context.return_value = ""
             MockAuditor.return_value.audit_session.return_value = None
@@ -3491,15 +3532,23 @@ def _run_convergence_pipeline_with_cfg(gate_sequence, orchestrator_cfg):
 
         with (
             patch.object(orch, "_execute_tasks", side_effect=fake_exec),
-            patch.object(agent_mod, "decompose_spec", side_effect=fake_decompose),
-            patch.object(agent_mod, "topological_sort", side_effect=lambda x: x),
-            patch.object(agent_mod, "GateKeeper", _ScriptedGate),
+            patch(
+                "misterdev.core.execution.pipeline_mixin.decompose_spec",
+                side_effect=fake_decompose,
+            ),
+            patch(
+                "misterdev.core.execution.pipeline_mixin.topological_sort",
+                side_effect=lambda x: x,
+            ),
+            patch("misterdev.core.execution.pipeline_mixin.GateKeeper", _ScriptedGate),
             patch.object(
                 agent_mod.ProjectOrchestrator,
                 "_maybe_rollback_regression",
                 return_value=None,
             ),
-            patch.object(agent_mod, "SessionAuditor") as MockAuditor,
+            patch(
+                "misterdev.core.execution.pipeline_mixin.SessionAuditor"
+            ) as MockAuditor,
         ):
             MockAuditor.return_value.get_lessons_context.return_value = ""
             MockAuditor.return_value.audit_session.return_value = None
