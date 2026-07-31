@@ -58,6 +58,8 @@ from misterdev.core.execution.parallel import ParallelExecutionMixin
 from misterdev.core.execution.integration_gate import IntegrationGateMixin
 from misterdev.core.execution.doctor_mixin import DoctorMixin
 from misterdev.core.execution.targets_mixin import TargetsMixin
+from misterdev.core.execution.spec_gen_mixin import SpecGenMixin
+from misterdev.core.execution.wave_mixin import WaveMixin
 from misterdev.utils.file_utils import atomic_write, orchestrator_state_file
 from misterdev.core.models import Task
 from misterdev.analyzers.project_analyzer import (
@@ -104,7 +106,12 @@ CONVERGENCE_CEILING = 25
 
 
 class ProjectOrchestrator(
-    DoctorMixin, TargetsMixin, ParallelExecutionMixin, IntegrationGateMixin
+    DoctorMixin,
+    TargetsMixin,
+    SpecGenMixin,
+    WaveMixin,
+    ParallelExecutionMixin,
+    IntegrationGateMixin,
 ):
     """Main orchestrator with Sovereign Grounded workflow."""
 
@@ -1596,86 +1603,6 @@ class ProjectOrchestrator(
             else:
                 report.key_decisions.append(issue)
 
-    def _build_fix_spec(
-        self,
-        report: BuildReport,
-        issues: list[str],
-        final_health: HealthCheck,
-    ) -> str:
-        """Compose a targeted spec from the gate's concrete failures.
-
-        Used by the convergence loop for iterations 2+: instead of re-running
-        expensive discovery, it points decomposition straight at what the gate
-        flagged (build/test/lint output, failed and deferred tasks) so the next
-        pass fixes the gap rather than re-planning the whole build.
-        """
-        parts = ["# Convergence Fix Spec", "## Goal: make the gate pass\n"]
-        if issues:
-            parts.append("### Gate Failures")
-            for item in issues:
-                parts.append(f"- {item}")
-        if not final_health.builds and final_health.build_output:
-            parts.append(f"\n### Build Output\n{final_health.build_output[:1000]}")
-        if not final_health.tests_pass and final_health.test_output:
-            parts.append(f"\n### Test Output\n{final_health.test_output[:1000]}")
-        if not final_health.lint_clean and final_health.lint_output:
-            parts.append(f"\n### Lint Output\n{final_health.lint_output[:1000]}")
-        if report.failed_tasks:
-            parts.append("\n### Failed Tasks")
-            for t in report.failed_tasks:
-                parts.append(f"- {t.id}: {t.title}")
-        if report.deferred_tasks:
-            parts.append("\n### Deferred Tasks")
-            for t in report.deferred_tasks:
-                parts.append(f"- {t.id}: {t.title}")
-        return "\n".join(parts)
-
-    @staticmethod
-    def _wave_infra_count(results: list) -> int:
-        """How many of a wave's tasks FAILED on an ENVIRONMENT fault (not code).
-
-        Scans each unsuccessful task's error/logs for an infra signature (timeout,
-        locked store, OOM, ...). A completed task never counts — a transient fault
-        it self-healed past is not contention worth backing off for. Only an
-        UN-recovered infra failure, the exact signal that concurrency is too high,
-        is counted.
-        """
-        from misterdev.core.execution.infra import infra_failure
-
-        count = 0
-        for _task, result, error in results:
-            if result is not None and getattr(result, "status", None) == "completed":
-                continue
-            text = ""
-            if error is not None:
-                text += str(error)
-            if result is not None:
-                text += " " + str(getattr(result, "logs", "") or "")
-                text += " " + str(getattr(result, "message", "") or "")
-            if infra_failure(text):
-                count += 1
-        return count
-
-    def _apply_wave_tuning(self, project: Project, tuning, base: dict) -> None:
-        """Apply a wave's tuning by scaling the config the deep gate paths read.
-
-        max_workers and the gate/setup timeouts are resolved via ``get_setting``
-        throughout the executor and worktree code, so the one central way to make
-        an adapted value reach all of them is to set it on the config for the
-        wave. Always computed from the captured ``base`` (never the last wave's
-        already-scaled value) so repeated application cannot drift. Safe between
-        waves: the wave loop is serial here, and each wave's workers read the value
-        once before the parallel section starts.
-        """
-        orch = project.config.setdefault("orchestrator", {})
-        orch["max_workers"] = tuning.max_workers
-        orch["worktree_setup_timeout"] = int(
-            round(base["setup"] * tuning.timeout_factor)
-        )
-        build = project.config.setdefault("build", {})
-        build["build_timeout"] = int(round(base["build"] * tuning.timeout_factor))
-        build["test_timeout"] = int(round(base["test"] * tuning.timeout_factor))
-
     def _execute_tasks(
         self,
         tasks: list[Task],
@@ -2214,176 +2141,6 @@ class ProjectOrchestrator(
         except Exception as e:  # a staging hint must never break decomposition
             logger.debug(f"Staging hint skipped (non-fatal): {e}")
             return ""
-
-    def _ground_completion_spec(
-        self, assessment: ProjectAssessment, project: Project
-    ) -> str:
-        """Build a COMPLETE-mode spec grounded in objective signals.
-
-        A vague "complete everything" goal on a real codebase otherwise churns:
-        the completeness analyzer flags "incomplete"/"stub" items from a lossy
-        overview and mislabels deliberate design (graceful degradation, platform
-        no-ops) as work, so the spec becomes a pile of speculative tasks. Instead
-        lead with HARD signals — a failing build, failing tests, located
-        TODO/FIXME markers, broken references — which are objective and
-        verifiable, add features the docs promise but are absent, and demote the
-        analyzer's guesses to an explicit "do NOT task these unless corroborated"
-        advisory. When nothing hard or documented exists, the goal is ill-posed:
-        emit zero-task guidance rather than fabricate work.
-        """
-        h = assessment.health
-        f = assessment.features
-        hard: list[str] = []
-        if not h.builds and h.build_output:
-            hard.append(
-                f"- The build is FAILING; fix it first:\n{h.build_output[:400]}"
-            )
-        if not h.tests_pass and h.test_output:
-            hard.append(f"- Tests are FAILING:\n{h.test_output[:400]}")
-        hard.extend(f"- Broken: {item}" for item in f.broken)
-        hard.extend(
-            f"- {t.get('file', '?')}:{t.get('line', '?')} {t.get('text', '')}"
-            for t in f.todos[:20]
-        )
-        documented = [f"- {m.name}: {m.description}" for m in f.missing]
-        speculative = [f"- {i.name}: {i.description}" for i in f.incomplete]
-        speculative += [f"- Stub: {s}" for s in f.stubs]
-
-        parts = [f"# Completion Spec\n## Project: {project.name}\n"]
-        if hard:
-            parts.append(
-                "## Must Fix — objective, verifiable failures\n" + "\n".join(hard)
-            )
-        if documented:
-            parts.append(
-                "\n## Should Add — promised by the docs but absent\n"
-                + "\n".join(documented)
-            )
-        if not hard and not documented:
-            parts.append(
-                "## No concrete objective found\n"
-                "The build and tests pass and there are no TODO/FIXME markers or "
-                "documented-but-missing features. A vague 'complete everything' goal "
-                "has no well-posed work here. Do NOT fabricate tasks from speculation: "
-                "produce ZERO tasks and report that a specific objective (a feature, a "
-                "bug to fix, or --focus <area>) is required."
-            )
-        if speculative:
-            parts.append(
-                "\n## Advisory — analyzer guesses, NOT tasks\n"
-                "Inferred as incomplete/stub from a lossy overview; these often "
-                "mislabel deliberate design. Do NOT create a task for any of these "
-                "unless a failing test or build error above corroborates it.\n"
-                + "\n".join(speculative[:15])
-            )
-        return "\n".join(parts)
-
-    def _generate_spec(
-        self,
-        mode: BuildMode,
-        prompt: str,
-        assessment: ProjectAssessment,
-        project: Project,
-        facts: str = "",
-    ) -> str:
-        """Phase 2: Generate a spec based on mode."""
-        if mode == BuildMode.DEBUG:
-            parts = ["# Debug Spec\n## Broken Items"]
-            for item in assessment.features.broken:
-                parts.append(f"- {item}")
-            if assessment.features.stubs:
-                parts.append("\n## Stubs")
-                for item in assessment.features.stubs:
-                    parts.append(f"- {item}")
-            if not assessment.health.builds:
-                parts.append(
-                    f"\n## Build Failure\n{assessment.health.build_output[:500]}"
-                )
-            if not assessment.health.tests_pass:
-                parts.append(
-                    f"\n## Test Failures\n{assessment.health.test_output[:500]}"
-                )
-            return "\n".join(parts)
-
-        if mode == BuildMode.COMPLETE:
-            return self._ground_completion_spec(assessment, project)
-
-        if mode == BuildMode.SPEC:
-            spec_path = project.path / prompt.strip()
-            try:
-                spec_path = spec_path.resolve()
-                spec_path.relative_to(project.path.resolve())
-            except ValueError:
-                return f"Spec file not found: {prompt}"
-            if spec_path.exists():
-                return spec_path.read_text(encoding="utf-8")
-            return f"Spec file not found: {prompt}"
-
-        if mode == BuildMode.CREATE:
-            expand_prompt = (
-                f"Expand the following into a comprehensive project spec.\n"
-                f"Include: features with acceptance criteria, error handling, "
-                f"input validation, testing strategy, architecture decisions.\n\n"
-                f"Project context: {assessment.context.purpose}\n"
-                f"Conventions: {assessment.context.conventions}\n"
-                f"Languages: {assessment.structure.languages}\n"
-                f"Frameworks: {assessment.structure.frameworks}\n"
-                f"Existing features: {[f.name for f in assessment.features.existing]}\n"
-                f"Verified facts: {facts}\n\n"
-                f"Description: {prompt}\n\nReturn the spec as markdown."
-            )
-            return project.llm_client.generate_code(
-                expand_prompt,
-                "You are a software architect writing a project specification.",
-            )
-
-        if mode == BuildMode.SMART:
-            # SMART is a SPECIFIC instruction on an EXISTING project — not a
-            # from-scratch build. The goal is the scope boundary: implement
-            # exactly what it asks plus only what is strictly necessary to make
-            # THAT correct and tested. Never expand into a whole-project spec
-            # (that is CREATE's job) — doing so makes the decomposer invent
-            # unrelated tasks and rewrite pre-existing files it was only meant
-            # to read (observed: a "create region.py" goal ballooned into
-            # rewriting the harness and inventing conftest/config tasks).
-            scoped_prompt = (
-                f"Write a tightly-scoped implementation spec for EXACTLY this "
-                f"goal — nothing more.\n"
-                f"Rules:\n"
-                f"- Implement only what the goal asks. Add only what is strictly "
-                f"necessary to make the goal correct, tested, and safe (its own "
-                f"error handling, input validation, and tests).\n"
-                f"- Do NOT expand scope: no unrelated features, no 'completing' "
-                f"or 'improving' the project, no refactors the goal did not "
-                f"request.\n"
-                f"- Existing files are CONTEXT, not work items. Do not modify or "
-                f"rewrite them unless the goal explicitly requires it.\n"
-                f"- Prefer the smallest change set that fully satisfies the "
-                f"goal.\n\n"
-                f"Project context: {assessment.context.purpose}\n"
-                f"Conventions: {assessment.context.conventions}\n"
-                f"Languages: {assessment.structure.languages}\n"
-                f"Existing files (context only — do not modify unless the goal "
-                f"requires it): {[f.name for f in assessment.features.existing]}\n"
-                f"Verified facts: {facts}\n\n"
-                f"Goal: {prompt}\n\nReturn the spec as markdown."
-            )
-            return project.llm_client.generate_code(
-                scoped_prompt,
-                "You are a software engineer writing a tightly-scoped "
-                "implementation spec. You implement exactly what is asked and "
-                "resist scope creep.",
-            )
-
-        if mode == BuildMode.REVIEW:
-            return (
-                f"# Review Spec\nReview and fix all issues found in the project.\n"
-                f"Broken: {assessment.features.broken}\n"
-                f"Stubs: {assessment.features.stubs}\n"
-                f"TODOs: {len(assessment.features.todos)} items"
-            )
-
-        return f"# Auto Spec\n{prompt}"
 
     def _setup_env(self, project: Project) -> Optional[str]:
         """Initialize the project's env manager and return its activation prefix."""
