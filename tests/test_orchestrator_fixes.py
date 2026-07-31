@@ -1589,13 +1589,13 @@ def test_per_task_cost_cap_reverts_and_defers_not_failure():
                 return True, ""
 
         with (
-            patch.object(agent_mod, "MarkdownPlanExecutor", _Exec),
-            patch("misterdev.agent.Scratchpad"),
-            patch("misterdev.agent.RealTimeAligner"),
-            patch("misterdev.agent.ContractRegistry"),
-            patch("misterdev.agent.ChangeTracker"),
-            patch("misterdev.agent.ProgressTracker") as MockProg,
-            patch("misterdev.agent.StrategyOptimizer") as MockStrat,
+            patch("misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor", _Exec),
+            patch("misterdev.core.execution.execution_loop_mixin.Scratchpad"),
+            patch("misterdev.core.execution.execution_loop_mixin.RealTimeAligner"),
+            patch("misterdev.core.execution.execution_loop_mixin.ContractRegistry"),
+            patch("misterdev.core.execution.execution_loop_mixin.ChangeTracker"),
+            patch("misterdev.core.execution.execution_loop_mixin.ProgressTracker") as MockProg,
+            patch("misterdev.core.execution.execution_loop_mixin.StrategyOptimizer") as MockStrat,
         ):
             MockProg.return_value.completed = []
             MockProg.return_value.needs_rerun.return_value = True
@@ -1645,12 +1645,12 @@ def _run_execute_tasks(project, tasks):
     # but keep a REAL ProgressTracker so it loads the on-disk ledger this test
     # pre-populated — that ledger is what the skip decision reads.
     with (
-        patch.object(agent_mod, "MarkdownPlanExecutor", _SkipExec),
-        patch("misterdev.agent.Scratchpad"),
-        patch("misterdev.agent.RealTimeAligner"),
-        patch("misterdev.agent.ContractRegistry"),
-        patch("misterdev.agent.ChangeTracker"),
-        patch("misterdev.agent.StrategyOptimizer") as MockStrat,
+        patch("misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor", _SkipExec),
+        patch("misterdev.core.execution.execution_loop_mixin.Scratchpad"),
+        patch("misterdev.core.execution.execution_loop_mixin.RealTimeAligner"),
+        patch("misterdev.core.execution.execution_loop_mixin.ContractRegistry"),
+        patch("misterdev.core.execution.execution_loop_mixin.ChangeTracker"),
+        patch("misterdev.core.execution.execution_loop_mixin.StrategyOptimizer") as MockStrat,
     ):
         MockStrat.return_value.select_best_strategy.return_value = "iterative"
         orch = agent_mod.ProjectOrchestrator()
@@ -1803,12 +1803,12 @@ def test_adaptive_backoff_applies_to_next_wave():
                 return True, ""
 
         with (
-            patch.object(agent_mod, "MarkdownPlanExecutor", _Exec),
-            patch("misterdev.agent.Scratchpad"),
-            patch("misterdev.agent.RealTimeAligner"),
-            patch("misterdev.agent.ContractRegistry"),
-            patch("misterdev.agent.ChangeTracker"),
-            patch("misterdev.agent.StrategyOptimizer") as MockStrat,
+            patch("misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor", _Exec),
+            patch("misterdev.core.execution.execution_loop_mixin.Scratchpad"),
+            patch("misterdev.core.execution.execution_loop_mixin.RealTimeAligner"),
+            patch("misterdev.core.execution.execution_loop_mixin.ContractRegistry"),
+            patch("misterdev.core.execution.execution_loop_mixin.ChangeTracker"),
+            patch("misterdev.core.execution.execution_loop_mixin.StrategyOptimizer") as MockStrat,
         ):
             MockStrat.return_value.select_best_strategy.return_value = "iterative"
             orch = agent_mod.ProjectOrchestrator()
@@ -1985,13 +1985,13 @@ def test_deferred_result_routed_to_deferred_not_failed():
                 return True, ""
 
         with (
-            patch.object(agent_mod, "MarkdownPlanExecutor", _Exec),
-            patch("misterdev.agent.Scratchpad"),
-            patch("misterdev.agent.RealTimeAligner"),
-            patch("misterdev.agent.ContractRegistry"),
-            patch("misterdev.agent.ChangeTracker"),
-            patch("misterdev.agent.StrategyOptimizer") as MS,
-            patch("misterdev.agent.ProgressTracker") as MP,
+            patch("misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor", _Exec),
+            patch("misterdev.core.execution.execution_loop_mixin.Scratchpad"),
+            patch("misterdev.core.execution.execution_loop_mixin.RealTimeAligner"),
+            patch("misterdev.core.execution.execution_loop_mixin.ContractRegistry"),
+            patch("misterdev.core.execution.execution_loop_mixin.ChangeTracker"),
+            patch("misterdev.core.execution.execution_loop_mixin.StrategyOptimizer") as MS,
+            patch("misterdev.core.execution.execution_loop_mixin.ProgressTracker") as MP,
         ):
             MS.return_value.select_best_strategy.return_value = "iterative"
             MP.return_value.completed = []
@@ -2029,7 +2029,7 @@ def test_budget_exhausted_before_wave_defers_gracefully():
             def _run_command(self, *a, **k):
                 return True, ""
 
-        with patch.object(agent_mod, "MarkdownPlanExecutor", _Exec):
+        with patch("misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor", _Exec):
             orch = agent_mod.ProjectOrchestrator()
             report = _fresh_report()
             flags = BuildFlags(no_rollback=True)

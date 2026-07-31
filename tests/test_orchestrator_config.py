@@ -350,13 +350,13 @@ class TestExecuteTasksMaxConsecutiveFailures:
             tasks.append(t)
 
         with (
-            patch("misterdev.agent.Scratchpad"),
-            patch("misterdev.agent.RealTimeAligner"),
-            patch("misterdev.agent.ContractRegistry"),
-            patch("misterdev.agent.ProgressTracker") as MockProgress,
-            patch("misterdev.agent.ChangeTracker"),
-            patch("misterdev.agent.StrategyOptimizer") as MockStrategy,
-            patch("misterdev.agent.MarkdownPlanExecutor") as MockExecutor,
+            patch("misterdev.core.execution.execution_loop_mixin.Scratchpad"),
+            patch("misterdev.core.execution.execution_loop_mixin.RealTimeAligner"),
+            patch("misterdev.core.execution.execution_loop_mixin.ContractRegistry"),
+            patch("misterdev.core.execution.execution_loop_mixin.ProgressTracker") as MockProgress,
+            patch("misterdev.core.execution.execution_loop_mixin.ChangeTracker"),
+            patch("misterdev.core.execution.execution_loop_mixin.StrategyOptimizer") as MockStrategy,
+            patch("misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor") as MockExecutor,
         ):
             mock_progress = MockProgress.return_value
             mock_progress.completed = []
@@ -418,13 +418,13 @@ class TestExecuteTasksMaxConsecutiveFailures:
             tasks.append(t)
 
         with (
-            patch("misterdev.agent.Scratchpad"),
-            patch("misterdev.agent.RealTimeAligner"),
-            patch("misterdev.agent.ContractRegistry"),
-            patch("misterdev.agent.ProgressTracker") as MockProgress,
-            patch("misterdev.agent.ChangeTracker"),
-            patch("misterdev.agent.StrategyOptimizer") as MockStrategy,
-            patch("misterdev.agent.MarkdownPlanExecutor") as MockExecutor,
+            patch("misterdev.core.execution.execution_loop_mixin.Scratchpad"),
+            patch("misterdev.core.execution.execution_loop_mixin.RealTimeAligner"),
+            patch("misterdev.core.execution.execution_loop_mixin.ContractRegistry"),
+            patch("misterdev.core.execution.execution_loop_mixin.ProgressTracker") as MockProgress,
+            patch("misterdev.core.execution.execution_loop_mixin.ChangeTracker"),
+            patch("misterdev.core.execution.execution_loop_mixin.StrategyOptimizer") as MockStrategy,
+            patch("misterdev.core.execution.execution_loop_mixin.MarkdownPlanExecutor") as MockExecutor,
         ):
             mock_progress = MockProgress.return_value
             mock_progress.completed = []
