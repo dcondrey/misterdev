@@ -213,68 +213,23 @@ class PipelineMixin:
 
         threading.Thread(target=_promote, daemon=True).start()
 
-    def _run_pipeline(
+    def _decompose_plan(
         self,
         project: Project,
         prompt: str,
         mode: BuildMode,
-        flags: BuildFlags,
         assessment: ProjectAssessment,
-        env_activate: Optional[str],
         report: BuildReport,
-        confirm_plan: bool = False,
-        reference_digest: str = "",
-        progress_cb: Optional[Callable[..., None]] = None,
-        spec_text: str = "",
-    ) -> str:
-        """Phases 1.5-6: probes, spec, decompose, (confirm), execute, validate.
+        reference_digest: str,
+        spec_text: str,
+        max_tasks: int,
+        file_map: dict,
+        targets: list,
+    ) -> tuple[list[Task], SessionAuditor]:
+        """Phases 1.5-3: probes, spec generation, sovereign enhancements, decomposition.
 
-        Shared by build() and interactive_plan(). When confirm_plan is set, the
-        composed plan is shown and the user is asked to approve it before any
-        task executes.
+        Returns (tasks, auditor) so the coordinator can pass them to _converge.
         """
-        _check_golden_config(project.config)
-        # Cross-run env memory: pre-tune this run from durable facts learned in
-        # prior runs (effective setup/healthcheck command, a backed-off max_workers)
-        # WITHOUT overriding any explicit project.yaml value. Best-effort: a missing
-        # or unreadable ledger just means no pre-tuning. Applied here, before any
-        # gate/worktree code reads the config.
-        try:
-            applied = EnvLearnings.load(project.path).apply_to_config(project.config)
-            for a in applied:
-                logger.info(f"Env-memory: pre-tuned {a} from a prior run")
-        except Exception as e:
-            logger.debug(f"Env-memory pre-tune skipped (non-fatal): {e}")
-        # Make the analysis baseline failure count available to the per-task test
-        # gate so a RED baseline doesn't reject every task: the gate then accepts a
-        # task that leaves the suite no worse, letting a multi-failure project be
-        # fixed incrementally. 0 on a green/unknown baseline keeps the gate strict.
-        project.baseline_test_failures = int(
-            getattr(assessment.health, "test_failures", 0) or 0
-        )
-        # Also surface the baseline failure OUTPUT so a fix task can see the real
-        # failures on its FIRST attempt (instead of editing blind and only learning
-        # what broke on retry). Empty on a green baseline.
-        project.baseline_test_output = (
-            getattr(assessment.health, "test_output", "") or ""
-            if project.baseline_test_failures
-            else ""
-        )
-        # Record the pre-build HEAD so the optional goal-completion check can diff
-        # the whole build's work (committed task commits + working tree) against
-        # it. Best-effort: None outside a git repo or on error, which the check
-        # treats as "no diff" and degrades to a summary-only judgment.
-        goal_check_base = self._capture_head(project)
-        # Spec-as-tests, when enabled, is wired per-task in the executor: the
-        # generated failing test is written under .orchestrator/spec_tests/
-        # (outside the project suite, so it never flips the integration-gate
-        # baseline) and run scoped after the task's own gates pass. Nothing to do
-        # at the pipeline level.
-        # Sovereign Phase 1.5: Empirical Probes (only for SMART/CREATE modes).
-        # Best-effort: probe discovery must never crash the build, so any
-        # failure here degrades to no verified facts rather than aborting. Opt out
-        # via orchestrator.enable_probes for a cheaper/faster run (probes spend an
-        # LLM call plus ephemeral script runs before any task executes).
         verified_facts = ""
         probes_on = get_setting(project.config, "orchestrator", "enable_probes")
         if probes_on and mode in (BuildMode.SMART, BuildMode.CREATE):
@@ -297,13 +252,8 @@ class PipelineMixin:
                 logger.warning(f"Probe discovery failed (non-fatal): {e}")
                 report.degraded_subsystems.append(f"Empirical probes: {e}")
 
-        # Verify completeness claims against the real source before they shape the
-        # spec or the task list, so deliberate design (graceful-degradation,
-        # platform no-ops, parity shims) is not planned as work. Best-effort and
-        # conservative: only claims the verifier refutes with evidence are dropped.
         self._verify_completeness_claims(project, assessment, report)
 
-        # Phase 2: Generate Spec (skip when caller supplies one directly)
         spec = (
             spec_text
             if spec_text
@@ -312,22 +262,12 @@ class PipelineMixin:
             )
         )
 
-        # Prepend the reference-implementation digest (when porting from one) so
-        # decomposition and every task see the reference's real module/symbol map
-        # alongside the spec. Read-only and offline; empty when no --reference.
         if reference_digest:
             spec = f"{reference_digest}\n\n{spec}"
 
-        # Sovereign enhancements (metacognition, AB-MCTS) are best-effort: they
-        # refine the spec but must not crash the build, so each degrades to the
-        # current spec on failure rather than aborting before any work is done.
-        # One embedder, shared by lesson retrieval and warm-start, so a similar
-        # lesson/task surfaces by MEANING, not just shared tokens. Best-effort:
-        # None (no fastembed / disabled) degrades both to lexical ranking.
         embedder = self._learning_embedder(project)
         auditor = SessionAuditor(project.path, project.llm_client, embedder=embedder)
         try:
-            # Bias retrieval toward lessons relevant to this build's goal.
             lessons = auditor.get_lessons_context(prompt)
             if lessons:
                 spec = f"{lessons}\n\n{spec}"
@@ -335,8 +275,6 @@ class PipelineMixin:
             logger.warning(f"Lesson injection failed (non-fatal): {e}")
             report.degraded_subsystems.append(f"Lesson injection: {e}")
 
-        # Warm-start: seed the spec with how similar tasks were solved before, so a
-        # recurring shape starts from a proven approach instead of cold.
         solved_index = SolvedTaskIndex(
             project.path / ".orchestrator" / "solved_tasks.jsonl", embedder=embedder
         )
@@ -348,9 +286,6 @@ class PipelineMixin:
             logger.warning(f"Warm-start injection failed (non-fatal): {e}")
             report.degraded_subsystems.append(f"Warm-start injection: {e}")
 
-        # AB-MCTS branch-and-evaluate is off by default: it fires several serial
-        # LLM calls before any work begins (observed ~30 min on one build) for
-        # marginal spec refinement. Opt in with orchestrator.enable_ab_mcts.
         if get_setting(project.config, "orchestrator", "enable_ab_mcts"):
             try:
                 planner = ABMCTSPlanner(project.llm_client)
@@ -359,18 +294,6 @@ class PipelineMixin:
                 logger.warning(f"AB-MCTS planning failed (non-fatal): {e}")
                 report.degraded_subsystems.append(f"AB-MCTS planning: {e}")
 
-        # Phase 3: Decompose
-        max_tasks = get_setting(project.config, "build", "max_tasks")
-        # A --max-tasks flag is a per-run ceiling: the tighter of it and the
-        # config cap wins, so a focused/bounded run can't balloon into dozens of
-        # tasks (and exhaust the budget) the way a broad spec otherwise would.
-        if isinstance(flags.max_tasks, int) and flags.max_tasks > 0:
-            max_tasks = min(max_tasks, flags.max_tasks)
-        # The decomposer otherwise guesses file paths from feature/test names and
-        # the executor then CREATES a wrong new file. Feed it the real file+symbol
-        # map so a task targets the actual file that defines the code to change.
-        file_map = self._project_file_map(project)
-        targets = self._resolve_targets(project)
         tasks = decompose_spec(
             spec,
             assessment,
@@ -388,8 +311,6 @@ class PipelineMixin:
         tasks = split_keystone_tasks(
             tasks, completed_ids=frozenset(_early_progress.completed)
         )
-        # Persist any split mappings so needs_rerun() can skip re-executing a
-        # segment whose parent was already completed on a prior run.
         _post_ids = {t.id for t in tasks}
         for _orig_id in _pre_split_ids - _post_ids:
             _parts = [
@@ -402,20 +323,26 @@ class PipelineMixin:
                 _early_progress.record_split(_orig_id, _parts)
         tasks = topological_sort(tasks)
 
-        if flags.dry_run:
-            return format_plan(tasks, mode)
+        return tasks, auditor
 
-        if confirm_plan:
-            _console.print(Markdown(format_plan(tasks, mode)))
-            if not self._confirm(f"Proceed with these {len(tasks)} tasks?"):
-                return "Cancelled: plan not approved."
-
-        # Phases 4-5: Execute + Gate, wrapped in an outer convergence loop.
-        # The loop keeps re-attempting concrete gate failures until the gate is
-        # green, the budget runs out, or an iteration makes no progress. The
-        # default "auto" is budget-driven: it runs up to CONVERGENCE_CEILING but
-        # in practice stops on the budget/no-progress guards below. An explicit
-        # positive int caps the iterations hard instead.
+    def _converge(
+        self,
+        project: Project,
+        tasks: list[Task],
+        mode: BuildMode,
+        flags: BuildFlags,
+        assessment: ProjectAssessment,
+        env_activate: Optional[str],
+        report: BuildReport,
+        auditor: SessionAuditor,
+        goal_check_base: Optional[str],
+        prompt: str,
+        progress_cb: Optional[Callable[..., None]],
+        max_tasks: int,
+        file_map: dict,
+        targets: list,
+    ) -> str:
+        """Phases 4-6: execute-gate convergence loop, goal check, and metacognitive audit."""
         raw_iterations = get_setting(
             project.config, "orchestrator", "max_build_iterations"
         )
@@ -438,7 +365,6 @@ class PipelineMixin:
 
             # Phase 5: Gates
             if flags.no_verify:
-                # No gate to converge on; preserve single-pass behavior.
                 break
             gatekeeper = GateKeeper(
                 project.path,
@@ -489,9 +415,6 @@ class PipelineMixin:
             validation.build_ran = bool(commands["build_command"])
             validation.tests_ran = bool(commands["test_command"])
             validation.lint_ran = bool(commands["lint_command"])
-            # Per-target validation: verify EVERY declared sub-project with its
-            # own toolchain. A target failure fails the run even if the top-level
-            # gate was green (no-op when no targets are declared).
             target_results = self._validate_targets(project, env_activate)
             if target_results:
                 summary = ", ".join(
@@ -514,7 +437,6 @@ class PipelineMixin:
             logger.warning(f"Validation failed: {issues}")
             self._maybe_rollback_regression(project, report, assessment, flags)
 
-            # Decide whether to attempt another convergence iteration.
             if iteration >= max_build_iterations:
                 break
             if _budget_exhausted(project.llm_client):
@@ -523,8 +445,6 @@ class PipelineMixin:
                     "Convergence halted: budget exhausted before next iteration"
                 )
                 break
-            # No-progress guards: don't loop on an iteration that ran nothing or
-            # produced the identical failure signature.
             if tasks_this_iter == 0:
                 break
             if prev_issues is not None and prev_issues == issues:
@@ -535,8 +455,6 @@ class PipelineMixin:
                 break
             prev_issues = list(issues)
 
-            # Build a targeted fix spec from the concrete gate failures plus any
-            # failed/deferred tasks, re-decompose it, and re-run the same path.
             fix_spec = self._build_fix_spec(report, issues, final_health)
             fix_tasks = decompose_spec(
                 fix_spec,
@@ -560,16 +478,9 @@ class PipelineMixin:
                 )
                 break
 
-        # Optional goal-completion check (off by default). Runs AFTER the gate
-        # loop has settled: an LLM judge reads the goal, acceptance criteria, and
-        # the cumulative diff and reports whether the goal is actually met (gates
-        # green != goal met). Advisory by default — gaps are recorded and logged
-        # but do not fail the build; it blocks only when block_on_goal_gap is set.
-        # Timeout-bounded and best-effort, so it can never hang or crash a build.
         if get_setting(project.config, "orchestrator", "goal_check"):
             self._run_goal_check(project, prompt, tasks, goal_check_base, report)
 
-        # Phase 6: Metacognitive Audit (best-effort; never fail a finished build)
         report.finalize()
         try:
             auditor.audit_session(
@@ -581,10 +492,88 @@ class PipelineMixin:
 
         report.apply_llm_usage(project.llm_client.cumulative_usage)
         report.cost_by_task = dict(getattr(project.llm_client, "cost_by_task", {}))
-        # Learning writes + spend accounting, shared with the budget-halt path so
-        # a budget-exhausted run (the highest-signal failure) is not silently
-        # dropped from the streams the self-improvement features learn from.
         self._persist_learning(project, report)
 
         report.save(project.path)
         return report.to_markdown()
+
+    def _run_pipeline(
+        self,
+        project: Project,
+        prompt: str,
+        mode: BuildMode,
+        flags: BuildFlags,
+        assessment: ProjectAssessment,
+        env_activate: Optional[str],
+        report: BuildReport,
+        confirm_plan: bool = False,
+        reference_digest: str = "",
+        progress_cb: Optional[Callable[..., None]] = None,
+        spec_text: str = "",
+    ) -> str:
+        """Phases 1.5-6: probes, spec, decompose, (confirm), execute, validate.
+
+        Shared by build() and interactive_plan(). When confirm_plan is set, the
+        composed plan is shown and the user is asked to approve it before any
+        task executes.
+        """
+        _check_golden_config(project.config)
+        try:
+            applied = EnvLearnings.load(project.path).apply_to_config(project.config)
+            for a in applied:
+                logger.info(f"Env-memory: pre-tuned {a} from a prior run")
+        except Exception as e:
+            logger.debug(f"Env-memory pre-tune skipped (non-fatal): {e}")
+        project.baseline_test_failures = int(
+            getattr(assessment.health, "test_failures", 0) or 0
+        )
+        project.baseline_test_output = (
+            getattr(assessment.health, "test_output", "") or ""
+            if project.baseline_test_failures
+            else ""
+        )
+        goal_check_base = self._capture_head(project)
+
+        max_tasks = get_setting(project.config, "build", "max_tasks")
+        if isinstance(flags.max_tasks, int) and flags.max_tasks > 0:
+            max_tasks = min(max_tasks, flags.max_tasks)
+        file_map = self._project_file_map(project)
+        targets = self._resolve_targets(project)
+
+        tasks, auditor = self._decompose_plan(
+            project,
+            prompt,
+            mode,
+            assessment,
+            report,
+            reference_digest,
+            spec_text,
+            max_tasks,
+            file_map,
+            targets,
+        )
+
+        if flags.dry_run:
+            return format_plan(tasks, mode)
+
+        if confirm_plan:
+            _console.print(Markdown(format_plan(tasks, mode)))
+            if not self._confirm(f"Proceed with these {len(tasks)} tasks?"):
+                return "Cancelled: plan not approved."
+
+        return self._converge(
+            project,
+            tasks,
+            mode,
+            flags,
+            assessment,
+            env_activate,
+            report,
+            auditor,
+            goal_check_base,
+            prompt,
+            progress_cb,
+            max_tasks,
+            file_map,
+            targets,
+        )

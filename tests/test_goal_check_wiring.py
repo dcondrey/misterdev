@@ -171,7 +171,7 @@ def test_goal_check_guard_skips_invocation_when_off(tmp_path, monkeypatch):
     # Source-level guard: the only call site is gated by the goal_check setting.
     import inspect
 
-    src = inspect.getsource(agent_mod.ProjectOrchestrator._run_pipeline)
+    src = inspect.getsource(agent_mod.ProjectOrchestrator._converge)
     # The call to _run_goal_check is immediately preceded by the flag check.
     idx = src.index("self._run_goal_check(")
     preceding = src[:idx]
