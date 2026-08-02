@@ -3632,7 +3632,7 @@ def test_convergence_stops_on_budget_exhaustion():
 
 
 def test_combine_commands():
-    from misterdev.agent import _combine_commands
+    from misterdev.agent_helpers import _combine_commands
 
     assert (
         _combine_commands("pytest", "pytest tests/golden")

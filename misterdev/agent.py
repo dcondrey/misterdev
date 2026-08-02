@@ -1,5 +1,3 @@
-import json
-import re
 import shlex
 import threading
 from datetime import datetime, timezone
@@ -11,15 +9,10 @@ from rich.panel import Panel
 
 from misterdev.core.execution.registry import ProjectRegistry
 from misterdev.core.modes import (
-    BuildMode,
-    BuildFlags,
     parse_flags,
     resolve_mode,
 )
-from misterdev.core.planning.assessment import (
-    ProjectAssessment,
-    HealthCheck,
-)
+from misterdev.core.planning.assessment import ProjectAssessment
 from misterdev.core.context.scratchpad import Scratchpad
 from misterdev.core.planning.decomposer import topological_sort
 from misterdev.core.gitcmd import run_git
@@ -47,7 +40,7 @@ from misterdev.core.execution.reporting_mixin import ReportingMixin
 from misterdev.core.execution.execution_loop_mixin import ExecutionLoopMixin
 from misterdev.core.execution.pipeline_mixin import PipelineMixin
 from misterdev.core.execution.interactive_plan_mixin import InteractivePlanMixin
-from misterdev.core.models import Task
+
 from misterdev.analyzers.reference_digest import build_reference_digest
 from misterdev.core.planning.advisor import recommend_work
 from misterdev.core.planning.plan_store import (
@@ -61,9 +54,7 @@ from misterdev.task_executors.markdown_plan_executor import (
 from misterdev.agent_helpers import (
     ProgressReporter,
     _apply_budget_ceiling,
-    _budget_exhausted,
     _check_golden_config,
-    _combine_commands,
     _warn_if_baseline_broken,
     _warn_if_no_test_gate,
     _warn_if_test_gate_is_noop,
@@ -493,7 +484,6 @@ class ProjectOrchestrator(
                 f"Recovered HEAD from stranded branch '{cur}' back to '{base_branch}'."
             )
 
-
     def run_task(self, project_path: str | Path, task_id: str):
         """Runs a specific task for a given project."""
         project = self._get_or_register(project_path)
@@ -628,7 +618,6 @@ class ProjectOrchestrator(
         except BudgetExceededError as e:
             return self._halt_on_budget(project, report, e)
 
-
     def propose_plan(self, project_path: str | Path, args: str = "") -> Dict[str, Any]:
         """Analyze the project and persist ranked work proposals for approval.
 
@@ -734,7 +723,6 @@ class ProjectOrchestrator(
             )
         except BudgetExceededError as e:
             return self._halt_on_budget(project, report, e)
-
 
     def _get_or_register(self, project_path: str | Path) -> Optional[Project]:
         project = self.registry.get_project(project_path)
