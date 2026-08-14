@@ -205,39 +205,6 @@ Return ONLY the JSON array.
         return []
 
 
-class ToolSynthesizer:
-    """Synthesizes project-local helper tools on-the-fly."""
-
-    def __init__(self, project_path: Path):
-        self.tools_dir = project_path / ".orchestrator" / "synthesized_tools"
-        self.tools_dir.mkdir(parents=True, exist_ok=True)
-
-    def synthesize_tool(
-        self, name: str, purpose: str, llm_client: BaseLLMClient
-    ) -> str:
-        """Asks LLM to generate a Python script for a specific purpose."""
-        prompt = (
-            f"Synthesize a standalone Python script to serve as a local tool.\n"
-            f"Purpose: {purpose}\nTool Name: {name}\n\n"
-            f"Requirements:\n"
-            f"- Single file, standard library or project-available dependencies.\n"
-            f"- Executable as 'python tool.py'.\n"
-            f"- Return ONLY the code in a ```python code block."
-        )
-        logger.info(f"Synthesizing tool: {name}")
-        response = llm_client.generate_code(prompt, "You are a senior tools engineer.")
-
-        code = _extract_code_block(response)
-        try:
-            ast.parse(code)
-        except SyntaxError as e:
-            raise ValueError(f"Synthesized tool code has syntax errors: {e}") from e
-        tool_path = self.tools_dir / f"{safe_ref_slug(name, fallback='tool')}.py"
-        atomic_write(tool_path, code.replace("\x00", ""))
-        logger.info(f"Tool {name} saved to {tool_path}")
-        return str(tool_path)
-
-
 class StrategyOptimizer:
     """Optimizes agentic workflows via strategy simulation.
 
@@ -337,20 +304,3 @@ class RealTimeAligner:
         for d in self.data["decisions"]:
             lines.append(f"- {d['decision']} (Rationale: {d['rationale']})")
         return "\n".join(lines)
-
-
-def _extract_code_block(response: str) -> str:
-    """Extract the first code block from an LLM response."""
-    lines = response.split("\n")
-    in_block = False
-    code_lines = []
-    for line in lines:
-        if line.strip().startswith("```") and not in_block:
-            in_block = True
-            # Skip the opening fence line
-            continue
-        if line.strip().startswith("```") and in_block:
-            break
-        if in_block:
-            code_lines.append(line)
-    return "\n".join(code_lines) if code_lines else response.strip()

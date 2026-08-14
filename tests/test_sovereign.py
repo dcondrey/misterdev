@@ -7,8 +7,6 @@ from misterdev.core.planning.sovereign import (
     ProbeGenerator,
     RealTimeAligner,
     StrategyOptimizer,
-    ToolSynthesizer,
-    _extract_code_block,
 )
 
 
@@ -46,14 +44,6 @@ def test_probe_generator_parses_and_handles_failure():
     assert len(probes) == 1 and probes[0]["name"] == "p"
     # LLM failure -> empty list, never raises
     assert ProbeGenerator(_FakeLLM(raises=True)).generate_probes("s", "a") == []
-
-
-def test_tool_synthesizer_writes_tool_file():
-    with tempfile.TemporaryDirectory() as td:
-        llm = _FakeLLM(responses=["```python\nprint('tool')\n```"])
-        path = ToolSynthesizer(Path(td)).synthesize_tool("My Tool", "do stuff", llm)
-        assert Path(path).exists()
-        assert "print('tool')" in Path(path).read_text()
 
 
 def test_strategy_optimizer_selects_then_caches():
@@ -152,26 +142,6 @@ def test_strategy_optimizer_strategies():
     assert "agentic" in StrategyOptimizer.STRATEGIES
 
 
-def test_extract_code_block_python():
-    response = "Here is the code:\n```python\nx = 1\ny = 2\n```\nDone."
-    assert _extract_code_block(response) == "x = 1\ny = 2"
-
-
-def test_extract_code_block_no_lang():
-    response = "Code:\n```\nfn main() {}\n```"
-    assert _extract_code_block(response) == "fn main() {}"
-
-
-def test_extract_code_block_no_fence():
-    response = "x = 1\ny = 2"
-    assert _extract_code_block(response) == "x = 1\ny = 2"
-
-
-def test_extract_code_block_multiple():
-    response = "First:\n```\nblock1\n```\nSecond:\n```\nblock2\n```"
-    assert _extract_code_block(response) == "block1"
-
-
 def test_load_tolerates_valid_json_of_wrong_shape(tmp_path):
     import json
 
@@ -207,6 +177,8 @@ def test_load_preserves_valid_decisions(tmp_path):
     d = tmp_path / ".orchestrator"
     d.mkdir(parents=True)
     (d / "consensus.json").write_text(
-        json.dumps({"invariants": [], "decisions": [{"decision": "keep", "rationale": "r"}]})
+        json.dumps(
+            {"invariants": [], "decisions": [{"decision": "keep", "rationale": "r"}]}
+        )
     )
     assert "keep" in RealTimeAligner(tmp_path).get_consensus_context()
