@@ -376,23 +376,19 @@ def _image_diff_fraction(a: bytes, b: bytes) -> float:
     try:
         import io
 
-        from PIL import Image
+        from PIL import Image, ImageChops
 
         img_a = Image.open(io.BytesIO(a)).convert("RGB")
         img_b = Image.open(io.BytesIO(b)).convert("RGB")
         if img_a.size != img_b.size:
             img_b = img_b.resize(img_a.size)
-        px_a = img_a.load()
-        px_b = img_b.load()
         width, height = img_a.size
         if width == 0 or height == 0:
             return 0.0
-        differing = 0
-        for y in range(height):
-            for x in range(width):
-                if px_a[x, y] != px_b[x, y]:
-                    differing += 1
-        return differing / float(width * height)
+        diff = ImageChops.difference(img_a, img_b).convert("L")
+        unchanged = diff.histogram()[0]
+        total = width * height
+        return (total - unchanged) / float(total)
     except Exception as e:
         logger.debug(f"Pillow diff unavailable, byte-comparing: {e}")
         return _byte_diff_fraction(a, b)
