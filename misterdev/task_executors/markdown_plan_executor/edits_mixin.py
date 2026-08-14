@@ -30,6 +30,23 @@ def _nonblank_len(text: str) -> int:
     return sum(len(line.strip()) for line in text.splitlines() if line.strip())
 
 
+def _is_unsafe_edit_path(path: Path) -> bool:
+    """True when a relative edit path could escape the project tree or reach
+    ``.git``, mirroring ``FileIOTool.execute``'s guard (misterdev/tools/file_io.py):
+    parent traversal (``..``), an absolute path, an empty/``.`` path that would
+    resolve to the project root itself, and any path that touches the ``.git``
+    directory — the integration gate's rollback/bisect depends on git history
+    surviving an LLM edit, so a write into ``.git`` could corrupt the revert
+    mechanism the whole orchestrator's safety net depends on.
+    """
+    return (
+        not path.parts
+        or ".." in path.parts
+        or path.is_absolute()
+        or ".git" in path.parts
+    )
+
+
 class EditsMixin:
     def _validate_edit_paths(
         self, project: Project, task: Task, edits: Dict[str, str]
@@ -48,7 +65,7 @@ class EditsMixin:
         for path, content in edits.items():
             try:
                 _p = Path(path)
-                if _p.parts and (".." in _p.parts or _p.is_absolute()):
+                if _is_unsafe_edit_path(_p):
                     logger.error(f"Rejected edit with unsafe path: {path}")
                     continue
             except (ValueError, OSError):
@@ -264,31 +281,23 @@ class EditsMixin:
         ):
             return
         try:
-            import subprocess
-
             from misterdev.core.execution.outcomes import RED, SKIP
             from misterdev.core.verification.changed_region_mutation import (
                 run_changed_region_mutation,
             )
+            from misterdev.core.verification.validator import _run_cmd
 
             mcfg = project.config.get("mutation") or {}
             floor = float(mcfg.get("changed_region_min_score", 0.0))
             cap = int(mcfg.get("changed_region_max_mutants", 12))
             run_dir = cwd or project.path
 
+            # Reuses _run_cmd's Popen(start_new_session=True) + kill_process_group
+            # timeout handling rather than reimplementing it a third time: this
+            # runner re-executes the test command once per mutant, so a hung
+            # child here is exactly the leak that guard exists to prevent.
             def _runner(cmd, timeout):
-                try:
-                    p = subprocess.run(
-                        cmd,
-                        shell=True,
-                        cwd=str(run_dir),
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout,
-                    )
-                except subprocess.TimeoutExpired:
-                    return False, ""
-                return p.returncode == 0, (p.stdout or "") + (p.stderr or "")
+                return _run_cmd(cmd, run_dir, timeout=timeout)
 
             # Score EVERY edited non-test source file with a mutable changed region,
             # not just the largest: a multi-file fix's crux may be a small file, and
@@ -352,7 +361,7 @@ class EditsMixin:
         for path, hunks in by_path.items():
             try:
                 _p = Path(path)
-                if ".." in _p.parts or _p.is_absolute():
+                if _is_unsafe_edit_path(_p):
                     return {}, f"Unsafe path rejected: {path!r}"
             except (ValueError, OSError):
                 return {}, f"Malformed path rejected: {path!r}"
