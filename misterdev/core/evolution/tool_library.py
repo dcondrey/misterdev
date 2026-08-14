@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from misterdev.logging_setup import setup_logger
+from misterdev.utils.file_utils import atomic_write_json, flock_guarded
 
 from .fitness import FitnessScore
 from .holdout import PromotionDecision, decide_promotion
@@ -107,9 +108,8 @@ class ToolLibrary:
         return elites, run
 
     def _save(self, elites: Dict[str, ToolCandidate], run: int) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"run": run, "elites": [asdict(t) for t in elites.values()]}
-        self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        atomic_write_json(self.path, payload, indent=2)
 
     def consider(
         self,
@@ -129,28 +129,29 @@ class ToolLibrary:
         already covers that capability better). Every call bumps the run counter and
         persists, so the count reflects total tools considered, admitted or not.
         """
-        elites, run = self._load()
-        run += 1
-        tool.run = run
-        decision = decide_promotion(
-            derive, derive_base, holdout, holdout_base, self.noise_band
-        )
-        admitted = decision
-        if decision.promote:
-            incumbent = elites.get(tool.niche)
-            beats = tool.regressions == 0 and (
-                incumbent is None
-                or tool.score().beats(incumbent.score(), self.noise_band)
+        with flock_guarded(self.path):
+            elites, run = self._load()
+            run += 1
+            tool.run = run
+            decision = decide_promotion(
+                derive, derive_base, holdout, holdout_base, self.noise_band
             )
-            if beats:
-                elites[tool.niche] = tool
-            else:
-                admitted = PromotionDecision(
-                    False,
-                    f"generalizes ({decision.reason}) but does not beat the "
-                    f"{tool.niche!r} elite",
+            admitted = decision
+            if decision.promote:
+                incumbent = elites.get(tool.niche)
+                beats = tool.regressions == 0 and (
+                    incumbent is None
+                    or tool.score().beats(incumbent.score(), self.noise_band)
                 )
-        self._save(elites, run)
+                if beats:
+                    elites[tool.niche] = tool
+                else:
+                    admitted = PromotionDecision(
+                        False,
+                        f"generalizes ({decision.reason}) but does not beat the "
+                        f"{tool.niche!r} elite",
+                    )
+            self._save(elites, run)
         if admitted.promote:
             logger.info(
                 f"ToolLibrary: {tool.id!r} admitted as elite for niche "

@@ -1,10 +1,11 @@
+import contextlib
 import fnmatch
 import json
 import os
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Iterator, List
 
 
 def ensure_artifact_dir(directory: Path) -> Path:
@@ -128,6 +129,33 @@ def _atomic_replace(path: Path, content: str) -> None:
         except OSError:
             pass
         raise
+
+
+@contextlib.contextmanager
+def flock_guarded(path: str | Path) -> Iterator[None]:
+    """Hold an exclusive advisory lock on ``path``'s sibling ``.lock`` file for the
+    duration of the block.
+
+    Serializes concurrent read-modify-write cycles against the same JSON store
+    (load, mutate, atomic-save) so two racing writers can't silently drop one
+    update. Best-effort: a platform without ``fcntl`` (or a lock the OS refuses)
+    skips locking rather than raising, matching the atomic-write functions'
+    degrade-don't-crash contract.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(".lock")
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        try:
+            import fcntl
+
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+        yield
+    finally:
+        os.close(lock_fd)
 
 
 def atomic_write_json(

@@ -16,13 +16,12 @@ effort load that degrades to empty rather than raising.
 """
 
 import json
-import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from misterdev.logging_setup import setup_logger
-from misterdev.utils.file_utils import atomic_write_json
+from misterdev.utils.file_utils import atomic_write_json, flock_guarded
 
 from .fitness import FitnessScore
 
@@ -110,16 +109,7 @@ class EvolutionArchive:
         call bumps the run counter and persists, so the run count reflects total
         candidates considered even when one is rejected.
         """
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = self.path.with_suffix(".lock")
-        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o600)
-        try:
-            try:
-                import fcntl
-
-                fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            except (ImportError, OSError):
-                pass
+        with flock_guarded(self.path):
             elites, run = self._load()
             run += 1
             candidate.run = run
@@ -131,8 +121,6 @@ class EvolutionArchive:
             if won:
                 elites[candidate.niche] = candidate
             self._save(elites, run)
-        finally:
-            os.close(lock_fd)
         if won:
             logger.info(
                 f"Archive: candidate {candidate.id!r} is the new elite for niche "

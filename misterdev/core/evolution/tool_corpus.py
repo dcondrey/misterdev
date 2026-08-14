@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from misterdev.logging_setup import setup_logger
-from misterdev.utils.file_utils import atomic_write
+from misterdev.utils.file_utils import atomic_write, flock_guarded
 
 logger = setup_logger(__name__)
 
@@ -116,16 +116,17 @@ class ToolCorpus:
         if not source or not source.strip() or not task_id:
             return ""
         tid = _tool_id(source)
-        recs, run = self._load()
-        run += 1
-        rec = recs.get(tid)
-        if rec is None:
-            rec = ToolRecord(tool_id=tid, niche=niche, source=source, first_run=run)
-            recs[tid] = rec
-        rec.niche = niche or rec.niche
-        rec.outcomes[task_id] = resolved
-        rec.last_run = run
-        self._save(recs, run)
+        with flock_guarded(self.path):
+            recs, run = self._load()
+            run += 1
+            rec = recs.get(tid)
+            if rec is None:
+                rec = ToolRecord(tool_id=tid, niche=niche, source=source, first_run=run)
+                recs[tid] = rec
+            rec.niche = niche or rec.niche
+            rec.outcomes[task_id] = resolved
+            rec.last_run = run
+            self._save(recs, run)
         return tid
 
     def records(self) -> List[ToolRecord]:
