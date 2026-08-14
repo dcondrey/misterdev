@@ -128,6 +128,10 @@ def _openrouter_sdk(llm_config: dict):
             base_url="https://openrouter.ai/api/v1",
             api_key=api_key,
             timeout=_REQUEST_TIMEOUT_SECONDS,
+            # base.py's generate() already owns retry policy (fails a free model
+            # fast in one shot); the SDK's own default retries underneath that on
+            # timeout, silently turning one shot into up to 3x300s of blocking stall.
+            max_retries=0,
         ),
         api_key,
     )
@@ -446,7 +450,9 @@ class AnthropicLLMClient(BaseLLMClient):
             import anthropic
 
             self.client = anthropic.Anthropic(
-                api_key=self.api_key, timeout=_REQUEST_TIMEOUT_SECONDS
+                api_key=self.api_key,
+                timeout=_REQUEST_TIMEOUT_SECONDS,
+                max_retries=0,
             )
         except ImportError:
             raise ImportError(
@@ -478,21 +484,25 @@ class AnthropicLLMClient(BaseLLMClient):
             ),
         )
 
+    def _build_kwargs(self, prompt: str, system_prompt: str) -> dict:
+        kwargs = {
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+            "messages": [
+                {"role": "user", "content": _cache_user_content(prompt, self.model)}
+            ],
+            "temperature": self.temperature,
+        }
+        if system_prompt:
+            # Mark the system prompt cacheable: tasks in a wave share it,
+            # so subsequent calls read it from cache at ~10% of input cost.
+            kwargs["system"] = _cache_system_content(system_prompt, self.model)
+        return kwargs
+
     def _call(self, prompt: str, system_prompt: str) -> LLMResponse:
         logger.info(f"Calling Anthropic model: {self.model}")
         try:
-            kwargs = {
-                "model": self.model,
-                "max_tokens": self.max_tokens,
-                "messages": [
-                    {"role": "user", "content": _cache_user_content(prompt, self.model)}
-                ],
-                "temperature": self.temperature,
-            }
-            if system_prompt:
-                # Mark the system prompt cacheable: tasks in a wave share it,
-                # so subsequent calls read it from cache at ~10% of input cost.
-                kwargs["system"] = _cache_system_content(system_prompt, self.model)
+            kwargs = self._build_kwargs(prompt, system_prompt)
 
             response = self.client.messages.create(**kwargs)
 
@@ -514,16 +524,7 @@ class AnthropicLLMClient(BaseLLMClient):
             raise _api_error("Anthropic", e) from e
 
     def _call_stream(self, prompt: str, system_prompt: str):
-        kwargs = {
-            "model": self.model,
-            "max_tokens": self.max_tokens,
-            "messages": [
-                {"role": "user", "content": _cache_user_content(prompt, self.model)}
-            ],
-            "temperature": self.temperature,
-        }
-        if system_prompt:
-            kwargs["system"] = _cache_system_content(system_prompt, self.model)
+        kwargs = self._build_kwargs(prompt, system_prompt)
         try:
             stream_cm = self.client.messages.stream(**kwargs)
         except Exception as e:
@@ -557,7 +558,7 @@ class AnthropicLLMClient(BaseLLMClient):
         # Anthropic pricing: cache reads ~10% of input, cache writes ~25% more.
         return (
             (input_tokens / 1_000_000) * inp
-            + (cache_read / 1_000_000) * inp * 0.1
+            + (cache_read / 1_000_000) * inp * _CACHE_READ_PRICE_FRACTION
             + (cache_creation / 1_000_000) * inp * 1.25
             + (output_tokens / 1_000_000) * costs["output"]
         )
