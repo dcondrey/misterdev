@@ -9,6 +9,73 @@ type.
 
 ## [Unreleased]
 
+### Fixed
+
+- A free-model call that stalls no longer silently blocks for up to ~15-20
+  minutes: the SDK clients retried underneath `generate()`'s own retry policy
+  (which deliberately fails a free model fast in one shot), so a single hung
+  attempt was actually retried 2-3 more times by the SDK before surfacing.
+  `max_retries=0` on both provider clients; `generate()` is the only retry loop.
+- A reverted task's untracked orphan files are now also cleaned up when the
+  *integration gate* reverts a commit after the fact (post-merge regression
+  bisect), not just on an immediate pre-merge abort — `git revert` only undoes
+  tracked changes, so a file the model wrote but never staged used to survive
+  every revert path. **The worktree-parallel execution path is now covered
+  too**: `_WorktreeProjectView` only delegated attribute *reads* to the real
+  project, so the per-task orphan baseline a write set on the view vanished
+  with it, making the orphan cleanup above a no-op under the default
+  worktree-isolated parallel mode.
+- **The adversarial critic/reflector/acceptance-judge's same-model check now
+  compares against the real per-attempt generator model**, not the LLM
+  client's static default. Dynamic per-task model routing exits its scope
+  before a judge/critic/reflector call is built, so a routed generator that
+  happened to match the configured critic/judge model went undetected as
+  same-model — the "independent" check silently reviewed a model's own output.
+- **Stall detection now actually reaches the model.** The stall-risk signal
+  was written into `error_logs`, which every reachable retry branch
+  unconditionally overwrites before the next attempt — the anti-repetition
+  signal never once survived to influence a retry. Now tracked as its own
+  counter that forces a full rewrite on the first strike.
+- **Pre-apply edit rejections (syntax validation, test tampering, dangling
+  references, destructive rewrite, critic) now count toward escalation.**
+  Previously only build/typecheck/test/acceptance gate failures advanced the
+  retry-escalation ladder, so a task could exhaust its whole attempt budget on
+  repeated, structurally-detected bad edits without ever escalating past the
+  weakest rung.
+- **The default-on LLM acceptance judge is now grounded in the task's actual
+  diff**, with an adversarial system prompt. It previously judged free-text
+  acceptance criteria against the task description alone — no evidence of
+  what was actually built — with no reviewer framing at all.
+- LLM edit writes are now rejected if the path touches `.git`, matching the
+  guard `FileIOTool` already had; the edit-apply pipeline had its own,
+  narrower path check that missed this.
+- The changed-region mutation runner and the mutation gate's local command
+  runner used a bare `subprocess.run` with no process-group handling; a hung
+  test/mutation process could outlive its timeout. Both now reuse the
+  validator's existing `start_new_session` + process-group-kill logic.
+- `tool_library.py` and `tool_corpus.py`'s JSON stores had no locking around
+  their load-mutate-save cycle (unlike `archive.py`'s); two concurrent
+  tool-promotion/corpus-record calls could interleave and silently drop an
+  update. Now share `archive.py`'s locking via a common `flock_guarded` helper.
+
+### Performance
+
+- **`get_context_for_task`/`reference_sites` reuse `SymbolGraph`'s existing
+  memoized per-file index** instead of each independently re-scanning every
+  symbol in the graph on every retry attempt.
+- **Web-verify's screenshot pixel-diff** now uses `PIL.ImageChops.difference`
+  instead of a pure-Python per-pixel loop.
+
+### Changed
+
+- Deleted `ToolSynthesizer` (`core/planning/sovereign.py`): zero production
+  callers, and it wrote LLM-generated code to disk with no sandboxing — a
+  strictly weaker, unreachable duplicate of the real tool-invention path
+  (`tool_invention.py` → `tool_runner.py`'s network-less container sandbox).
+- `AnthropicLLMClient._call`/`_call_stream` no longer duplicate their
+  request-kwargs construction; extracted `_build_kwargs`, matching the
+  pattern `OpenRouterLLMClient` already used.
+
 ## [0.6.0] - 2026-07-27
 
 Natural-language-first interface and Claude execution-backend integration.
