@@ -59,7 +59,7 @@ class IntegrationGateMixin:
             logger.info("Bisect did not isolate a single task commit.")
             return
         sha = dict(commits)[culprit]
-        if ex.revert_task_commit(project, sha):
+        if ex.revert_task_commit(project, sha, task_id=culprit):
             logger.warning(
                 f"Regression bisected to {culprit}; commit {sha[:8]} reverted."
             )
@@ -207,7 +207,7 @@ class IntegrationGateMixin:
         commits = self._wave_commits(executor, project, wave_tasks)
         reverted: list[str] = []
         for tid, sha in reversed(commits):
-            if executor.revert_task_commit(project, sha):
+            if executor.revert_task_commit(project, sha, task_id=tid):
                 reverted.append(tid)
             now = self._suite_failures(project, executor, test_cmd, timeout)
             if now is not None and now <= baseline_failures:
@@ -244,7 +244,7 @@ class IntegrationGateMixin:
             commits = self._wave_commits(executor, project, wave_tasks)
             reverted: list[str] = []
             for tid, sha in reversed(commits):
-                if executor.revert_task_commit(project, sha):
+                if executor.revert_task_commit(project, sha, task_id=tid):
                     reverted.append(tid)
                 now = self._suite_failing_ids(project, executor, test_cmd, timeout)
                 if now is not None and not (now - baseline_ids):
@@ -270,7 +270,7 @@ class IntegrationGateMixin:
         commits = self._wave_commits(executor, project, wave_tasks)
         reverted: list[str] = []
         for tid, sha in reversed(commits):
-            if executor.revert_task_commit(project, sha):
+            if executor.revert_task_commit(project, sha, task_id=tid):
                 reverted.append(tid)
             now = self._suite_failing_ids(project, executor, test_cmd, timeout)
             if now is not None and not (now - baseline_ids):
@@ -346,7 +346,7 @@ class IntegrationGateMixin:
             commits = [(t.id, executor.find_task_commit(project, t.id)) for t in owned]
             commits = [(tid, sha) for tid, sha in commits if sha]
             for tid, sha in reversed(commits):
-                if executor.revert_task_commit(project, sha):
+                if executor.revert_task_commit(project, sha, task_id=tid):
                     reverted.append(tid)
                 now = self._suite_failures(
                     project, executor, gate_cmd, timeout, cwd=run_dir
@@ -406,7 +406,7 @@ class IntegrationGateMixin:
         )
         if culprit:
             sha = dict(commits)[culprit]
-            if executor.revert_task_commit(project, sha):
+            if executor.revert_task_commit(project, sha, task_id=culprit):
                 reverted.append(culprit)
                 ok, _ = executor._run_command(project, test_cmd, timeout=timeout)
                 if ok:
@@ -415,7 +415,7 @@ class IntegrationGateMixin:
         for tid, sha in reversed(commits):
             if tid in reverted:
                 continue
-            if executor.revert_task_commit(project, sha):
+            if executor.revert_task_commit(project, sha, task_id=tid):
                 reverted.append(tid)
             ok, _ = executor._run_command(project, test_cmd, timeout=timeout)
             if ok:

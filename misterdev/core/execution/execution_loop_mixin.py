@@ -310,7 +310,7 @@ class ExecutionLoopMixin:
                     )
                     sha = executor.find_task_commit(project, task.id)
                     if sha:
-                        executor.revert_task_commit(project, sha)
+                        executor.revert_task_commit(project, sha, task_id=task.id)
                     report.deferred_tasks.append(task)
                     for rem_task, _, _ in results[i + 1 :]:
                         report.deferred_tasks.append(rem_task)
@@ -335,7 +335,7 @@ class ExecutionLoopMixin:
                     )
                     sha = executor.find_task_commit(project, task.id)
                     if sha:
-                        executor.revert_task_commit(project, sha)
+                        executor.revert_task_commit(project, sha, task_id=task.id)
                     failed_ids.add(task.id)
                     progress.mark_failed(task.id)
                     report.deferred_tasks.append(task)

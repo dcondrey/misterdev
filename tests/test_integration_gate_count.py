@@ -21,7 +21,7 @@ class _FakeExec:
     def find_task_commit(self, project, tid):
         return f"sha-{tid}"
 
-    def revert_task_commit(self, project, sha):
+    def revert_task_commit(self, project, sha, task_id=None):
         self.reverted.append(sha)
         return True
 
@@ -73,7 +73,7 @@ class _IdExec:
     def find_task_commit(self, project, tid):
         return f"sha-{tid}"
 
-    def revert_task_commit(self, project, sha):
+    def revert_task_commit(self, project, sha, task_id=None):
         self.reverted.append(sha)
         return True
 
@@ -410,7 +410,7 @@ class _BrokenExec:
     def find_task_commit(self, project, tid):
         return f"sha-{tid}"
 
-    def revert_task_commit(self, project, sha):
+    def revert_task_commit(self, project, sha, task_id=None):
         self.reverted.append(sha)
         return True
 
@@ -431,9 +431,7 @@ def test_identity_gate_reverts_when_wave_breaks_the_build():
     orch = ProjectOrchestrator()
     baseline = _ids(["test_alpha"])
     ex = _BrokenExec()
-    reverted = orch._integration_gate_ids(
-        _Proj(), ex, "t", [_task("T-1")], 1, baseline
-    )
+    reverted = orch._integration_gate_ids(_Proj(), ex, "t", [_task("T-1")], 1, baseline)
     assert reverted == ["T-1"]
 
 

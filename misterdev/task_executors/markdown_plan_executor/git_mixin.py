@@ -72,17 +72,28 @@ class GitMixin:
                 self._git(project, f"git checkout {shlex.quote(restore)}")
         return culprit
 
-    def revert_task_commit(self, project: Project, sha: str) -> bool:
+    def revert_task_commit(
+        self, project: Project, sha: str, task_id: Optional[str] = None
+    ) -> bool:
         """Revert a task's commit, leaving an explicit revert commit.
 
         Aborts cleanly on conflict so a failed revert never leaves the working
         tree in a half-reverted, conflict-marked state that would break later
-        suite runs and checkouts.
+        suite runs and checkouts. ``git revert`` only undoes tracked changes, so
+        with ``task_id`` given, also cleans any untracked orphan the task's edit
+        wrote but never staged (see ``_task_untracked_before`` in execute_mixin) —
+        the integration gate reverts commits well after the fact, so this is the
+        only remaining chance to catch that leak.
         """
         ok, _ = self._git(project, f"git revert --no-edit {shlex.quote(sha)}")
         if not ok:
             self._git(project, "git revert --abort")
-        return ok
+            return False
+        snapshots = getattr(project, "_task_untracked_before", None)
+        baseline = snapshots.get(task_id) if snapshots and task_id else None
+        if baseline is not None:
+            self._clean_task_orphans(project, baseline)
+        return True
 
     def _get_current_branch(self, project: Project) -> Optional[str]:
         ok, output = self._git(project, "git rev-parse --abbrev-ref HEAD")
