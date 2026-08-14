@@ -36,7 +36,12 @@ def generate_independent(
 
 
 def build_independent_call(
-    llm_client, system: str, model: Optional[str], role: str
+    llm_client,
+    system: str,
+    model: Optional[str],
+    role: str,
+    *,
+    generator_model: Optional[str] = None,
 ) -> Optional[Callable[[str], str]]:
     """Build a ``call(prompt) -> str`` bound to an independent model, or None.
 
@@ -47,16 +52,32 @@ def build_independent_call(
     model is set but the client can't switch, an info when none is configured —
     so the weaker case is never silently assumed. ``role`` names the judge for
     the log. No network is touched until the returned closure is invoked.
+
+    ``generator_model`` is the model that ACTUALLY produced the code/attempt
+    under review, when the caller knows it (e.g. the per-attempt routed model).
+    Dynamic per-task routing runs inside a context manager that has already
+    exited by the time a judge/critic call is built, so ``llm_client.model`` at
+    that point is the client's static default, not the real generator — using it
+    for the same-model check would miss a routed generator that happens to match
+    the judge model. When ``generator_model`` is given, it is compared against
+    instead. When it is None (the caller doesn't track a per-attempt model,
+    e.g. a whole-build or pre-planning check), the check falls back to the prior
+    best-effort behavior of reading ``llm_client.model``.
     """
     if llm_client is None or not hasattr(llm_client, "generate_code"):
         return None
 
     can_switch = hasattr(llm_client, "with_model")
+    actual_generator = (
+        generator_model
+        if generator_model is not None
+        else getattr(llm_client, "model", None)
+    )
     # A judge model that equals the generator's own model is NOT independence: it
     # routes to the same weights and shares the same blind spots. Detect it so the
     # weaker case is surfaced instead of silently masquerading as an independent
     # check, and do not bother switching to the identical model.
-    same_model = bool(model) and model == getattr(llm_client, "model", None)
+    same_model = bool(model) and model == actual_generator
     if model and not can_switch:
         logger.warning(
             f"{role}: an independent model is set but the client cannot switch "

@@ -136,6 +136,7 @@ def run_edit_critic(
     candidate_diffs: Optional[Dict[str, str]] = None,
     panel: int = 1,
     timeout: float = 60,
+    generator_model: Optional[str] = None,
 ) -> CritiqueVerdict:
     """Critique ``candidate_edits`` against the task and acceptance criteria.
 
@@ -143,6 +144,9 @@ def run_edit_critic(
     otherwise one is built from ``llm_client``. ``critic_model``, when given,
     selects an INDEPENDENT model so the critic does not share the generator's
     blind spots (its absence is logged — the same-model critic is weaker).
+    ``generator_model`` is the actual per-attempt model that produced
+    ``candidate_edits`` (when the caller knows it), so the same-model check
+    compares against the real generator rather than the client's static default.
 
     When ``candidate_diffs`` is given, the critic reviews the unified diff of each
     change (what actually changed, with a little context) instead of whole files —
@@ -159,7 +163,9 @@ def run_edit_critic(
     if not candidate_edits:
         return CritiqueVerdict(SKIP, reason="no candidate edit to review")
 
-    call = critic_call or _default_critic_call(llm_client, critic_model)
+    call = critic_call or _default_critic_call(
+        llm_client, critic_model, generator_model=generator_model
+    )
     if call is None:
         return CritiqueVerdict(SKIP, reason="no LLM critic available")
 
@@ -308,7 +314,7 @@ def _parse_verdict(text: str) -> CritiqueVerdict:
 
 
 def _default_critic_call(
-    llm_client, critic_model: Optional[str]
+    llm_client, critic_model: Optional[str], *, generator_model: Optional[str] = None
 ) -> Optional[CriticCall]:
     """Build a critic call from the project's LLM client, or None if unusable.
 
@@ -324,5 +330,9 @@ def _default_critic_call(
         "JSON object. Reject only for a concrete, nameable defect."
     )
     return build_independent_call(
-        llm_client, system, critic_model, "Adversarial critic"
+        llm_client,
+        system,
+        critic_model,
+        "Adversarial critic",
+        generator_model=generator_model,
     )

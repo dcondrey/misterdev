@@ -55,6 +55,7 @@ def reflect_on_failure(
     llm_client=None,
     reflect_model: Optional[str] = None,
     timeout: float = 45,
+    generator_model: Optional[str] = None,
 ) -> str:
     """Produce a short reflection on why an attempt failed, or "" to skip.
 
@@ -62,13 +63,18 @@ def reflect_on_failure(
     seam); otherwise one is built from ``llm_client``. ``reflect_model`` selects
     an independent model when given. ``prior_reflections`` are earlier attempts'
     reflections, folded in so the model builds on (rather than repeats) them.
+    ``generator_model`` is the actual model that produced the failed attempt
+    (when the caller knows it), so the same-model independence check compares
+    against the real generator rather than the client's static default.
 
     Returns a trimmed reflection string, or "" on no client, empty output, any
     error, or the hard timeout — so a failed reflection never blocks the retry.
     """
     if not (error_output and error_output.strip()):
         return ""
-    call = reflect_call or _default_reflect_call(llm_client, reflect_model)
+    call = reflect_call or _default_reflect_call(
+        llm_client, reflect_model, generator_model=generator_model
+    )
     if call is None:
         return ""
 
@@ -95,11 +101,17 @@ def reflect_on_failure(
 
 
 def _default_reflect_call(
-    llm_client, reflect_model: Optional[str]
+    llm_client, reflect_model: Optional[str], *, generator_model: Optional[str] = None
 ) -> Optional[ReflectCall]:
     """Build a reflection call from the project's LLM client, or None if unusable."""
     system = (
         "You are a precise debugging assistant reflecting on a failed coding "
         "attempt. Output only the requested short reflection."
     )
-    return build_independent_call(llm_client, system, reflect_model, "Reflection")
+    return build_independent_call(
+        llm_client,
+        system,
+        reflect_model,
+        "Reflection",
+        generator_model=generator_model,
+    )
