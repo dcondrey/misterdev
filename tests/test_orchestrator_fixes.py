@@ -25,6 +25,22 @@ from misterdev.core.execution.error_classifier import classify_error, ErrorCateg
 from misterdev.core.verification.validator import ValidationResult, CodeValidator
 from misterdev.core.context.change_tracker import ChangeTracker
 from misterdev.core.planning.sovereign import EphemeralCodeManager
+from misterdev.agent_helpers import _WorktreeProjectView
+
+
+def test_worktree_project_view_setattr_delegates_to_base():
+    """A write through the view (e.g. execute_mixin's per-task orphan-baseline
+    stash) must land on the real project, not vanish with the short-lived view —
+    a later revert reads it off the real project, well after the view is gone."""
+    base = _FakeProject("/tmp/base")
+    view = _WorktreeProjectView(base, Path("/tmp/wt"))
+
+    view._task_untracked_before = {"T-1": {"orphan.txt"}}
+
+    assert base._task_untracked_before == {"T-1": {"orphan.txt"}}
+    assert view._task_untracked_before == {"T-1": {"orphan.txt"}}
+    assert view.path == Path("/tmp/wt")
+    assert view._base is base
 
 
 class _FakeProject:
@@ -1581,7 +1597,7 @@ def test_per_task_cost_cap_reverts_and_defers_not_failure():
             def find_task_commit(self, proj, tid):
                 return "deadbeef"
 
-            def revert_task_commit(self, proj, sha):
+            def revert_task_commit(self, proj, sha, task_id=None):
                 reverted.append(sha)
                 return True
 

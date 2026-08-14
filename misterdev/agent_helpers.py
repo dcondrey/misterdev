@@ -24,11 +24,20 @@ class _WorktreeProjectView:
     """
 
     def __init__(self, base, path):
-        self._base = base
-        self.path = path
+        object.__setattr__(self, "_base", base)
+        object.__setattr__(self, "path", path)
 
     def __getattr__(self, name):
         return getattr(self._base, name)
+
+    def __setattr__(self, name, value):
+        # Without this, a write (e.g. execute_mixin's `_task_untracked_before`
+        # stash, read later by a revert on the real project) would silently
+        # shadow the base on this short-lived view and vanish on discard.
+        if name in ("_base", "path"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._base, name, value)
 
 
 class ProgressReporter:
