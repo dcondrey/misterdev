@@ -67,13 +67,23 @@ class CriticSpecMixin:
         except (KeyError, AttributeError, TypeError):
             return False
 
-    def _run_edit_critic(self, project: Project, task: Task, edits: Dict[str, str]):
+    def _run_edit_critic(
+        self,
+        project: Project,
+        task: Task,
+        edits: Dict[str, str],
+        *,
+        generator_model: Optional[str] = None,
+    ):
         """Run the independent adversarial critic over a candidate edit.
 
         Reads the (optional) independent ``critic.model`` and timeout from config
         and delegates to the never-raising, timeout-bounded gate. Returns a
         :class:`~misterdev.core.verification.critic.CritiqueVerdict`; a SKIP
         (no client, unparseable, timeout) is treated by the caller as "proceed".
+        ``generator_model`` is the actual per-attempt model that produced
+        ``edits``, so the critic's same-model independence check compares
+        against the real generator rather than the client's static default.
         """
         from misterdev.core.verification.critic import run_edit_critic
 
@@ -88,26 +98,42 @@ class CriticSpecMixin:
             candidate_diffs=self._critic_diffs(project, edits),
             panel=critic_cfg.get("panel", 1),
             timeout=timeout,
+            generator_model=generator_model,
         )
 
     @staticmethod
-    def _critic_diffs(project: Project, edits: Dict[str, str]) -> Dict[str, str]:
-        """Unified diff of each candidate edit vs its current on-disk content.
+    def _critic_diffs(
+        project: Project,
+        edits: Dict[str, str],
+        pre_edit: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, str]:
+        """Unified diff of each candidate edit vs its prior content.
 
         Lets the critic review WHAT CHANGED (with a little context) instead of
         whole files — sharper and far smaller for a small edit to a large file.
-        A new file (no original) diffs against empty, i.e. all-additions. Reading
-        the original is best-effort: an unreadable file falls back to empty.
+        A new file (no original) diffs against empty, i.e. all-additions.
+
+        The "prior content" source depends on when this runs: called BEFORE the
+        edit is applied (the adversarial critic, above), the on-disk file still
+        holds the original, so that's read directly. Called AFTER the edit is
+        applied (the acceptance judge, once tests are green), disk now holds
+        ``new_content`` too — reading it would diff a file against itself and
+        report no change — so ``pre_edit`` (the snapshot recorded before
+        ``_apply_edits``) supplies the true original instead. Reading disk is
+        best-effort: an unreadable file falls back to empty.
         """
         import difflib
 
         diffs: Dict[str, str] = {}
         for path, new_content in edits.items():
-            fp = project.path / path
-            try:
-                original = fp.read_text(encoding="utf-8") if fp.exists() else ""
-            except OSError:
-                original = ""
+            if pre_edit is not None and path in pre_edit:
+                original = pre_edit[path]
+            else:
+                fp = project.path / path
+                try:
+                    original = fp.read_text(encoding="utf-8") if fp.exists() else ""
+                except OSError:
+                    original = ""
             diff = "".join(
                 difflib.unified_diff(
                     original.splitlines(keepends=True),

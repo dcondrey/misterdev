@@ -172,6 +172,12 @@ class ExecuteMixin:
         untracked_before = (
             self._untracked_files(project) if self._is_git_repo(project) else set()
         )
+        # Stashed on the project (not self): a post-merge regression revert runs
+        # much later, often on a fresh executor instance, and still needs this
+        # task's baseline to clean up orphans the commit never staged.
+        if not hasattr(project, "_task_untracked_before"):
+            project._task_untracked_before = {}
+        project._task_untracked_before[task.id] = untracked_before
 
         # Fallback: file snapshots if git branching isn't available
         snapshot = None
@@ -198,6 +204,10 @@ class ExecuteMixin:
         # full-file rewrite when SEARCH/REPLACE keeps not matching (a stall that
         # otherwise makes no progress across attempts).
         apply_failures = 0
+        # StallDetector strikes (near-identical edits across attempts). error_logs
+        # is unconditionally overwritten every retry, so this counter — not
+        # error_logs — is what forces a full rewrite on the next attempt.
+        stall_strikes = 0
         # Build the symbol graph now (idempotent, lazy): it isn't constructed at
         # project registration anymore, and task execution is the first consumer.
         try:
@@ -244,6 +254,12 @@ class ExecuteMixin:
         # the top of the next iteration (we only loop again when an attempt
         # failed) and at loop exit; recorded as a success at the success seams.
         pending_attempt: Optional[dict] = None
+        # The model that generated the most recently FAILED attempt, captured
+        # from pending_attempt just before it is cleared (below) so the reflector
+        # can compare its own model against the real generator rather than the
+        # client's static default (dynamic routing's with_model scope has already
+        # exited by the time the reflection call is built).
+        last_attempt_model: Optional[str] = None
         # Baseline full-suite failure count (from analysis), so a RED baseline
         # doesn't reject every task. The test gate then accepts an attempt that
         # leaves the suite no worse (failures <= baseline), letting a multi-failure
@@ -354,7 +370,8 @@ class ExecuteMixin:
                 )
             widen_context = rung in ("widen_context", "full_rewrite", "stronger_model")
             force_stronger = rung == "stronger_model"
-            force_full_rewrite = rung == "full_rewrite"
+            # `or` so a stall strike can't clobber the rung-driven trigger (or vice versa).
+            force_full_rewrite = rung == "full_rewrite" or stall_strikes >= 1
             # Diagnostic: sizes of the context that ACCUMULATES across attempts,
             # so growth (or a runaway component) is visible per retry.
             logger.debug(
@@ -364,6 +381,7 @@ class ExecuteMixin:
                 f"prior_errors={len(prior_errors)}"
             )
             if pending_attempt is not None:
+                last_attempt_model = pending_attempt.get("model")
                 self._ledger_record(project, task, pending_attempt, success=False)
                 pending_attempt = None
 
@@ -373,7 +391,11 @@ class ExecuteMixin:
             # than re-patching the symptom. One central seam covers every gate.
             if attempt > 0 and error_logs:
                 error_logs = self._apply_reflection(
-                    project, task, error_logs, reflections
+                    project,
+                    task,
+                    error_logs,
+                    reflections,
+                    generator_model=last_attempt_model,
                 )
                 # Fold in the language server's semantic diagnostics for the
                 # touched files — per-file, per-line errors the compiler's raw
@@ -751,8 +773,7 @@ class ExecuteMixin:
                 stall_risk = stall_detector.push_edit(edits)
                 if stall_risk > 0.7:
                     logger.warning(f"High stall risk detected ({stall_risk:.2f}).")
-                    if attempt > 0:
-                        error_logs = "ERROR: Stalling detected. Try a fundamentally different approach."
+                    stall_strikes += 1
 
                 validation_failed = False
                 for file_path, content in edits.items():
@@ -760,7 +781,14 @@ class ExecuteMixin:
                     valid, error = CodeValidator.validate_code(content, language=lang)
                     if not valid:
                         logger.error(f"Validation failed for {file_path}: {error}")
-                        error_logs = f"SYNTAX ERROR in {file_path}:\n{error}"
+                        code_failures += 1
+                        error_logs = self._build_rejection_error_context(
+                            prior_errors,
+                            attempt,
+                            "syntax validation failed",
+                            error,
+                            f"SYNTAX ERROR in {file_path}:\n{error}",
+                        )
                         validation_failed = True
                         break
 
@@ -770,35 +798,50 @@ class ExecuteMixin:
                 tamper = self._detect_test_tampering(project, edits)
                 if tamper:
                     logger.error(f"Test tampering rejected: {tamper}")
-                    error_logs = (
+                    code_failures += 1
+                    error_logs = self._build_rejection_error_context(
+                        prior_errors,
+                        attempt,
+                        "test tampering rejected",
+                        tamper,
                         "ERROR: test files were weakened. Do not delete "
                         "tests, weaken assertions, or add skip/ignore markers "
                         "to make the suite pass. Fix the real code instead. "
-                        f"Detected: {tamper}"
+                        f"Detected: {tamper}",
                     )
                     continue
 
                 dangling = self._detect_dangling_references(project, edits)
                 if dangling:
                     logger.warning(f"Incomplete refactor — dangling refs: {dangling}")
-                    error_logs = (
+                    code_failures += 1
+                    error_logs = self._build_rejection_error_context(
+                        prior_errors,
+                        attempt,
+                        "dangling references after edit",
+                        str(dangling),
                         "ERROR: this edit removed or renamed a symbol but left "
                         "references to it in files you did not change. Update EVERY "
                         "one of these call sites in this attempt (do not fix them "
-                        f"one at a time): {dangling}"
+                        f"one at a time): {dangling}",
                     )
                     continue
 
                 destructive = self._detect_destructive_rewrite(project, edits)
                 if destructive:
                     logger.warning(f"Destructive rewrite rejected: {destructive}")
-                    error_logs = (
+                    code_failures += 1
+                    error_logs = self._build_rejection_error_context(
+                        prior_errors,
+                        attempt,
+                        "destructive rewrite rejected",
+                        str(destructive),
                         "ERROR: this edit deletes real functionality — it removes "
                         "definitions and collapses the file, which passes the "
                         "immediate test only by stripping behavior other code relies "
                         "on. Make the SMALLEST change that fixes the problem: keep "
                         "every existing public definition and its implementation, and "
-                        f"add or adjust only what is needed. Detected: {destructive}"
+                        f"add or adjust only what is needed. Detected: {destructive}",
                     )
                     continue
 
@@ -809,7 +852,12 @@ class ExecuteMixin:
                 # flows to the authoritative build/test gates. SKIP/APPROVE fall
                 # through and apply as normal; off path is unchanged.
                 if critic_enabled and critic_rejections < critic_max_rejections:
-                    verdict = self._run_edit_critic(project, task, edits)
+                    verdict = self._run_edit_critic(
+                        project,
+                        task,
+                        edits,
+                        generator_model=pending_attempt["model"],
+                    )
                     if verdict.rejected:
                         critic_rejections += 1
                         logger.warning(
@@ -817,8 +865,13 @@ class ExecuteMixin:
                             f"{attempt + 1} ({critic_rejections}/"
                             f"{critic_max_rejections}): {verdict.objections}"
                         )
-                        error_logs = self._build_critic_error_context(
-                            verdict.objections
+                        code_failures += 1
+                        error_logs = self._build_rejection_error_context(
+                            prior_errors,
+                            attempt,
+                            "critic rejected the edit",
+                            str(verdict.objections),
+                            self._build_critic_error_context(verdict.objections),
                         )
                         continue
 
@@ -941,6 +994,8 @@ class ExecuteMixin:
                         # re-checked, so key on the raw result, not the flake flip.
                         already_passed=test_command if test_exited_green else None,
                         prior_gate_passed=True,
+                        diff=self._task_diff(project, edits, task_pre_edit),
+                        generator_model=pending_attempt["model"],
                     )
                     if not acc_ok:
                         logger.warning(
@@ -1058,6 +1113,8 @@ class ExecuteMixin:
                     test_timeout,
                     cwd=task_cwd,
                     prior_gate_passed=gate_verified,
+                    diff=self._task_diff(project, edits, task_pre_edit),
+                    generator_model=pending_attempt["model"],
                 )
                 if not acc_ok:
                     logger.warning(

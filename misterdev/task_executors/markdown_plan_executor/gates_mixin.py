@@ -1,7 +1,7 @@
 """Test-gate acceptance, acceptance-criteria verification, and error context."""
 
 import re
-from typing import List, NamedTuple, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from misterdev.core.models import Task
 from misterdev.core.execution.project import Project
@@ -14,9 +14,25 @@ from misterdev.core.execution.compile_view import (
     extract_compile_errors,
     render_compile_view,
 )
+from misterdev.core.verification.goal_check import build_evidence
 from misterdev.config import get_setting
 
 from .helpers import logger, _extract_acceptance_command, JUDGE_MIN_BUDGET_FRACTION
+
+# Adversarial persona for the LLM acceptance judge, matching the tone of
+# critic.py's edit critic and goal_check.py's goal-completion judge: assume the
+# criterion is NOT met and demand concrete evidence before saying otherwise,
+# rather than taking the task description's word for it.
+_ACCEPTANCE_JUDGE_SYSTEM = (
+    "You are a strict, adversarial acceptance reviewer. Assume the stated "
+    "criterion is NOT satisfied and look for concrete evidence in the diff "
+    "that it IS before saying PASS. Judge only from the evidence given; do "
+    "not assume or invent work that is not shown."
+)
+
+# Cap the evidence fed to the judge so a large diff can't blow up the prompt or
+# cost; matches goal_check.py's / critic.py's own evidence caps.
+_MAX_EVIDENCE_CHARS = 16000
 
 
 class _AttemptFailure(NamedTuple):
@@ -84,7 +100,13 @@ class GatesMixin:
         )
 
     def _apply_reflection(
-        self, project: Project, task: Task, error_logs: str, reflections: List[str]
+        self,
+        project: Project,
+        task: Task,
+        error_logs: str,
+        reflections: List[str],
+        *,
+        generator_model: Optional[str] = None,
     ) -> str:
         """Reflect on the previous failure and prepend the running reflections.
 
@@ -93,7 +115,10 @@ class GatesMixin:
         returns ``error_logs`` with a REFLECTION header prepended so the next
         attempt debugs the underlying cause. Best-effort and off when
         ``orchestrator.reflection`` is false; a skip/error leaves ``error_logs``
-        unchanged, so the retry path is never blocked or worsened.
+        unchanged, so the retry path is never blocked or worsened. ``generator_model``
+        is the actual model that produced the failed attempt, so the reflector's
+        same-model independence check is not fooled by a routed generator that
+        has since fallen back to the client's static default.
         """
         if not get_setting(project.config, "orchestrator", "reflection"):
             return error_logs
@@ -107,6 +132,7 @@ class GatesMixin:
             llm_client=project.llm_client,
             reflect_model=reflect_model,
             timeout=get_setting(project.config, "orchestrator", "reflection_timeout"),
+            generator_model=generator_model,
         )
         if new_reflection:
             reflections.append(new_reflection)
@@ -118,6 +144,28 @@ class GatesMixin:
         )
         trimmed = error_logs[:20000] if len(error_logs) > 20000 else error_logs
         return f"{header}\n\n{trimmed}"
+
+    def _build_rejection_error_context(
+        self,
+        prior_errors: List["_AttemptFailure"],
+        attempt: int,
+        label: str,
+        reason: str,
+        detail: str,
+    ) -> str:
+        """Format a pre-apply edit rejection (validation/tamper/dangling/
+        destructive/critic) into the same retry context as a gate failure, so a
+        repeated rejection escalates via ``_repeat_escalation`` too — these are
+        unambiguously code-caused, never an infra failure.
+        """
+        prior_errors.append(
+            _AttemptFailure(
+                f"Attempt {attempt + 1}: {label}", f"{label}:{reason[:200]}"
+            )
+        )
+        escalation = self._repeat_escalation(prior_errors)
+        history = self._prior_failures_history(prior_errors)
+        return f"{escalation}{history}{detail}"
 
     def _build_error_context(
         self,
@@ -278,6 +326,22 @@ class GatesMixin:
             return True
         return False
 
+    def _task_diff(
+        self, project: Project, edits: Dict[str, str], pre_edit: Dict[str, str]
+    ) -> str:
+        """Join each edited file's unified diff into one evidence string.
+
+        Reuses ``_critic_diffs`` — the same diff-collection mechanism the
+        adversarial edit critic uses — rather than a second formatter. By the
+        time this runs, ``edits`` are already applied to disk, so ``pre_edit``
+        (the snapshot recorded before ``_apply_edits``) supplies the true
+        "before" content; see ``_critic_diffs`` for why that matters.
+        """
+        if not edits:
+            return ""
+        diffs = self._critic_diffs(project, edits, pre_edit)
+        return "\n\n".join(diffs.values())
+
     def _verify_acceptance(
         self,
         project: Project,
@@ -288,6 +352,8 @@ class GatesMixin:
         cwd=None,
         already_passed: Optional[str] = None,
         prior_gate_passed: bool = True,
+        diff: str = "",
+        generator_model: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Verify the task's acceptance_criteria after build/test gates pass.
 
@@ -297,7 +363,11 @@ class GatesMixin:
         gate is disabled, or no command can be confidently extracted, this is a
         no-op that passes (behaviour identical to before this gate) unless the
         default-off ``orchestrator.llm_acceptance_judge`` flag is set, in which
-        case an LLM judge is consulted. Never blocks on un-parseable free text.
+        case an LLM judge is consulted — grounded in ``diff`` (the task's actual
+        edits, when the caller has them) rather than the task description alone.
+        Never blocks on un-parseable free text. ``generator_model`` is the actual
+        per-attempt model that produced the candidate under review, passed through
+        to the judge's same-model independence check.
 
         ``already_passed`` is the test command that JUST exited zero on this exact
         (unchanged) tree. When the extracted acceptance command is byte-identical
@@ -346,7 +416,9 @@ class GatesMixin:
                 f"Command exited non-zero:\n{output}"
             )
         if llm_acceptance_judge and self._judge_affordable(project):
-            return self._llm_acceptance_judge(project, task, criteria)
+            return self._llm_acceptance_judge(
+                project, task, criteria, diff, generator_model=generator_model
+            )
         return True, ""
 
     def _judge_affordable(self, project: Project) -> bool:
@@ -368,10 +440,20 @@ class GatesMixin:
             return True
         return remaining > total * JUDGE_MIN_BUDGET_FRACTION
 
-    def _judge_generate(self, project: Project, prompt: str) -> str:
+    def _judge_generate(
+        self,
+        project: Project,
+        prompt: str,
+        system: str = "",
+        *,
+        generator_model: Optional[str] = None,
+    ) -> str:
         """Run an acceptance-judge prompt, on the INDEPENDENT ``judge.model`` when
         configured (so the judge doesn't share the generator's blind spots), else
         on the generator's own model. Routed through ``with_model`` when possible.
+        ``generator_model`` is the actual per-attempt model under review, passed
+        through so the same-model check compares against it rather than the
+        client's static default.
         """
         from misterdev.core.verification.independent import (
             build_independent_call,
@@ -379,29 +461,51 @@ class GatesMixin:
 
         judge_model = (project.config.get("judge") or {}).get("model")
         call = build_independent_call(
-            project.llm_client, "", judge_model, "Acceptance judge"
+            project.llm_client,
+            system,
+            judge_model,
+            "Acceptance judge",
+            generator_model=generator_model,
         )
         return call(prompt) if call is not None else ""
 
     def _llm_acceptance_judge(
-        self, project: Project, task: Task, criteria: str
+        self,
+        project: Project,
+        task: Task,
+        criteria: str,
+        diff: str = "",
+        *,
+        generator_model: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Default-off LLM fallback judging free-text acceptance criteria.
 
         Only reached when ``orchestrator.llm_acceptance_judge`` is true and no
-        runnable command could be extracted. A failure to reach a confident
-        verdict passes (fail-open) so an unreliable judge never blocks a task.
+        runnable command could be extracted. Grounded in the actual change: the
+        judge is shown the task's diff (via :func:`build_evidence`, the same
+        evidence assembly ``goal_check.py`` uses) rather than asked to take the
+        task description on faith. A failure to reach a confident verdict passes
+        (fail-open) so an unreliable judge never blocks a task.
         """
         try:
+            evidence = build_evidence(diff=diff)[:_MAX_EVIDENCE_CHARS]
             prompt = (
                 "A code task has just passed its build and test gates. Judge "
                 "ONLY whether the stated acceptance criterion is satisfied by "
-                "the task's implementation. Reply with PASS or FAIL on the "
-                "first line, then a brief reason.\n\n"
+                "the task's implementation, using the evidence below — do not "
+                "assume work that is not shown in it. Reply with PASS or FAIL "
+                "on the first line, then a brief reason.\n\n"
                 f"Task: {task.description}\n"
-                f"Acceptance criterion: {criteria}\n"
+                f"Acceptance criterion: {criteria}\n\n"
+                "## Work Done (diff)\n"
+                f"{evidence or '(no diff captured)'}\n"
             )
-            verdict = self._judge_generate(project, prompt)
+            verdict = self._judge_generate(
+                project,
+                prompt,
+                _ACCEPTANCE_JUDGE_SYSTEM,
+                generator_model=generator_model,
+            )
         except Exception as e:
             logger.warning(f"LLM acceptance judge failed, passing open: {e}")
             return True, ""
