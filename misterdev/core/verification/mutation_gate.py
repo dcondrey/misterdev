@@ -21,7 +21,6 @@ floor is a RED.
 """
 
 import re
-import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +31,7 @@ from misterdev.core.execution.outcomes import (
     SKIP,
     GateOutcome,
 )
+from misterdev.core.verification.validator import _run_cmd
 from misterdev.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -143,18 +143,11 @@ def _mutation(
         if not ok and not output:
             return MutationResult(SKIP, reason="mutation tool reported failure")
     else:
-        try:
-            proc = subprocess.run(
-                command,
-                shell=True,
-                cwd=str(project_root),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired:
+        # IMPORTANT: use _run_cmd, not bare subprocess.run — it kills the whole
+        # process group on timeout instead of leaking a hung mutation-tool child.
+        ok, output = _run_cmd(command, project_root, timeout=timeout)
+        if not ok and output.startswith("Command timed out after"):
             return MutationResult(SKIP, reason="command timed out")
-        output = (proc.stdout or "") + (proc.stderr or "")
 
     evidence = output[-_MAX_EVIDENCE_CHARS:]
     score = parse_mutation_score(output)

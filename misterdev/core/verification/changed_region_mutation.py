@@ -26,13 +26,13 @@ weak SIGNAL and reserve a hard floor for the high-confidence "zero killed" case.
 
 import difflib
 import re
-import subprocess
 import threading
 from pathlib import Path
 from typing import Callable, List, Optional, Set, Tuple
 
 from misterdev.core.execution.outcomes import GREEN, RED, SKIP
 from misterdev.core.verification.mutation_gate import MutationResult
+from misterdev.core.verification.validator import _run_cmd
 from misterdev.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -197,17 +197,9 @@ def _make_local_runner(
     project_root: Path,
 ) -> Callable[[str, float], Tuple[bool, str]]:
     def _run(cmd: str, timeout: float) -> Tuple[bool, str]:
-        try:
-            proc = subprocess.run(
-                cmd,
-                shell=True,
-                cwd=str(project_root),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired:
-            return False, ""
-        return proc.returncode == 0, (proc.stdout or "") + (proc.stderr or "")
+        # _run_cmd puts the command in its own process group and kills the
+        # whole tree on timeout; a bare subprocess.run leaks a hung test
+        # process per mutant (this runs once per generated mutant).
+        return _run_cmd(cmd, project_root, timeout=timeout)
 
     return _run
