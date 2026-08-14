@@ -385,8 +385,14 @@ def _image_diff_fraction(a: bytes, b: bytes) -> float:
         width, height = img_a.size
         if width == 0 or height == 0:
             return 0.0
-        diff = ImageChops.difference(img_a, img_b).convert("L")
-        unchanged = diff.histogram()[0]
+        # Per-band max, not .convert("L") (luma-weighted grayscale): luma can
+        # round a real per-channel delta down to 0, undercounting differing
+        # pixels. Max-of-R/G/B is 0 only where all three channels match exactly,
+        # matching the old per-pixel tuple-inequality check precisely.
+        diff = ImageChops.difference(img_a, img_b)
+        r, g, b_band = diff.split()
+        combined = ImageChops.lighter(ImageChops.lighter(r, g), b_band)
+        unchanged = combined.histogram()[0]
         total = width * height
         return (total - unchanged) / float(total)
     except Exception as e:

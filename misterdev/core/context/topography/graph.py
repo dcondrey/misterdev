@@ -51,6 +51,11 @@ class SymbolGraph:
         self.cache_path = Path(project_path) / ".orchestrator" / "topography_cache.json"
         self._mtime_cache: Dict[str, Tuple[float, str]] = {}
         self._build_lock = threading.RLock()
+        # _file_index()'s cache key: a rebuild clears+repopulates this same
+        # dict in place (id() never changes), and a same-count rebuild (e.g. a
+        # rename) leaves len() unchanged too, so neither alone detects a stale
+        # index.
+        self._symbols_generation = 0
 
     def build(self):
         with self._build_lock:
@@ -58,6 +63,7 @@ class SymbolGraph:
 
     def _build_locked(self):
         logger.info(f"Building symbol graph for {self.project_path}")
+        self._symbols_generation += 1
         self.symbols.clear()
 
         if not self.parsers:
@@ -700,9 +706,16 @@ class SymbolGraph:
 
         The file-scoped queries below were each a full O(all-symbols) scan; on a
         large repo that is O(errors x symbols) / O(files x symbols) across a run.
-        The index is rebuilt only when ``self.symbols`` is replaced or resized
-        (``build()`` swaps the whole dict), keyed on ``(id, len)``."""
-        key = (id(self.symbols), len(self.symbols))
+        The index is rebuilt when either signal changes: ``self.symbols`` is
+        replaced with a different dict object (id), or ``_build_locked`` clears
+        and repopulates the same dict in place (generation) — id/len alone miss
+        that second case, since a same-count rebuild (e.g. a rename) leaves both
+        unchanged even though the contents did."""
+        key = (
+            id(self.symbols),
+            len(self.symbols),
+            getattr(self, "_symbols_generation", 0),
+        )
         if getattr(self, "_file_index_key", None) != key:
             idx: Dict[str, List[Tuple[str, SymbolNode]]] = {}
             for skey, s in self.symbols.items():
