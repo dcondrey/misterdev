@@ -91,14 +91,14 @@ class TopographyEngine:
         self.initialize()
         excluded = exclude_files or set()
 
-        _by_file: Dict[str, List[str]] = {}
-        for key, sym in self.graph.symbols.items():
-            _by_file.setdefault(sym.file_path, []).append(key)
+        # Reuse SymbolGraph's memoized per-file index instead of re-scanning
+        # every symbol on each call; it only rebuilds when self.symbols is
+        # actually replaced (see SymbolGraph._file_index).
+        _by_file = self.graph._file_index()
 
         context_symbols: Set[str] = set()
         for file in related_files:
-            for key in _by_file.get(file, []):
-                sym = self.graph.symbols[key]
+            for key, sym in _by_file.get(file, []):
                 if file not in excluded:
                     context_symbols.add(key)
                 context_symbols.update(sym.outgoing_calls)
@@ -161,26 +161,32 @@ class TopographyEngine:
         targets = set(target_files)
         blocks: List[str] = []
         shown = 0
-        for sym in self.graph.symbols.values():
-            if sym.file_path not in targets or not sym.incoming_calls:
-                continue
-            sites = set()
-            for caller_key in sym.incoming_calls:
-                caller = self.graph.symbols.get(caller_key)
-                if caller is not None and caller.file_path not in targets:
-                    sites.add((caller.file_path, caller.start_line, caller.name))
-            if not sites:
-                continue
-            lines = [f"- `{sym.name}` ({sym.kind}) is referenced by:"]
-            for fp, ln, nm in sorted(sites):
-                if shown >= max_refs:
-                    lines.append("    - (... more references omitted)")
-                    break
-                lines.append(f"    - {fp}:{ln} (in {nm})")
-                shown += 1
-            blocks.append("\n".join(lines))
-            if shown >= max_refs:
+        _by_file = self.graph._file_index()  # reuse the memoized per-file index
+        done = False
+        for target_file in target_files:
+            if done:
                 break
+            for _key, sym in _by_file.get(target_file, []):
+                if not sym.incoming_calls:
+                    continue
+                sites = set()
+                for caller_key in sym.incoming_calls:
+                    caller = self.graph.symbols.get(caller_key)
+                    if caller is not None and caller.file_path not in targets:
+                        sites.add((caller.file_path, caller.start_line, caller.name))
+                if not sites:
+                    continue
+                lines = [f"- `{sym.name}` ({sym.kind}) is referenced by:"]
+                for fp, ln, nm in sorted(sites):
+                    if shown >= max_refs:
+                        lines.append("    - (... more references omitted)")
+                        break
+                    lines.append(f"    - {fp}:{ln} (in {nm})")
+                    shown += 1
+                blocks.append("\n".join(lines))
+                if shown >= max_refs:
+                    done = True
+                    break
         if not blocks:
             return ""
         return (
