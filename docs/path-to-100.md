@@ -60,7 +60,8 @@ Legend: ✓ exists · ~ partial · ✗ to build.
   single-shot execution probes** (run the one failing test, capture real output). ~
 - **L2 Failure taxonomy (self-awareness)** — classify *each* residual failure by
   **cause**: artifact / observation / search-budget / convergence / saturation.
-  Today: `attribution.Blame` ranks by *niche*, not cause. ✗ **(build first.)**
+  `classify_failure` (`core/learning/failure_taxonomy.py`) wired into `driver.py`
+  after blame attribution. ✓
 - **L3 Structural self-repair** — turn a classified failure into a *structural*
   fix (a guard, a seam, a strategy — removes the whole class), evaluated in a
   sandbox. Scaffold exists: `proposer` (blame→edit) ✓ · `sandbox` score-without-
@@ -68,10 +69,11 @@ Legend: ✓ exists · ~ partial · ✗ to build.
   keep-if-better ✓ · `guardrail` reward-hacking wall ✓ · `failure_log` ✓ ·
   `warm_start` ✓. Gap: the proposer must be constrained to **structural** edits,
   and fed the L2 cause. ~
-- **L4 Generalization gate (anti-overfit ratchet)** — the crux. Today the accept
-  gate (`fitness`) is **regression-only** on the optimized set. ✗ **Add a held-out
-  split** the fix is validated on but never derived from; accept only on held-out
-  gain + zero regressions. (Spec below.)
+- **L4 Generalization gate (anti-overfit ratchet)** — the crux. DERIVE/HOLDOUT
+  split (`holdout.split_tasks`/`decide_promotion`) plus a paired McNemar advisory
+  check (`paired.py`) wired into `driver.py`'s live promotion decision. ✓ Gap:
+  the split is **in-distribution** (drawn from the same benchmark) — see D1 below,
+  still open.
 - **L5 Saturation escape hatch** — confirmed-saturation tasks route to capability
   escalation (stronger tier / tools / finer decomposition / flag), not endless
   mutation. ✗
@@ -106,15 +108,16 @@ maps; require the reproduction corpus (`learning/reproduction.py`) to stay green
   scored mutation against the live benchmark with the guardrail active.
   *Accept:* one full `run_evolution` cycle emits a champion + archive on disk with
   a real (even zero) delta. Removes the "never actually run" risk before extending.
-- **M1 — Failure taxonomy (L2).** Deterministic classifier: run artifacts
-  (edits produced, guard rejections, gate outputs, attempt history, budget state)
-  → {artifact, observation, search, convergence, saturation} with evidence.
-  *Accept:* on captured real failures, ≥90% agree with hand labels; every
-  saturation label carries a ruled-out-others record (I3).
-- **M2 — Held-out generalization gate (L4).** Add DERIVE/HOLDOUT/REGRESSION split
-  and the accept rule above; wire into `loop`/`fitness`/`driver`.
-  *Accept:* a synthetic overfit mutation (special-cases a DERIVE task) is
-  *rejected*; a synthetic structural fix that generalizes is *accepted*.
+- **M1 — Failure taxonomy (L2). DONE.** `classify_failure` runs on the blamed
+  niche's sample error in `driver.py`, recording cause + evidence on `Blame`
+  before proposal. Not yet independently re-verified against the ≥90%
+  hand-label agreement bar this milestone specifies — that check is still open.
+- **M2 — Held-out generalization gate (L4). DONE.** `holdout.split_tasks` +
+  `decide_promotion` gate live promotion in `driver.py`; `paired.py`'s McNemar
+  test runs alongside as an advisory (logged, not yet gating). The synthetic
+  overfit/generalize acceptance-criteria check this milestone specifies has not
+  been run as a dedicated test — worth adding before trusting the gate under
+  adversarial pressure.
 - **M3 — Structural-fix proposer (L3).** Feed L2 cause to `proposer`; constrain it
   to structural edits; reject non-structural diffs pre-sandbox.
   *Accept:* proposer, given an artifact-class blame, emits a guard/seam edit (not a
@@ -189,10 +192,78 @@ are **D3 (dense reward via verifier decomposition)** to raise effective `p` on t
 hard tail, and **D1 (cross-distribution held-out)** to prove every fix is a real
 capability. L2/L4 support them; everything else is plumbing. D4 still comes first.
 
+## Deepening (v3): freedom, scope, and reachability — 2026-08-15
+
+L2 and L4 shipped since v2 was written (see Architecture above), closing the two
+gaps v2's one-line status called out. What's left is not "does the loop work" —
+`run_evolution` end-to-end, gated, held-out-checked — but **how far it's allowed
+to reach**, and **whether anyone ever runs it**. Six findings, from a direct read
+of `core/evolution/`'s current source (not the v1/v2 design intent):
+
+- **E1 — Reachability.** The scaffold has zero invocation surface beyond
+  `python -m misterdev.core.evolution` — no CLI subcommand, no MCP tool, no
+  `project.yaml` config section, no scheduled trigger. A correctly-designed loop
+  nobody runs converges to nothing. Being wired now: a `misterdev evolve` CLI
+  subcommand, an `evolve_async`/`job_status` MCP pair (reusing the existing
+  `JobRegistry`), an `evolution:` config block, and an opt-in nightly CI job
+  (`run_scheduled_evolution`, which already has the lock + circuit breaker this
+  needs — it just has zero callers today).
+- **E2 — Tool-invention and code-patch evolution are fully siloed.**
+  `tool_invention.py`/`tool_promotion.py` (container-sandboxed helper-tool
+  synthesis, gated behind `runtime_tooling`) and `driver.py`'s benchmark-gated
+  code-patcher share no imports in either direction — two disconnected
+  self-improvement mechanisms with two disconnected trust models. A blamed niche
+  should be able to trigger *either* a code-patch proposal or a tool-invention
+  proposal as two mutation kinds under the same guardrail/fitness/archive spine,
+  not force every niche through one fixed mechanism.
+- **E3 — The guardrail denylist walls off exactly the machinery most in need of
+  improvement.** `core/verification/`, `core/learning/`, `llm/responses/` are
+  correctly forbidden — letting evolution edit its own judge is the textbook
+  reward-hacking hole. But this also means the critic's prompt, the
+  acceptance-judge's framing, and the failure-taxonomy classifier can *never* be
+  improved by evolution, and those are exactly the parts a same-model-review
+  audit (see CHANGELOG `[Unreleased]`, 2026-08-14) found weakest. Proposed
+  carve-out, not a loosened denylist: allow PROMPT-TEXT-only mutations (never
+  control-flow) to specific judge files, gated by a second, independent model
+  blessing the prompt-diff itself pre-sandbox, on top of the existing benchmark
+  gate. Two structural gates on the one class of edit that's genuinely risky to
+  allow, rather than a blanket unban.
+- **E4 — Archive lineage is recorded, never mined.** `Candidate.parent_id` exists
+  "so stepping-stone chains... can be mined from the archive" (archive.py's own
+  docstring) — but the best-per-niche archive discards every non-winning
+  candidate, and nothing reads `parent_id` back into a proposal. A locally-worse
+  mutation that would have been a stepping stone toward a later win is lost the
+  moment it loses once.
+- **E5 — `favored_kinds()` is purely exploitative.** Mutation-kind selection
+  weights by historical win rate with no explicit exploration term, so an
+  under-tried kind (e.g. `contract-extraction`) can be starved indefinitely by an
+  early lucky win in another kind. An epsilon-greedy or UCB term would keep the
+  open-vocabulary kind space (tag-based, not a closed enum — proposer.py) genuinely
+  explored instead of collapsing to whatever won first.
+- **E6 — D1 (cross-distribution holdout) is concretely buildable now, not
+  hypothetical.** D1 called for a holdout pool of "a different kind (real-repo
+  bug / SWE-bench instance)" in the abstract; `evaluation/swebench/` (harness.py,
+  grader.py, docker_runner.py, instance.py) is a complete, real-GitHub-issue
+  harness that already exists as a separate evaluation tool, entirely unwired
+  from `driver.py`. `run_evolution`'s `run_bench` parameter is already injectable
+  — this is an adapter function (`evaluation.swebench.harness` in place of
+  `evaluation.polyglot.harness`), not a new benchmark integration from scratch.
+  Wiring it as the cross-distribution pool D1 specifies would be the single
+  highest-leverage next step for the "never overfit" claim in this document's
+  title, since the current L4 holdout is in-distribution and can't yet
+  distinguish benchmark-specialization from real generalization.
+
+E1 is being implemented now. E2–E6 are prioritization decisions, not autonomous
+fixes: E3 and E2 change what an unattended, self-modifying loop is allowed to
+touch, and E6 is real build effort against a harness that itself has open,
+unresolved test failures (`test_swebench_harness.py`).
+
 ## One-line status
 
 Verified-search core, structural guards, faithful observation, and the full
-evolution scaffold exist. The two missing pieces that convert "a loop that tweaks
-and plateaus" into "a loop that removes failure classes and converges to 100%
-without overfitting" are **L2 the cause-taxonomy (self-awareness)** and **L4 the
-held-out generalization gate (anti-overfit ratchet)**. Build M0→M2 first.
+evolution scaffold — including L2 (cause-taxonomy) and L4 (held-out gate) — now
+exist and are wired end to end in `driver.py`. What's missing has shifted from
+"does the loop work" to "how far can it reach": cross-distribution holdout (D1 /
+E6), a proposer that can choose tool-invention over a code patch (E2), and an
+operational surface a human or agent can actually trigger (E1, in progress). L5
+(saturation escape hatch) and L6 (convergence meter) remain unbuilt.

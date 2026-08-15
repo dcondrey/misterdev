@@ -2,6 +2,19 @@
 
 Phase 1, read-only. Verdict up front, evidence below. No code changed.
 
+**Status update, 2026-08-15:** both HIGH-value gaps below (rows 1 and 2) have
+since **shipped** — reference-guided build (`reference_dir` digest, wired through
+`agent.py`/`pipeline_mixin.py`/`cli.py`/`mcp_server.py`) and the async job
+lifecycle over MCP (`build_async`/`run_async`/`job_status`/`stop_job`/`list_jobs`,
+backed by `core/execution/jobs.py`'s `JobRegistry`). One scoping delta from the
+original spec: the shipped lifecycle has start/status/stop/list, not
+pause/resume. This file's verdicts below are historical (Phase 1 snapshot before
+the port) — read them for the reasoning, not as current status. For misterdev's
+own self-improvement (evolution) loop's scope and reachability, see
+`docs/path-to-100.md`'s "Deepening (v3)" section — a different kind of gap
+analysis (misterdev vs. its own potential, not vs. a donor), so it lives there
+rather than duplicated here.
+
 **Scope:** project-completer is a ~10k-LOC JavaScript MCP server (`/Volumes/A/autocoder/project-completer`) covering the same domain as misterdev (autonomously audit/fix/complete/build projects). misterdev is the maintained, published product (PyPI + MCP registry, `dcondrey`). Goal: reimplement the donor's *good ideas* as idiomatic Python, not merge the JS.
 
 ---
