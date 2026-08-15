@@ -12,6 +12,25 @@ from misterdev.logging_setup import setup_logger
 logger = setup_logger("cli")
 console = Console()
 
+# Subcommand names that must NOT fall through to natural-language routing (see
+# main()) — every add_parser(...) name belongs here, or its first arg gets
+# treated as a plain-English build goal instead of reaching argparse.
+KNOWN_SUBCOMMANDS = {
+    "scan",
+    "list",
+    "status",
+    "report",
+    "doctor",
+    "run",
+    "plan",
+    "build",
+    "interactive",
+    "i",
+    "init",
+    "mcp",
+    "evolve",
+}
+
 
 def _cli_error(e: Exception) -> None:
     """Print a user-facing error for a fatal exception, with a hint for API key issues."""
@@ -171,22 +190,8 @@ def main():
     # through to the flag-based parser below, so power users are unaffected.
     import sys
 
-    _known = {
-        "scan",
-        "list",
-        "status",
-        "report",
-        "doctor",
-        "run",
-        "plan",
-        "build",
-        "interactive",
-        "i",
-        "init",
-        "mcp",
-    }
     argv = sys.argv[1:]
-    if argv and not argv[0].startswith("-") and argv[0] not in _known:
+    if argv and not argv[0].startswith("-") and argv[0] not in KNOWN_SUBCOMMANDS:
         from misterdev.nl_cli import route
 
         try:
@@ -408,6 +413,20 @@ def main():
         "mcp", help="Run misterdev as an MCP server over stdio (Claude, Cursor, ...)"
     )
 
+    # 'evolve' — one misterdev-improves-misterdev self-improvement pass. Unlike
+    # every other subcommand, this targets misterdev's OWN repo (--repo, default
+    # cwd) against an external benchmark checkout, not "a project" the registry
+    # tracks — see docs/path-to-100.md. Same flags as `python -m
+    # misterdev.core.evolution`, which stays the underlying entrypoint.
+    evolve_parser = subparsers.add_parser(
+        "evolve",
+        help="Run one misterdev self-improvement pass (dry-run by default; "
+        "see docs/path-to-100.md)",
+    )
+    from misterdev.core.evolution.__main__ import add_evolve_arguments
+
+    add_evolve_arguments(evolve_parser)
+
     args = parser.parse_args()
 
     if args.command == "mcp":
@@ -415,6 +434,11 @@ def main():
 
         run_mcp_server()
         return
+
+    if args.command == "evolve":
+        from misterdev.core.evolution.__main__ import run_evolve
+
+        sys.exit(run_evolve(args))
 
     orchestrator = ProjectOrchestrator()
 

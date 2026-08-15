@@ -55,8 +55,12 @@ def _failure_target(repo: str):
     return top_stream_target(records)
 
 
-def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="misterdev.core.evolution")
+def add_evolve_arguments(parser) -> None:
+    """Add the evolution-run flags to ``parser`` (an ArgumentParser or subparser).
+
+    Shared by this module's own CLI and ``misterdev evolve`` so the flag surface
+    is defined once and can't drift between the two entry points.
+    """
     parser.add_argument(
         "--benchmark", required=True, help="polyglot-benchmark checkout"
     )
@@ -104,8 +108,19 @@ def main(argv=None) -> int:
         help="live: propose this many candidates per step and keep the best "
         "screened survivor (implies --screen; widens search without widening cost)",
     )
-    args = parser.parse_args(argv)
+    parser.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="live only: run under run_scheduled_evolution's exclusive lock + "
+        "circuit breaker instead of a plain one-shot call (for cron/CI use, where "
+        "an overlapping or repeatedly-failing trigger must be a clean no-op)",
+    )
 
+
+def run_evolve(args) -> int:
+    """Run one evolution pass from a parsed ``args`` namespace (see
+    :func:`add_evolve_arguments`) and print a summary. Returns the process exit
+    code (0 unless the run itself raises)."""
     from misterdev.config import ConfigManager
     from misterdev.core.execution.project import Project
 
@@ -118,21 +133,42 @@ def main(argv=None) -> int:
         _emit("from-failures: no logged real failures to target; nothing to do")
         return 0
 
-    result = run_evolution(
-        project,
-        args.benchmark,
-        args.workdir,
+    run_kwargs = dict(
         steps=args.steps,
         noise_band=args.noise_band,
         limit=args.limit,
         languages=args.languages,
         model=args.model,
-        live=args.live,
-        gate_commands=_gate_commands(repo) if args.live else None,
         target=target,
         screen=args.screen or args.beam > 1,
         beam=max(1, args.beam),
     )
+
+    if getattr(args, "scheduled", False):
+        if not args.live:
+            _emit("--scheduled requires --live (a dry-run has nothing to schedule)")
+            return 1
+        from misterdev.core.evolution.scheduled import run_scheduled_evolution
+
+        result = run_scheduled_evolution(
+            project,
+            args.benchmark,
+            args.workdir,
+            gate_commands=_gate_commands(repo),
+            **run_kwargs,
+        )
+        if result is None:
+            _emit("scheduled: skipped (lock held or circuit breaker open)")
+            return 0
+    else:
+        result = run_evolution(
+            project,
+            args.benchmark,
+            args.workdir,
+            live=args.live,
+            gate_commands=_gate_commands(repo) if args.live else None,
+            **run_kwargs,
+        )
 
     _emit(
         f"baseline: {result.baseline.resolved}/{result.baseline.total} "
@@ -155,6 +191,13 @@ def main(argv=None) -> int:
         _emit(f"champion: {c.id} in {c.niche} ({c.resolved}/{c.total})")
     _emit(f"note: {result.note}")
     return 0
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog="misterdev.core.evolution")
+    add_evolve_arguments(parser)
+    args = parser.parse_args(argv)
+    return run_evolve(args)
 
 
 if __name__ == "__main__":
