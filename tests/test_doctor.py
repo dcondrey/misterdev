@@ -43,6 +43,16 @@ def test_git_and_branch_and_worktree_and_requirements_warnings():
     assert d.check_requirements(["API_KEY"]).status == d.WARN
 
 
+def test_evolution_configured_routing():
+    # Informational only: both states pass, never warn or fail.
+    assert d.check_evolution_configured(None).status == d.PASS
+    assert d.check_evolution_configured("").status == d.PASS
+    assert d.check_evolution_configured("../polyglot-benchmark").status == d.PASS
+    assert "not configured" in d.check_evolution_configured(None).detail
+    configured = d.check_evolution_configured("../polyglot-benchmark")
+    assert "../polyglot-benchmark" in configured.detail
+
+
 def test_aggregate_all_pass_exits_zero():
     checks = [
         d.check_clean_tree(""),
@@ -120,6 +130,25 @@ def test_run_doctor_ready_on_clean_repo():
         assert names["clean working tree"] == "pass"
         assert names["on base branch"] == "pass"
         assert names["models resolve"] == "pass"
+        assert names["evolution configured"] == "pass"
+
+
+def test_run_doctor_reports_evolution_benchmark_dir_when_configured():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _clean_repo(root)
+        import misterdev.agent as agent_mod
+
+        orch = agent_mod.ProjectOrchestrator()
+        project = MagicMock()
+        project.path = root
+        project.config = {"evolution": {"benchmark_dir": "../polyglot-benchmark"}}
+        project.llm_client.health_check.return_value = (True, "good/model")
+        orch._get_or_register = lambda _p: project  # type: ignore[assignment]
+        result = orch.run_doctor(str(root))
+        checks = {c.name: c for c in result["checks"]}
+        assert checks["evolution configured"].status == "pass"
+        assert "../polyglot-benchmark" in checks["evolution configured"].detail
 
 
 def test_run_doctor_fails_on_dirty_tree():

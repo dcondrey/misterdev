@@ -160,6 +160,23 @@ def check_worktree_prime(
     )
 
 
+def check_evolution_configured(benchmark_dir: Optional[str]) -> Check:
+    """Informational only: evolution is opt-in and unrelated to build readiness,
+    so both states are ``pass`` — this never blocks or warns."""
+    if benchmark_dir:
+        return Check(
+            "evolution configured",
+            PASS,
+            f"benchmark_dir: {benchmark_dir}",
+        )
+    return Check(
+        "evolution configured",
+        PASS,
+        "not configured (opt-in; set `evolution.benchmark_dir` in project.yaml "
+        "or pass --benchmark to `misterdev evolve`)",
+    )
+
+
 def check_requirements(unsatisfied: List[str]) -> Check:
     if not unsatisfied:
         return Check("requirements satisfied", PASS, "no outstanding inputs")

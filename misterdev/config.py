@@ -551,6 +551,11 @@ DEFAULT_CONFIG = {
     # ("none"|"default", container egress control). Open dict like ``runtime``,
     # not schema-validated, so the pattern list and knobs stay free-form.
     "governance": {"network": "default"},
+    # Self-improvement evolution spec (see `misterdev evolve` / `evolve_async`):
+    # ``benchmark_dir`` (polyglot-benchmark checkout) and ``noise_band`` (min
+    # fitness delta to promote), used as defaults when a caller omits the flag.
+    # Open dict like ``runtime``, not schema-validated.
+    "evolution": {"benchmark_dir": None, "noise_band": 0.05},
     # Adversarial-critic spec (off unless orchestrator.adversarial_critic is
     # true): ``model`` (an INDEPENDENT critic model id — different from the
     # generator so it doesn't share its blind spots). Empty leaves the critic on

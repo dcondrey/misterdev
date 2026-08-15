@@ -239,6 +239,16 @@ environment:
 #     web: { serve: "npm run serve", url: "http://localhost:8000", checks: ["#app"] }
 #     vision: { assert: "the editor toolbar is visible" }   # judges the web gate's screenshot
 
+# Self-improvement evolution (opt-in; misterdev improving ITS OWN repo only,
+# never an arbitrary project). Invoke via `misterdev evolve` or the
+# `evolve_async` MCP tool; nothing runs this automatically unless the
+# evolve.yml workflow is scheduled. These are just defaults for benchmark_dir/
+# noise_band so a caller can omit the matching flag; the CLI/MCP flag always
+# wins when given.
+# evolution:
+#   benchmark_dir: "../polyglot-benchmark"   # a checkout; no default target if unset
+#   noise_band: 0.05                          # min fitness delta required to promote
+
 # Build workflow settings (6-phase autonomous builder)
 build:
   max_tasks: 30   # also overridable per-run with the CLI flag --max-tasks N

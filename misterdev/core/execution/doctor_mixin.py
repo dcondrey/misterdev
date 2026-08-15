@@ -53,6 +53,11 @@ class DoctorMixin:
         checks.append(
             dr.check_requirements(self._doctor_unsatisfied_requirements(project))
         )
+        checks.append(
+            dr.check_evolution_configured(
+                get_setting(project.config, "evolution", "benchmark_dir")
+            )
+        )
 
         out = dr.aggregate(checks)
         out["checks"] = checks

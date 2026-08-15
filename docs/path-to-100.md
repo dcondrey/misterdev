@@ -200,14 +200,19 @@ gaps v2's one-line status called out. What's left is not "does the loop work" �
 to reach**, and **whether anyone ever runs it**. Six findings, from a direct read
 of `core/evolution/`'s current source (not the v1/v2 design intent):
 
-- **E1 — Reachability.** The scaffold has zero invocation surface beyond
-  `python -m misterdev.core.evolution` — no CLI subcommand, no MCP tool, no
-  `project.yaml` config section, no scheduled trigger. A correctly-designed loop
-  nobody runs converges to nothing. Being wired now: a `misterdev evolve` CLI
-  subcommand, an `evolve_async`/`job_status` MCP pair (reusing the existing
-  `JobRegistry`), an `evolution:` config block, and an opt-in nightly CI job
-  (`run_scheduled_evolution`, which already has the lock + circuit breaker this
-  needs — it just has zero callers today).
+- **E1 — Reachability. DONE.** The scaffold used to have zero invocation surface
+  beyond `python -m misterdev.core.evolution`. Now wired: a `misterdev evolve`
+  CLI subcommand; an `evolve_async` MCP tool (`mcp_server.py`) that reuses the
+  existing `JobRegistry`/`job_status`/`stop_job`/`list_jobs` — no new status
+  machinery; an `evolution:` config block (`evolution.benchmark_dir`/
+  `evolution.noise_band` in `project.yaml`, `misterdev doctor`'s "evolution
+  configured" check reports which); and a nightly opt-in CI job
+  (`.github/workflows/evolve.yml`, `workflow_dispatch` + 09:00 UTC cron) that
+  runs `run_scheduled_evolution` under its existing lock + circuit breaker
+  against a fresh `polyglot-benchmark` clone, gated on the repo secret
+  `OPENROUTER_API_KEY`. The CI job measures/reports only — a promoted
+  champion's patch is never auto-applied or opened as a PR; that remains a
+  deliberate, separate step.
 - **E2 — Tool-invention and code-patch evolution are fully siloed.**
   `tool_invention.py`/`tool_promotion.py` (container-sandboxed helper-tool
   synthesis, gated behind `runtime_tooling`) and `driver.py`'s benchmark-gated
@@ -253,17 +258,18 @@ of `core/evolution/`'s current source (not the v1/v2 design intent):
   title, since the current L4 holdout is in-distribution and can't yet
   distinguish benchmark-specialization from real generalization.
 
-E1 is being implemented now. E2–E6 are prioritization decisions, not autonomous
-fixes: E3 and E2 change what an unattended, self-modifying loop is allowed to
-touch, and E6 is real build effort against a harness that itself has open,
-unresolved test failures (`test_swebench_harness.py`).
+E1 is done. E2–E6 are prioritization decisions, not autonomous fixes: E3 and E2
+change what an unattended, self-modifying loop is allowed to touch, and E6 is
+real build effort against a harness that itself has open, unresolved test
+failures (`test_swebench_harness.py`).
 
 ## One-line status
 
 Verified-search core, structural guards, faithful observation, and the full
 evolution scaffold — including L2 (cause-taxonomy) and L4 (held-out gate) — now
-exist and are wired end to end in `driver.py`. What's missing has shifted from
-"does the loop work" to "how far can it reach": cross-distribution holdout (D1 /
-E6), a proposer that can choose tool-invention over a code patch (E2), and an
-operational surface a human or agent can actually trigger (E1, in progress). L5
-(saturation escape hatch) and L6 (convergence meter) remain unbuilt.
+exist and are wired end to end in `driver.py`, and now have a real operational
+surface — CLI, MCP, config, and a scheduled CI job (E1). What's missing has
+shifted from "does the loop work" to "how far can it reach": cross-distribution
+holdout (D1 / E6) and a proposer that can choose tool-invention over a code
+patch (E2). L5 (saturation escape hatch) and L6 (convergence meter) remain
+unbuilt.

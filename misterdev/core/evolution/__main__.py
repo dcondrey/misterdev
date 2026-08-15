@@ -20,7 +20,7 @@ def _emit(line: str) -> None:
     sys.stdout.flush()
 
 
-def _gate_commands(repo: str) -> dict:
+def gate_commands_for_repo(repo: str) -> dict:
     """misterdev's own build/test/lint gate commands, detected from the repo, run
     in the sandbox to prove a self-edit did not break misterdev before scoring."""
     from misterdev.analyzers.project_analyzer.detection import (
@@ -38,7 +38,7 @@ def _gate_commands(repo: str) -> dict:
     }
 
 
-def _failure_target(repo: str):
+def failure_target_for_repo(repo: str):
     """Highest-weight niche from the repo's real-build failure stream, or None.
 
     Reads ``.orchestrator/failures.jsonl`` (written by finished builds) and ranks
@@ -62,7 +62,10 @@ def add_evolve_arguments(parser) -> None:
     is defined once and can't drift between the two entry points.
     """
     parser.add_argument(
-        "--benchmark", required=True, help="polyglot-benchmark checkout"
+        "--benchmark",
+        default=None,
+        help="polyglot-benchmark checkout (default: evolution.benchmark_dir in "
+        "project.yaml)",
     )
     parser.add_argument("--workdir", required=True, help="scratch dir for exercises")
     parser.add_argument(
@@ -81,7 +84,11 @@ def add_evolve_arguments(parser) -> None:
         "--steps", type=int, default=1, help="live: mutation steps to try"
     )
     parser.add_argument(
-        "--noise-band", type=float, default=0.05, help="min rate delta to promote"
+        "--noise-band",
+        type=float,
+        default=None,
+        help="min rate delta to promote (default: evolution.noise_band in "
+        "project.yaml, else 0.05)",
     )
     parser.add_argument(
         "--live",
@@ -121,21 +128,34 @@ def run_evolve(args) -> int:
     """Run one evolution pass from a parsed ``args`` namespace (see
     :func:`add_evolve_arguments`) and print a summary. Returns the process exit
     code (0 unless the run itself raises)."""
-    from misterdev.config import ConfigManager
+    from misterdev.config import ConfigManager, get_setting
     from misterdev.core.execution.project import Project
 
     repo = args.repo or os.getcwd()
     config = ConfigManager().load_project_config(repo)
     project = Project(repo, config)
 
-    target = _failure_target(repo) if args.from_failures else None
+    benchmark = args.benchmark or get_setting(config, "evolution", "benchmark_dir")
+    if not benchmark:
+        _emit(
+            "no --benchmark given and evolution.benchmark_dir is not set in "
+            "project.yaml"
+        )
+        return 1
+    noise_band = (
+        args.noise_band
+        if args.noise_band is not None
+        else get_setting(config, "evolution", "noise_band")
+    )
+
+    target = failure_target_for_repo(repo) if args.from_failures else None
     if args.from_failures and target is None:
         _emit("from-failures: no logged real failures to target; nothing to do")
         return 0
 
     run_kwargs = dict(
         steps=args.steps,
-        noise_band=args.noise_band,
+        noise_band=noise_band,
         limit=args.limit,
         languages=args.languages,
         model=args.model,
@@ -152,9 +172,9 @@ def run_evolve(args) -> int:
 
         result = run_scheduled_evolution(
             project,
-            args.benchmark,
+            benchmark,
             args.workdir,
-            gate_commands=_gate_commands(repo),
+            gate_commands=gate_commands_for_repo(repo),
             **run_kwargs,
         )
         if result is None:
@@ -163,34 +183,45 @@ def run_evolve(args) -> int:
     else:
         result = run_evolution(
             project,
-            args.benchmark,
+            benchmark,
             args.workdir,
             live=args.live,
-            gate_commands=_gate_commands(repo) if args.live else None,
+            gate_commands=gate_commands_for_repo(repo) if args.live else None,
             **run_kwargs,
         )
 
-    _emit(
+    for line in format_evolution_result(result):
+        _emit(line)
+    return 0
+
+
+def format_evolution_result(result) -> list:
+    """Render an ``EvolutionResult`` as the lines the CLI and MCP tool both show.
+
+    Shared so ``run_evolve`` and ``mcp_server.evolve_async`` can't drift on what
+    a run's outcome looks like to a caller.
+    """
+    lines = [
         f"baseline: {result.baseline.resolved}/{result.baseline.total} "
         f"({result.baseline.resolved_rate:.1%})"
-    )
+    ]
     if result.blame:
-        _emit(
+        lines.append(
             f"top blame: {result.blame.niche} "
             f"({result.blame.failures}/{result.blame.total})"
         )
     for m in result.proposals:
-        _emit(f"proposal [{m.note}] touches: {', '.join(m.paths) or '(none)'}")
+        lines.append(f"proposal [{m.note}] touches: {', '.join(m.paths) or '(none)'}")
     for i, s in enumerate(result.steps, 1):
-        _emit(
+        lines.append(
             f"step {i}: {s.reason}"
             + (f" -> {s.score.resolved}/{s.score.total}" if s.score else "")
         )
     if result.champion:
         c = result.champion
-        _emit(f"champion: {c.id} in {c.niche} ({c.resolved}/{c.total})")
-    _emit(f"note: {result.note}")
-    return 0
+        lines.append(f"champion: {c.id} in {c.niche} ({c.resolved}/{c.total})")
+    lines.append(f"note: {result.note}")
+    return lines
 
 
 def main(argv=None) -> int:

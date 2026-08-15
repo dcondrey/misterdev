@@ -310,21 +310,27 @@ class JobRegistry:
     def stop(self, run_id: str) -> bool:
         """Request cooperative cancellation of a running job.
 
-        Returns True if a running job was signalled, False if the id is unknown
-        or the job already finished. Idempotent: stopping twice is harmless.
+        Returns True if a running job with a stop hook was signalled, False if
+        the id is unknown, the job already finished, or the job has no stop
+        hook. The no-hook case must return False rather than set
+        ``stop_requested``: a target with nothing to interrupt runs to normal
+        completion regardless, and marking it "stopping" would make ``_runner``
+        relabel that successful completion as "stopped (partial)" — a job kind
+        with no cooperative stop path (e.g. ``evolve``) must say so honestly
+        instead of lying about cancellation it cannot perform. Idempotent:
+        stopping twice is harmless.
         """
         with self._lock:
             job = self._jobs.get(run_id)
-            if job is None or job.status != "running":
+            if job is None or job.status != "running" or job._stop_hook is None:
                 return False
             job.stop_requested = True
             hook = job._stop_hook
             self._save_locked()
-        if hook is not None:
-            try:
-                hook()
-            except Exception as e:  # noqa: BLE001 - stop must never raise into the caller
-                logger.warning(f"Stop hook for job {run_id} failed (non-fatal): {e}")
+        try:
+            hook()
+        except Exception as e:  # noqa: BLE001 - stop must never raise into the caller
+            logger.warning(f"Stop hook for job {run_id} failed (non-fatal): {e}")
         return True
 
     def list_jobs(self) -> List[Dict[str, Any]]:

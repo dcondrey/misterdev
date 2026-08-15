@@ -85,6 +85,26 @@ def test_stop_unknown_or_finished_returns_false():
     assert reg.stop(run_id) is False
 
 
+def test_stop_on_job_with_no_hook_is_an_honest_no_op():
+    """A job kind with nothing to interrupt (e.g. evolve) must not be flagged
+    stop_requested: doing so would mislead _runner into relabelling a normal,
+    successful completion as 'stopped (partial)' once the target finishes."""
+    reg = JobRegistry()
+    release = threading.Event()
+
+    def target() -> str:
+        release.wait(3)
+        return "REAL RESULT"
+
+    run_id = reg.start("evolve", "/p", target)
+    assert reg.status(run_id)["status"] == "running"
+    assert reg.stop(run_id) is False
+    assert reg.status(run_id)["stop_requested"] is False
+    release.set()
+    _wait(reg, run_id, "succeeded")
+    assert reg.status(run_id)["result"] == "REAL RESULT"
+
+
 def test_list_jobs_reports_all():
     reg = JobRegistry()
     a = reg.start("build", "/a", lambda: "1")

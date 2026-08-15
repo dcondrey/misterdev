@@ -295,3 +295,222 @@ def test_build_async_reports_task_progress(monkeypatch):
     assert (
         st["tasks_done"] == 1 and st["tasks_total"] == 1 and st["phase"] == "building"
     )
+
+
+def _fake_evolution_result():
+    from misterdev.core.evolution.driver import EvolutionResult
+    from misterdev.core.evolution.fitness import FitnessScore
+
+    return EvolutionResult(
+        baseline=FitnessScore(resolved=8, total=10, cost=0.5),
+        blame=None,
+        note="dry-run only",
+    )
+
+
+_UNSET = object()
+
+
+def _patch_evolution(
+    monkeypatch, calls, result=None, scheduled_result=_UNSET, project_config=None
+):
+    import misterdev.config as config_mod
+    import misterdev.core.evolution.driver as driver_mod
+    import misterdev.core.evolution.scheduled as scheduled_mod
+    import misterdev.core.execution.project as project_mod
+
+    class _FakeConfigManager:
+        def load_project_config(self, path):
+            return project_config or {}
+
+    class _FakeProject:
+        def __init__(self, path, config):
+            self.path = path
+
+    def _fake_run_evolution(project, benchmark, workdir, **kwargs):
+        calls["run_evolution"] = (project.path, benchmark, workdir, kwargs)
+        return result if result is not None else _fake_evolution_result()
+
+    def _fake_run_scheduled_evolution(project, benchmark, workdir, **kwargs):
+        calls["run_scheduled_evolution"] = (project.path, benchmark, workdir, kwargs)
+        if scheduled_result is not _UNSET:
+            return scheduled_result
+        return result if result is not None else _fake_evolution_result()
+
+    monkeypatch.setattr(config_mod, "ConfigManager", _FakeConfigManager)
+    monkeypatch.setattr(project_mod, "Project", _FakeProject)
+    monkeypatch.setattr(driver_mod, "run_evolution", _fake_run_evolution)
+    monkeypatch.setattr(
+        scheduled_mod, "run_scheduled_evolution", _fake_run_scheduled_evolution
+    )
+
+
+def test_evolve_async_starts_job_dry_run(monkeypatch):
+    reg = _patch_jobs(monkeypatch)
+    calls = {}
+    _patch_evolution(monkeypatch, calls)
+    out = mcp_server.evolve_async("/repo", "/bench", workdir="/wd")
+    assert out["status"] == "running"
+    state = _await_status(reg, out["run_id"], "succeeded")
+    assert state["kind"] == "evolve"
+    assert "baseline: 8/10" in state["result"]
+    _, benchmark, _, kwargs = calls["run_evolution"]
+    assert benchmark == "/bench"
+    assert kwargs["target"] is None
+    assert (
+        kwargs["noise_band"] == 0.05
+    )  # DEFAULT_CONFIG fallback, no project.yaml value
+    assert "run_scheduled_evolution" not in calls
+
+
+def test_evolve_async_falls_back_to_config_when_benchmark_omitted(monkeypatch):
+    reg = _patch_jobs(monkeypatch)
+    calls = {}
+    _patch_evolution(
+        monkeypatch,
+        calls,
+        project_config={
+            "evolution": {"benchmark_dir": "/from/config", "noise_band": 0.2}
+        },
+    )
+    out = mcp_server.evolve_async("/repo", workdir="/wd")
+    assert out["status"] == "running"
+    _await_status(reg, out["run_id"], "succeeded")
+    _, benchmark, _, kwargs = calls["run_evolution"]
+    assert benchmark == "/from/config"
+    assert kwargs["noise_band"] == 0.2
+
+
+def test_evolve_async_explicit_args_override_config(monkeypatch):
+    reg = _patch_jobs(monkeypatch)
+    calls = {}
+    _patch_evolution(
+        monkeypatch,
+        calls,
+        project_config={
+            "evolution": {"benchmark_dir": "/from/config", "noise_band": 0.2}
+        },
+    )
+    out = mcp_server.evolve_async(
+        "/repo", "/explicit/bench", workdir="/wd", noise_band=0.9
+    )
+    _await_status(reg, out["run_id"], "succeeded")
+    _, benchmark, _, kwargs = calls["run_evolution"]
+    assert benchmark == "/explicit/bench"
+    assert kwargs["noise_band"] == 0.9
+
+
+def test_evolve_async_no_benchmark_and_no_config_errors(monkeypatch):
+    _patch_jobs(monkeypatch)
+    calls = {}
+    _patch_evolution(monkeypatch, calls)
+    out = mcp_server.evolve_async("/repo", workdir="/wd")
+    assert out == {
+        "error": "no benchmark given and evolution.benchmark_dir is not set "
+        "in project.yaml"
+    }
+    assert "run_evolution" not in calls
+
+
+def test_evolve_async_live_wires_gate_commands(monkeypatch):
+    reg = _patch_jobs(monkeypatch)
+    calls = {}
+    _patch_evolution(monkeypatch, calls)
+    import misterdev.core.evolution.__main__ as main_mod
+
+    monkeypatch.setattr(
+        main_mod, "gate_commands_for_repo", lambda repo: {"build_command": "x"}
+    )
+    out = mcp_server.evolve_async("/repo", "/bench", workdir="/wd", live=True, steps=3)
+    _await_status(reg, out["run_id"], "succeeded")
+    path, benchmark, workdir, kwargs = calls["run_evolution"]
+    assert kwargs["steps"] == 3
+
+
+def test_evolve_async_scheduled_requires_live(monkeypatch):
+    out = mcp_server.evolve_async("/repo", "/bench", scheduled=True, live=False)
+    assert out == {"error": "scheduled=True requires live=True"}
+
+
+def test_evolve_async_scheduled_routes_to_scheduled_runner(monkeypatch):
+    reg = _patch_jobs(monkeypatch)
+    calls = {}
+    _patch_evolution(monkeypatch, calls)
+    out = mcp_server.evolve_async(
+        "/repo", "/bench", workdir="/wd", live=True, scheduled=True
+    )
+    _await_status(reg, out["run_id"], "succeeded")
+    assert "run_scheduled_evolution" in calls
+    assert "run_evolution" not in calls
+
+
+def test_evolve_async_scheduled_skip_reports_cleanly(monkeypatch):
+    reg = _patch_jobs(monkeypatch)
+    calls = {}
+    _patch_evolution(monkeypatch, calls, scheduled_result=None)
+    out = mcp_server.evolve_async(
+        "/repo", "/bench", workdir="/wd", live=True, scheduled=True
+    )
+    state = _await_status(reg, out["run_id"], "succeeded")
+    assert "skipped" in state["result"]
+
+
+def test_evolve_async_from_failures_no_target(monkeypatch):
+    _patch_jobs(monkeypatch)
+    calls = {}
+    _patch_evolution(monkeypatch, calls)
+    import misterdev.core.evolution.__main__ as main_mod
+
+    monkeypatch.setattr(main_mod, "failure_target_for_repo", lambda repo: None)
+    out = mcp_server.evolve_async("/repo", "/bench", workdir="/wd", from_failures=True)
+    assert out == {"error": "from_failures: no logged real failures to target"}
+    assert "run_evolution" not in calls
+
+
+def test_evolve_async_refuses_second_job_same_project(monkeypatch):
+    reg = _patch_jobs(monkeypatch)
+    calls = {}
+    hold = {"go": False}
+
+    def _slow_run_evolution(project, benchmark, workdir, **kwargs):
+        while not hold["go"]:
+            time.sleep(0.005)
+        return _fake_evolution_result()
+
+    _patch_evolution(monkeypatch, calls)
+    import misterdev.core.evolution.driver as driver_mod
+
+    monkeypatch.setattr(driver_mod, "run_evolution", _slow_run_evolution)
+
+    first = mcp_server.evolve_async("/repo", "/bench", workdir="/wd")
+    assert "run_id" in first
+    second = mcp_server.evolve_async("/repo", "/bench", workdir="/wd")
+    assert "error" in second
+    hold["go"] = True
+    _await_status(reg, first["run_id"], "succeeded")
+
+
+def test_stop_job_on_evolve_run_is_honest_no_op(monkeypatch):
+    """An evolve job has no cooperative stop hook: stop_job must say so (False),
+    never claim it is stopping a run it cannot interrupt, and the run must
+    complete and report normally rather than being mislabeled 'stopped'."""
+    reg = _patch_jobs(monkeypatch)
+    calls = {}
+    hold = {"go": False}
+
+    def _slow_run_evolution(project, benchmark, workdir, **kwargs):
+        while not hold["go"]:
+            time.sleep(0.005)
+        return _fake_evolution_result()
+
+    _patch_evolution(monkeypatch, calls)
+    import misterdev.core.evolution.driver as driver_mod
+
+    monkeypatch.setattr(driver_mod, "run_evolution", _slow_run_evolution)
+
+    out = mcp_server.evolve_async("/repo", "/bench", workdir="/wd")
+    run_id = out["run_id"]
+    assert mcp_server.stop_job(run_id) == {"run_id": run_id, "stopping": False}
+    hold["go"] = True
+    state = _await_status(reg, run_id, "succeeded")
+    assert state["result"].startswith("baseline:")

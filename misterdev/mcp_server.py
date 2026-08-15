@@ -717,6 +717,219 @@ def list_jobs() -> Dict[str, Any]:
 
 @mcp.tool(
     annotations=ToolAnnotations(
+        title="Start a self-improvement evolution pass in the background",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    )
+)
+def evolve_async(
+    path: Annotated[
+        str,
+        Field(
+            description=(
+                "Absolute path to misterdev's OWN repo to improve. Evolution "
+                "is self-referential: it only ever targets the misterdev "
+                "codebase, never an arbitrary project."
+            ),
+            examples=["/Users/me/code/misterdev"],
+            min_length=1,
+        ),
+    ],
+    benchmark: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Path to a polyglot-benchmark checkout used to score candidates. "
+                "Defaults to evolution.benchmark_dir in project.yaml when omitted."
+            ),
+        ),
+    ] = None,
+    workdir: Annotated[
+        Optional[str],
+        Field(description="Scratch directory for running benchmark exercises."),
+    ] = None,
+    live: Annotated[
+        bool,
+        Field(
+            description=(
+                "False (default): dry-run — measure baseline, propose one edit, "
+                "apply nothing. True: run the full apply/gate/benchmark/promote "
+                "loop and spend real budget."
+            )
+        ),
+    ] = False,
+    from_failures: Annotated[
+        bool,
+        Field(
+            description=(
+                "Aim the mutation at the repo's real-build failure stream "
+                "(.orchestrator/failures.jsonl) instead of the benchmark's "
+                "worst niche. The benchmark still gates promotion."
+            )
+        ),
+    ] = False,
+    scheduled: Annotated[
+        bool,
+        Field(
+            description=(
+                "Run under run_scheduled_evolution's exclusive lock + circuit "
+                "breaker (for cron/CI-style triggers) instead of a plain "
+                "one-shot call. Requires live=True."
+            )
+        ),
+    ] = False,
+    steps: Annotated[int, Field(description="live: mutation steps to try.", ge=1)] = 1,
+    noise_band: Annotated[
+        Optional[float],
+        Field(
+            description=(
+                "Minimum fitness delta required to promote. Defaults to "
+                "evolution.noise_band in project.yaml, else 0.05."
+            ),
+            ge=0,
+        ),
+    ] = None,
+    limit: Annotated[
+        Optional[int],
+        Field(description="Cap exercises per benchmark run.", ge=1),
+    ] = None,
+    languages: Annotated[
+        Optional[list],
+        Field(description="Languages to benchmark; default is all."),
+    ] = None,
+    model: Annotated[
+        Optional[str],
+        Field(description="Pin a single model id for the run."),
+    ] = None,
+    screen: Annotated[
+        bool,
+        Field(
+            description=(
+                "live: cheaply screen each candidate on targeted + guard cases "
+                "before spending the full benchmark."
+            )
+        ),
+    ] = False,
+    beam: Annotated[
+        int,
+        Field(
+            description="live: candidates to propose per step, keeping the best "
+            "screened survivor (implies screen=True).",
+            ge=1,
+        ),
+    ] = 1,
+) -> Dict[str, Any]:
+    """Start a self-improvement evolution pass in the BACKGROUND and return immediately.
+
+    Use when: you want misterdev to try to improve its own codebase against the
+    polyglot benchmark. Poll ``job_status`` with the returned ``run_id`` to watch
+    progress, ``list_jobs`` for an overview. Do NOT use for an ad hoc project
+    build — that is ``build_async``; evolution only ever targets misterdev's own
+    repo. Related: ``job_status``. Evolution has NO cooperative stop hook, so
+    ``stop_job`` always returns ``{"stopping": false}`` for an evolve run — it
+    cannot be cancelled early and always runs to completion; poll ``job_status``
+    instead.
+
+    DESTRUCTIVE side effects when ``live=True``: applies self-edits in an
+    isolated worktree, spends real benchmark budget, and may promote a new
+    champion. ``live=False`` (default) only measures and proposes, touching no
+    source. Refuses to start a second job for a project that already has one
+    running (one writer per project).
+
+    Returns ``{run_id, status}`` on success, or ``{error}`` when a job is
+    already running for this project, ``from_failures`` found nothing to
+    target, or ``scheduled=True`` was passed without ``live=True``.
+    """
+    proj, err = _resolve_project_path(path)
+    if err:
+        return {"error": f"rejected: {err}"}
+    if scheduled and not live:
+        return {"error": "scheduled=True requires live=True"}
+
+    from misterdev.config import ConfigManager, get_setting
+    from misterdev.core.evolution.__main__ import (
+        failure_target_for_repo,
+        format_evolution_result,
+        gate_commands_for_repo,
+    )
+    from misterdev.core.evolution.driver import run_evolution
+    from misterdev.core.execution.project import Project
+
+    repo = str(proj)
+    config = ConfigManager().load_project_config(repo)
+    project = Project(repo, config)
+
+    resolved_benchmark = benchmark or get_setting(config, "evolution", "benchmark_dir")
+    if not resolved_benchmark:
+        return {
+            "error": "no benchmark given and evolution.benchmark_dir is not set "
+            "in project.yaml"
+        }
+    resolved_noise_band = (
+        noise_band
+        if noise_band is not None
+        else get_setting(config, "evolution", "noise_band")
+    )
+
+    target = failure_target_for_repo(repo) if from_failures else None
+    if from_failures and target is None:
+        return {"error": "from_failures: no logged real failures to target"}
+
+    resolved_workdir = workdir or str(proj / ".orchestrator" / "evolution" / "workdir")
+    run_kwargs = dict(
+        steps=steps,
+        noise_band=resolved_noise_band,
+        limit=limit,
+        languages=languages,
+        model=model,
+        target=target,
+        screen=screen or beam > 1,
+        beam=max(1, beam),
+    )
+    _log.info(
+        "mcp.evolve_async [audit] path=%s live=%s scheduled=%s from_failures=%s",
+        proj,
+        live,
+        scheduled,
+        from_failures,
+    )
+
+    def _target(report) -> str:
+        report(phase="evolving")
+        if scheduled:
+            from misterdev.core.evolution.scheduled import run_scheduled_evolution
+
+            result = run_scheduled_evolution(
+                project,
+                resolved_benchmark,
+                resolved_workdir,
+                gate_commands=gate_commands_for_repo(repo),
+                **run_kwargs,
+            )
+            if result is None:
+                return "scheduled: skipped (lock held or circuit breaker open)"
+        else:
+            result = run_evolution(
+                project,
+                resolved_benchmark,
+                resolved_workdir,
+                live=live,
+                gate_commands=gate_commands_for_repo(repo) if live else None,
+                **run_kwargs,
+            )
+        return "\n".join(format_evolution_result(result))
+
+    try:
+        run_id = registry.start("evolve", repo, _target)
+    except RuntimeError as e:
+        return {"error": str(e)}
+    return {"run_id": run_id, "status": "running"}
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
         title="Propose a ranked plan of work for approval",
         readOnlyHint=False,
         destructiveHint=False,

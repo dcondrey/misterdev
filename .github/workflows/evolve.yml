@@ -1,0 +1,80 @@
+name: Evolve
+
+# Nightly self-improvement pass: misterdev attempts to improve ITS OWN repo
+# against a public polyglot benchmark, gated by run_scheduled_evolution's
+# exclusive lock + circuit breaker (a busy lock or an open circuit is a clean
+# no-op, never a failure). A live pass may PROMOTE a champion into
+# .orchestrator/evolution/archive.json, but never applies a self-edit to the
+# checked-out tree — every candidate runs in an isolated worktree that is torn
+# down regardless of outcome. This job only measures/reports; materializing a
+# new champion's patch onto the tree (e.g. as a PR) is a separate, deliberate
+# step, not automatic.
+#
+# Requires the repo secret OPENROUTER_API_KEY (add it under Settings > Secrets
+# and variables > Actions). Without it, the run step is skipped.
+
+on:
+  schedule:
+    - cron: "0 9 * * *" # 09:00 UTC nightly
+  workflow_dispatch:
+
+concurrency:
+  group: evolve
+  cancel-in-progress: false
+
+permissions: read-all
+
+jobs:
+  evolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          python-version: "3.12"
+
+      - name: Sync (core + dev)
+        run: uv sync
+
+      - name: Clone polyglot-benchmark
+        run: |
+          git clone --depth 1 https://github.com/Aider-AI/polyglot-benchmark \
+            "${{ runner.temp }}/polyglot-benchmark"
+
+      # Persists the archive (MAP-Elites candidate history) and the circuit
+      # breaker's failure count across nightly runs — both live under the
+      # gitignored .orchestrator/evolution/, so without this cache each run
+      # starts blind and the circuit breaker can never trip.
+      - name: Restore evolution state
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .orchestrator/evolution
+          key: evolve-state-${{ github.run_id }}
+          restore-keys: |
+            evolve-state-
+
+      - name: Run scheduled evolution
+        if: ${{ env.OPENROUTER_API_KEY != '' }}
+        run: |
+          uv run python -m misterdev.cli evolve \
+            --live --scheduled --from-failures \
+            --benchmark "${{ runner.temp }}/polyglot-benchmark" \
+            --workdir "${{ runner.temp }}/evolve-workdir" \
+            --repo .
+
+      - name: No API key configured
+        if: ${{ env.OPENROUTER_API_KEY == '' }}
+        run: echo "OPENROUTER_API_KEY is not set; skipping this run."
+
+      - name: Upload evolution state
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: evolution-state-${{ github.run_id }}
+          path: .orchestrator/evolution
+          if-no-files-found: ignore
+          retention-days: 14
