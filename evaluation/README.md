@@ -1,4 +1,14 @@
-# Evaluation
+<!-- repo-header:start -->
+<img src="https://github.com/dcondrey.png?size=160" alt="Evaluation logo" width="120" align="left">
+
+<h1>Evaluation</h1>
+
+<p><strong>Documentation for Evaluation in Misterdev.</strong></p>
+
+<br clear="left">
+
+[![CI](https://img.shields.io/github/actions/workflow/status/dcondrey/misterdev/ci.yml?style=flat-square&labelColor=20232a&branch=main&label=CI)](https://github.com/dcondrey/misterdev/actions/workflows/ci.yml) [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/14406/badge)](https://www.bestpractices.dev/projects/14406) [![License](https://img.shields.io/github/license/dcondrey/misterdev?style=flat-square&labelColor=20232a&color=007ec6&label=license)](https://github.com/dcondrey/misterdev/blob/main/LICENSE) [![Code of Conduct](https://img.shields.io/badge/code%20of%20conduct-Contributor%20Covenant%202.1-6a4c93?style=flat-square&labelColor=20232a)](https://github.com/dcondrey/misterdev/blob/main/CODE_OF_CONDUCT.md) [![GitHub Sponsors](https://img.shields.io/badge/GitHub%20Sponsors-Sponsor-EA4AAA?style=flat-square&labelColor=20232a)](https://github.com/sponsors/dcondrey)
+<!-- repo-header:end -->
 
 Harnesses that measure misterdev against public benchmarks — turning "is this
 change an improvement?" into a number.
