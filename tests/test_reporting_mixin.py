@@ -1,7 +1,7 @@
 """Unit tests for ReportingMixin."""
 
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 from misterdev.core.execution.reporting_mixin import ReportingMixin
 

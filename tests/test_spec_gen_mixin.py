@@ -1,7 +1,6 @@
 """Unit tests for SpecGenMixin — pure spec synthesis logic."""
 
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from misterdev.core.execution.spec_gen_mixin import SpecGenMixin
 from misterdev.core.modes import BuildMode

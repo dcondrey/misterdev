@@ -1,6 +1,5 @@
 """Unit tests for InteractiveMixin."""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 from misterdev.core.execution.interactive_mixin import InteractiveMixin

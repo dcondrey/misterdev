@@ -1,6 +1,5 @@
 """Unit tests for WaveMixin — wave helper utilities."""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 from misterdev.core.execution.wave_mixin import WaveMixin
