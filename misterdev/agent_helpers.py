@@ -2,14 +2,14 @@ import re
 import time
 from typing import Optional
 
-_SAFE_NPM_NAME_RE = re.compile(r"^(@[a-z0-9][-a-z0-9._]*/)?[a-z0-9][-a-z0-9._]*$")
-
 from rich.console import Console
 
 from misterdev.analyzers.project_analyzer import has_test_files
 from misterdev.config import get_setting
 from misterdev.core.verification.validator import gate_ran_no_tests
 from misterdev.logging_setup import setup_logger
+
+_SAFE_NPM_NAME_RE = re.compile(r"^(@[a-z0-9][-a-z0-9._]*/)?[a-z0-9][-a-z0-9._]*$")
 
 logger = setup_logger(__name__)
 console = Console()

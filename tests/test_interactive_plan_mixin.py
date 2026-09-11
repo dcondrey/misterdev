@@ -4,7 +4,6 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from misterdev.core.execution.interactive_plan_mixin import InteractivePlanMixin
 from misterdev.core.modes import BuildMode

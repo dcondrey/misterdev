@@ -1,7 +1,6 @@
 """Unit tests for GoalCheckMixin."""
 
-import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 from misterdev.core.execution.goal_check_mixin import GoalCheckMixin
 

@@ -5,7 +5,6 @@ pure-logic paths (dep-deferral, budget exhaustion, empty task list) that can
 be exercised with minimal mocking.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 from misterdev.core.execution.execution_loop_mixin import ExecutionLoopMixin

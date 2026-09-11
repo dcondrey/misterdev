@@ -4,7 +4,6 @@ Extracted from agent.py. All three methods are pure functions of their
 arguments; none reference other self methods.
 """
 
-from misterdev.config import get_setting
 from misterdev.core.execution.project import Project
 from misterdev.core.planning.assessment import HealthCheck
 from misterdev.core.reporting.report import BuildReport

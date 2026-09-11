@@ -20,8 +20,6 @@ import re
 from pathlib import Path
 from typing import Annotated, Any, Dict, Optional
 
-_log = logging.getLogger(__name__)
-
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field
@@ -30,6 +28,8 @@ from misterdev.agent import ProjectOrchestrator
 from misterdev.core.execution.jobs import registry
 from misterdev.core.planning.plan_store import load_plan, set_approval
 from misterdev.core.reporting.report_view import collect
+
+_log = logging.getLogger(__name__)
 
 # Conservative default $ ceiling for an AI-client-triggered build (the CLI
 # default is higher). The client can raise it explicitly per call.
