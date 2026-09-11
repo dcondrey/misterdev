@@ -17,8 +17,8 @@ pytest.importorskip(
 )
 
 from misterdev.core.context.lsp import (  # noqa: E402
-    collect_and_format_lsp_context,
     collect_diagnostics,
+    format_lsp_context,
 )
 
 _TIMEOUT = 45.0
@@ -59,7 +59,10 @@ def test_real_diagnostics_render_into_injectable_context():
     root = _fixture("x = = 1\n")
     diags = _diags_or_skip(root)
     assert diags  # a real error was captured
-    ctx = collect_and_format_lsp_context(root, "python", ["m.py"], timeout=_TIMEOUT)
+    # Render what this run actually captured. Re-entering the collect path here
+    # would start a second server whose timeout is not covered by the skip guard
+    # above, so a slow runner turned a rendering assertion into a startup race.
+    ctx = format_lsp_context(diags)
     assert ctx.startswith("## Language-server diagnostics")
     assert "m.py:1" in ctx
 
@@ -68,5 +71,5 @@ def test_clean_file_yields_no_error_diagnostics():
     root = _fixture("def f() -> int:\n    return 1\n")
     diags = _diags_or_skip(root)
     assert diags == []  # server ran, valid file -> no errors (no false positives)
-    ctx = collect_and_format_lsp_context(root, "python", ["m.py"], timeout=_TIMEOUT)
+    ctx = format_lsp_context(diags)
     assert ctx == ""
