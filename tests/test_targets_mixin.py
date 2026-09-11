@@ -1,6 +1,5 @@
 """Unit tests for TargetsMixin — pure-logic paths only (no LLM, no subprocess)."""
 
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 

@@ -4,8 +4,7 @@ _run_pipeline requires deep collaborator setup; these tests cover the
 simpler helpers that can be exercised with minimal mocking.
 """
 
-import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 from misterdev.core.execution.pipeline_mixin import PipelineMixin
 from misterdev.core.models import Task

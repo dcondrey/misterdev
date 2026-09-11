@@ -6,7 +6,6 @@ collaborators, kept here to avoid cross-mixin calls.
 """
 
 import threading
-from pathlib import Path
 from typing import Callable, Optional
 
 from rich.console import Console
@@ -202,7 +201,6 @@ class PipelineMixin:
         return report.to_markdown()
 
     def _run_promotion_async(self, project_path) -> None:
-        import threading
         from misterdev.core.evolution.tool_promotion import run_tool_promotion
 
         def _promote():

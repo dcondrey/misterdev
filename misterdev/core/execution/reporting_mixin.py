@@ -8,7 +8,6 @@ _emit_run_summary. All five are kept together to avoid cross-mixin calls.
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from rich.console import Console
 
@@ -16,7 +15,6 @@ from misterdev.agent_helpers import (
     worktree_healthcheck_command,
     worktree_setup_command,
 )
-from misterdev.config import get_setting
 from misterdev.core.execution.env_learnings import EnvLearnings
 from misterdev.core.execution.project import Project
 from misterdev.core.learning import FailureLog, SolvedTaskIndex
