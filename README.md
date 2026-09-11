@@ -1,23 +1,32 @@
 <!-- repo-header:start -->
 <img src="https://raw.githubusercontent.com/dcondrey/misterdev/main/assets/logo.gif" alt="misterdev logo" width="120" align="left">
 
-<h1>misterdev</h1>
+<h3>misterdev</h3>
 
-<p><strong>Autonomous LLM build orchestrator:  plans a goal into tasks, edits code with anchored SEARCH/REPLACE, and verifies every change through build/test/lint/typecheck gates before reporting done.  Runs as a CLI or MCP server.</strong></p>
+<p><strong>Autonomous LLM build orchestrator: plans a goal into tasks, edits code with anchored SEARCH/REPLACE, and verifies every change through build/test/lint/typecheck gates before reporting done. Runs as a CLI or MCP server.</strong></p>
 
 <br clear="left">
 
-[![CI](https://img.shields.io/github/actions/workflow/status/dcondrey/misterdev/ci.yml?style=flat-square&labelColor=20232a&branch=main&label=CI)](https://github.com/dcondrey/misterdev/actions/workflows/ci.yml) [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/14406/badge)](https://www.bestpractices.dev/projects/14406) [![License](https://img.shields.io/github/license/dcondrey/misterdev?style=flat-square&labelColor=20232a&color=007ec6&label=license)](https://github.com/dcondrey/misterdev/blob/main/LICENSE) [![Code of Conduct](https://img.shields.io/badge/code%20of%20conduct-Contributor%20Covenant%202.1-6a4c93?style=flat-square&labelColor=20232a)](https://github.com/dcondrey/misterdev/blob/main/CODE_OF_CONDUCT.md) [![GitHub Sponsors](https://img.shields.io/badge/GitHub%20Sponsors-Sponsor-EA4AAA?style=flat-square&labelColor=20232a)](https://github.com/sponsors/dcondrey) <a href="https://pypi.org/project/misterdev/"><img src="https://img.shields.io/pypi/v/misterdev?style=flat-square&labelColor=20232a&color=007ec6" alt="PyPI version"></a> <a href="https://pypi.org/project/misterdev/"><img src="https://img.shields.io/pypi/pyversions/misterdev?style=flat-square&labelColor=20232a&color=007ec6" alt="Python versions"></a> <a href="https://github.com/dcondrey/misterdev/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/dcondrey/misterdev/ci.yml?branch=main&style=flat-square&labelColor=20232a" alt="CI"></a>
+<p align="center">
+  <a href="https://github.com/dcondrey/misterdev/blob/main/LICENSE"><img src="https://img.shields.io/github/license/dcondrey/misterdev?style=flat-square&labelColor=20232a&color=007ec6&label=license" alt="License"></a>
+  <a href="https://github.com/dcondrey/misterdev/blob/main/CODE_OF_CONDUCT.md"><img src="https://img.shields.io/badge/code%20of%20conduct-Contributor%20Covenant%202.1-6a4c93?style=flat-square&labelColor=20232a" alt="Code of Conduct"></a>
+  <a href="https://github.com/sponsors/dcondrey"><img src="https://img.shields.io/badge/GitHub%20Sponsors-Sponsor-EA4AAA?style=flat-square&labelColor=20232a" alt="GitHub Sponsors"></a>
+  <a href="https://pypi.org/project/misterdev/"><img src="https://img.shields.io/pypi/v/misterdev?style=flat-square&labelColor=20232a&color=007ec6" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/misterdev/"><img src="https://img.shields.io/pypi/pyversions/misterdev?style=flat-square&labelColor=20232a&color=007ec6" alt="Python versions"></a>
+</p>
+
+<p align="center">
+  <a href="#install">Install</a>
+  &middot; <a href="#what-it-does">What it does</a>
+  &middot; <a href="#cli-reference">CLI</a>
+  &middot; <a href="#extending-misterdev">Extending</a>
+  &middot; <a href="#configuration">Configuration</a>
+  &middot; <a href="#development">Development</a>
+  &middot; <a href="#license">License</a>
+</p>
 <!-- repo-header:end -->
 
-<a href="#install">Install</a> ·
-  <a href="#what-it-does">What it does</a> ·
-  <a href="#cli-reference">CLI</a> ·
-  <a href="#extending-misterdev">Extending</a> ·
-  <a href="#configuration">Configuration</a> ·
-  <a href="#development">Development</a> ·
-  <a href="#license">License</a>
-</p>
+---
 
 ---
 
