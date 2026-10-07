@@ -1,36 +1,11 @@
-<!-- repo-header:start -->
-<img src="https://raw.githubusercontent.com/dcondrey/misterdev/main/assets/logo.gif" alt="misterdev logo" width="120" align="left">
+### misterdev
 
-<h3>misterdev</h3>
-
-<p><strong>Autonomous LLM build orchestrator: plans a goal into tasks, edits code with anchored SEARCH/REPLACE, and verifies every change through build/test/lint/typecheck gates before reporting done. Runs as a CLI or MCP server.</strong></p>
+<img align="left" width="96" alt="misterdev logo" src="assets/logo.png">
+Autonomous LLM build orchestrator: plans a goal into tasks, edits code with anchored SEARCH/REPLACE, and verifies every change through build/test/lint/typecheck gates before reporting done. Runs as a CLI or MCP server.
 
 <br clear="left">
 
-<p align="center">
-  <a href="https://github.com/dcondrey/misterdev/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/dcondrey/misterdev/ci.yml?style=flat-square&labelColor=20232a&branch=main&label=CI" alt="CI"></a>
-  <a href="https://www.bestpractices.dev/projects/14406"><img src="https://www.bestpractices.dev/projects/14406/badge" alt="OpenSSF Best Practices"></a>
-  <a href="https://github.com/dcondrey/misterdev/blob/main/LICENSE"><img src="https://img.shields.io/github/license/dcondrey/misterdev?style=flat-square&labelColor=20232a&color=007ec6&label=license" alt="License"></a>
-  <a href="https://github.com/dcondrey/misterdev/blob/main/CODE_OF_CONDUCT.md"><img src="https://img.shields.io/badge/code%20of%20conduct-Contributor%20Covenant%202.1-6a4c93?style=flat-square&labelColor=20232a" alt="Code of Conduct"></a>
-  <a href="https://github.com/sponsors/dcondrey"><img src="https://img.shields.io/badge/GitHub%20Sponsors-Sponsor-EA4AAA?style=flat-square&labelColor=20232a" alt="GitHub Sponsors"></a>
-  <a href="https://pypi.org/project/misterdev/"><img src="https://img.shields.io/pypi/v/misterdev?style=flat-square&labelColor=20232a&color=007ec6" alt="PyPI version"></a>
-  <a href="https://pypi.org/project/misterdev/"><img src="https://img.shields.io/pypi/pyversions/misterdev?style=flat-square&labelColor=20232a&color=007ec6" alt="Python versions"></a>
-</p>
-
-<p align="center">
-  <a href="#install">Install</a>
-  &middot; <a href="#what-it-does">What it does</a>
-  &middot; <a href="#cli-reference">CLI</a>
-  &middot; <a href="#extending-misterdev">Extending</a>
-  &middot; <a href="#configuration">Configuration</a>
-  &middot; <a href="#development">Development</a>
-  &middot; <a href="#license">License</a>
-</p>
-<!-- repo-header:end -->
-
----
-
----
+[![CI](https://img.shields.io/github/actions/workflow/status/dcondrey/misterdev/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/dcondrey/misterdev/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/misterdev?style=flat-square)](https://pypi.org/project/misterdev/) [![License](https://img.shields.io/github/license/dcondrey/misterdev?style=flat-square)](https://github.com/dcondrey/misterdev/blob/main/LICENSE)
 
 Point misterdev at a repository and a goal. It reads the codebase as a symbol graph, decomposes the goal into concrete tasks, and works each one in a try-edit-verify loop: it emits an anchored SEARCH/REPLACE edit, applies it against the file on disk, and runs the change through a sequence of correctness gates — build, tests, lint, typecheck, and any optional gates you enable. A gate that fails RED blocks the change; a gate that has nothing to check SKIPs and never blocks. When a change regresses the suite, misterdev reverts it through git. Nothing merges unless it stays green.
 
